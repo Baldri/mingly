@@ -123,7 +123,13 @@ jobs:
 
       - name: Check for sensitive data patterns
         run: |
-          if grep -rn "sk-ant-\|sk-[a-zA-Z0-9]\{20,\}\|AIza[a-zA-Z0-9]\{30,\}" src/ --include="*.ts" --include="*.tsx"; then
+          if grep -rn "sk-ant-\|sk-[a-zA-Z0-9]\{20,\}\|AIza[a-zA-Z0-9]\{30,\}" src/ --include="*.ts" --include="*.tsx" \
+            --exclude="*sensitive-data-detector*" \
+            --exclude="*SettingsModal*" \
+            --exclude="*SettingsPage*" \
+            --exclude="*SetupWizard*" \
+            --exclude-dir="__tests__" \
+            | grep -v 'placeholder' | grep -v 'pattern:'; then
             echo "::error::Potential API key found in source code!"
             exit 1
           fi

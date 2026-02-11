@@ -1,4 +1,3 @@
-import fetch from 'node-fetch'
 import { SimpleStore } from '../utils/simple-store'
 import type { NetworkAIServerConfig, NetworkDiscoveryResult, NetworkAIType } from '../../shared/network-ai-types'
 import { buildAPIUrl, isLocalNetwork } from '../../shared/network-ai-types'
@@ -97,8 +96,7 @@ export class NetworkAIManager {
           const response = await fetch(`${baseUrl}${endpoint}`, {
             method: 'GET',
             headers: server.apiKey ? { 'Authorization': `Bearer ${server.apiKey}` } : {},
-            // @ts-ignore - timeout is valid in node-fetch
-            timeout: server.timeout || 5000
+            signal: AbortSignal.timeout(server.timeout || 5000)
           })
 
           if (response.ok) {
@@ -193,8 +191,7 @@ export class NetworkAIManager {
         try {
           const response = await fetch(`${baseUrl}${endpoint}`, {
             method: 'GET',
-            // @ts-ignore
-            timeout: 2000 // Quick scan
+            signal: AbortSignal.timeout(2000)
           })
 
           if (response.ok) {
@@ -241,8 +238,7 @@ export class NetworkAIManager {
       const response = await fetch(`${baseUrl}${endpoint}`, {
         method: 'GET',
         headers: server.apiKey ? { 'Authorization': `Bearer ${server.apiKey}` } : {},
-        // @ts-ignore
-        timeout: server.timeout || 5000
+        signal: AbortSignal.timeout(server.timeout || 5000)
       })
 
       if (!response.ok) {
