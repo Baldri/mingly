@@ -1,5 +1,5 @@
-import React, { useState } from 'react'
-import type { SensitiveDataMatch, RiskLevel } from '../../main/security/sensitive-data-detector'
+import { useState } from 'react'
+import type { RiskLevel } from '../../main/security/sensitive-data-detector'
 import type { UploadPermissionRequest } from '../../main/security/upload-permission-manager'
 
 interface SensitiveDataConsentDialogProps {

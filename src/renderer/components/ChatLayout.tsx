@@ -1,4 +1,3 @@
-import React from 'react'
 import { ConversationSidebar } from './ConversationSidebar'
 import { MessageList } from './MessageList'
 import { MessageInput } from './MessageInput'

@@ -1,5 +1,5 @@
-import React, { useState } from 'react'
-import { X, Plus, Trash2, Server, Check, AlertCircle, Loader2 } from 'lucide-react'
+import { useState } from 'react'
+import { X, Plus, Server, Check, AlertCircle, Loader2 } from 'lucide-react'
 
 interface Props {
   isOpen: boolean

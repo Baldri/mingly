@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, memo } from 'react'
+import { useState, useEffect, memo } from 'react'
 
 interface UsageSummary {
   totalMessages: number

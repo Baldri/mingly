@@ -1,5 +1,5 @@
 // DEPRECATED: Replaced by SettingsPage.tsx. Kept for rollback if needed.
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { X, Check, AlertCircle } from 'lucide-react'
 import { useSettingsStore } from '../stores/settings-store'
 import { PrivacySettingsTab } from './PrivacySettingsTab'

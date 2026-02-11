@@ -141,8 +141,9 @@ export function useTranslation() {
   const settings = useSettingsStore((s) => s.settings)
   const lang = settings?.language || 'en'
 
-  function t(key: TranslationKey): string {
-    return translations[lang]?.[key] || translations.en[key] || key
+  function t(key: string): string {
+    const k = key as TranslationKey
+    return translations[lang]?.[k] || translations.en[k] || key
   }
 
   return { t, lang }
@@ -151,6 +152,7 @@ export function useTranslation() {
 /**
  * Get a translation without React hooks (for non-component use).
  */
-export function translate(key: TranslationKey, lang: 'de' | 'en' = 'en'): string {
-  return translations[lang]?.[key] || translations.en[key] || key
+export function translate(key: string, lang: 'de' | 'en' = 'en'): string {
+  const k = key as TranslationKey
+  return translations[lang]?.[k] || translations.en[k] || key
 }

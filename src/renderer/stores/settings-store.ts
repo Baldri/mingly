@@ -49,8 +49,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       const result = await window.electronAPI.keys.list()
       if (result.success && result.providers) {
         const configured = result.providers.reduce(
-          (acc, provider) => ({ ...acc, [provider]: true }),
-          {}
+          (acc: Record<string, boolean>, provider: string) => ({ ...acc, [provider]: true }),
+          {} as Record<string, boolean>
         )
         set({ apiKeysConfigured: configured })
       }

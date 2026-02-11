@@ -1,4 +1,4 @@
-import React, { useState, useEffect, memo } from 'react'
+import { useState, useEffect, memo } from 'react'
 import type { MCPServer, MCPTool } from '../../shared/types'
 
 export const MCPServersTab = memo(function MCPServersTab() {

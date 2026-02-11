@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import type { AllowedDirectory, FileAccessPermission } from '../../shared/file-access-types'
 
 export function FileAccessTab() {
