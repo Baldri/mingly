@@ -2,8 +2,9 @@
 
 **Mingle with all AI minds in one place.**
 
-[![CI](https://github.com/mingly-app/mingly/actions/workflows/ci.yml/badge.svg)](https://github.com/mingly-app/mingly/actions/workflows/ci.yml)
+[![CI](https://github.com/Baldri/mingly/actions/workflows/ci.yml/badge.svg)](https://github.com/Baldri/mingly/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Website](https://img.shields.io/badge/Website-mingly.ch-6366f1)](https://mingly.ch)
 
 Mingly gives you unified access to Claude, ChatGPT, Gemini, and local LLMs in a single privacy-first desktop app. Use it standalone or deploy as a server for your team.
 
@@ -11,23 +12,47 @@ Mingly gives you unified access to Claude, ChatGPT, Gemini, and local LLMs in a 
 
 - **Multi-Provider** — Claude, GPT-4, Gemini, Ollama (local) in one interface
 - **Intelligent Routing** — AI-powered request classification routes to the best model
+- **Hybrid Orchestration** — Local LLM detects cloud needs, delegates with your approval
 - **Knowledge Base** — Index your local documents for context-aware AI responses (RAG)
 - **Server Mode** — Share AI access across your network via REST + WebSocket API
 - **Enterprise Ready** — RBAC, audit logging, budget controls, GDPR compliance
-- **Secure** — API keys in OS keychain, input sanitization, rate limiting, CSP headers
+- **Activity Tracking** — Token/cost analytics per provider, daily summaries, budget alerts
+- **Secure** — API keys in OS keychain, input sanitization, rate limiting, sensitive data detection
 - **MCP Integration** — Extend functionality with Model Context Protocol tools
-- **Slash Commands** — `/clear`, `/switch`, `/route`, `/export` and mode modifiers like `@code`, `@creative`
+- **Integrations** — Slack, Notion, Obsidian + custom workflows
+
+## Pricing
+
+Mingly is open source and stays that way. Choose the plan that fits you.
+
+| | Free | Pro | Team | Enterprise |
+|---|:---:|:---:|:---:|:---:|
+| **Price** | CHF 0 | CHF 24/mo | CHF 69/user/mo | On request |
+| Local models (Ollama) | ✓ | ✓ | ✓ | ✓ |
+| Cloud APIs (Claude, GPT, Gemini) | | ✓ | ✓ | ✓ |
+| Unlimited conversations | | ✓ | ✓ | ✓ |
+| Prompt templates | | ✓ | ✓ | ✓ |
+| Multimodal & AI agents | | ✓ | ✓ | ✓ |
+| Team workspaces | | | ✓ | ✓ |
+| RBAC & audit logs | | | ✓ | ✓ |
+| SSO (OAuth / SAML) | | | ✓ | ✓ |
+| On-premise & compliance | | | | ✓ |
+| Dedicated support & SLA | | | | ✓ |
+
+Annual plans available: Pro CHF 199/year, Team CHF 599/user/year (min. 5 users).
+
+You pay AI provider API costs directly — Mingly charges no markup. With Ollama, everything runs locally for free.
 
 ## Quick Start
 
 ### Desktop App (macOS / Windows)
 
-Download the latest installer from [GitHub Releases](https://github.com/mingly-app/mingly/releases).
+Download the latest installer from [GitHub Releases](https://github.com/Baldri/mingly/releases).
 
 ### From Source
 
 ```bash
-git clone https://github.com/mingly-app/mingly.git
+git clone https://github.com/Baldri/mingly.git
 cd mingly
 npm install
 npm run dev
@@ -36,7 +61,7 @@ npm run dev
 ### Server Mode (Docker)
 
 ```bash
-git clone https://github.com/mingly-app/mingly.git
+git clone https://github.com/Baldri/mingly.git
 cd mingly
 docker compose up -d
 ```
@@ -50,6 +75,8 @@ The API server starts on port 3939. See [Server Documentation](docs/en/CONFIGURA
 | English  | [Install](docs/en/INSTALLATION.md) | [Configure](docs/en/CONFIGURATION.md) | [Usage](docs/en/USAGE.md) | [FAQ](docs/en/FAQ.md) |
 | Deutsch  | [Installation](docs/de/INSTALLATION.md) | [Konfiguration](docs/de/KONFIGURATION.md) | [Nutzung](docs/de/NUTZUNG.md) | [FAQ](docs/de/FAQ.md) |
 
+Full documentation available on the [Wiki](https://github.com/Baldri/mingly/wiki).
+
 ## Contributing
 
 We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding conventions, and PR process.
@@ -60,4 +87,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
-**Mingly** is built by the open-source community. Star the repo if you find it useful!
+**Mingly** is built by [digital opua GmbH](https://mingly.ch), Walchwil, Switzerland. Star the repo if you find it useful!
