@@ -1,0 +1,32 @@
+qdrant:
+  host: localhost
+  port: 6333
+  api_key: null  # Optional: für Production
+
+embedding:
+  model: intfloat/multilingual-e5-large
+  device: cpu  # "cuda" für GPU
+  batch_size: 32
+
+mcp_server:
+  host: localhost
+  port: 8765
+
+watched_directories:
+  - path: ~/Documents  # Change to your documents path
+    collection: documents
+    recursive: true
+    file_types: [".pdf", ".docx", ".txt", ".md"]
+
+collections:
+  - name: documents
+    description: General documents
+    vector_size: 1024
+
+  - name: obsidian-notes
+    description: Obsidian vault notes
+    vector_size: 1024
+
+  - name: code-snippets
+    description: Code examples
+    vector_size: 1024

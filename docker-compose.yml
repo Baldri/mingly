@@ -1,0 +1,98 @@
+# Mingly RAG Stack
+# One-click setup: docker compose up -d
+#
+# Services:
+#   - qdrant: Vector database (port 6333/6334)
+#   - rag-server: Python FastAPI RAG server (port 8001)
+#
+# Volumes:
+#   - qdrant_data: Persistent vector storage
+#   - rag_models: Cached embedding models
+#   - rag_watched: Watched directories for auto-indexing
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.7.4
+    container_name: mingly-qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rag-server:
+    build:
+      context: ./rag-server
+      dockerfile: Dockerfile
+    container_name: mingly-rag-server
+    restart: unless-stopped
+    ports:
+      - "${RAG_SERVER_PORT:-8001}:8001"
+    volumes:
+      - rag_models:/data/models
+      - rag_watched:/data/watched
+      - ${WATCH_DIRS:-./data/documents}:/data/documents:ro
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - RAG_SERVER_HOST=0.0.0.0
+      - RAG_SERVER_PORT=8001
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-intfloat/multilingual-e5-large}
+      - WATCH_DIRS=/data/documents
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Mingly API Server (headless, no Electron)
+  mingly-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: mingly-server
+    restart: unless-stopped
+    ports:
+      - "${MINGLY_PORT:-3939}:3939"
+    volumes:
+      - mingly_data:/data
+    environment:
+      - MINGLY_PORT=3939
+      - MINGLY_HOST=0.0.0.0
+      - MINGLY_DATA_DIR=/data
+      - MINGLY_REQUIRE_AUTH=${MINGLY_REQUIRE_AUTH:-false}
+      - MINGLY_API_KEY=${MINGLY_API_KEY:-}
+      - MINGLY_LOG_LEVEL=${MINGLY_LOG_LEVEL:-info}
+      - NODE_ENV=production
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3939/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  qdrant_data:
+    driver: local
+  rag_models:
+    driver: local
+  rag_watched:
+    driver: local
+  mingly_data:
+    driver: local

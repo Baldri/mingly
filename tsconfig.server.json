@@ -1,0 +1,53 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "outDir": "dist-server",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "sourceMap": true,
+    "moduleResolution": "node",
+    "paths": {
+      "@shared/*": ["./src/shared/*"]
+    },
+    "baseUrl": "."
+  },
+  "include": [
+    "src/server/**/*",
+    "src/main/server/**/*",
+    "src/main/services/**/*",
+    "src/main/llm-clients/**/*",
+    "src/main/database/**/*",
+    "src/main/security/**/*",
+    "src/main/rag/**/*",
+    "src/main/mcp/**/*",
+    "src/main/tracking/**/*",
+    "src/main/routing/**/*",
+    "src/main/network/**/*",
+    "src/main/prompts/**/*",
+    "src/main/commands/**/*",
+    "src/main/integrations/**/*",
+    "src/main/utils/**/*",
+    "src/main/file-access/**/*",
+    "src/shared/**/*"
+  ],
+  "exclude": [
+    "src/main/index.ts",
+    "src/main/ipc-handlers.ts",
+    "src/main/updater/**/*",
+    "src/preload/**/*",
+    "src/renderer/**/*",
+    "**/__tests__/**/*",
+    "**/*.test.ts",
+    "**/*.spec.ts",
+    "node_modules",
+    "dist",
+    "dist-server"
+  ]
+}

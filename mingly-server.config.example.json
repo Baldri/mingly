@@ -1,0 +1,8 @@
+{
+  "port": 3939,
+  "host": "0.0.0.0",
+  "dataDir": "./data",
+  "requireAuth": true,
+  "apiKey": "CHANGE_ME_TO_A_SECURE_KEY",
+  "logLevel": "info"
+}

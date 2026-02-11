@@ -1,0 +1,12 @@
+# RAG Server Dependencies
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+qdrant-client==1.7.3
+sentence-transformers==2.3.1
+unstructured[all-docs]==0.12.4
+watchdog==4.0.0
+pyyaml==6.0.1
+python-multipart==0.0.9
+pydantic==2.5.3
+torch==2.1.2
+transformers==4.37.2
