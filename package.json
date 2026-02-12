@@ -3,7 +3,10 @@
   "version": "0.1.1",
   "description": "Mingly - Mingle with all AI minds in one place",
   "main": "dist/main/index.js",
-  "author": "Mingly Contributors",
+  "author": {
+    "name": "Mingly Contributors",
+    "email": "welcome@digital-opua.ch"
+  },
   "license": "MIT",
   "private": true,
   "scripts": {
