@@ -8,7 +8,7 @@
  * the version number here. The filenames follow electron-builder conventions.
  */
 
-export const MINGLY_VERSION = '0.1.0'
+export const MINGLY_VERSION = '0.1.1'
 
 /** Supabase project URL for mingly.ch */
 const SUPABASE_URL = 'https://ebxehissgladuylweisx.supabase.co'
