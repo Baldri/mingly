@@ -72,7 +72,7 @@ export class OpenAIClient {
       // Stream the response
       const stream = await this.client.chat.completions.create({
         model,
-        messages: openaiMessages,
+        messages: openaiMessages as any,
         temperature,
         stream: true
       })
@@ -130,7 +130,7 @@ export class OpenAIClient {
 
       const response = await this.client.chat.completions.create({
         model,
-        messages: openaiMessages,
+        messages: openaiMessages as any,
         temperature
       })
 

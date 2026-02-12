@@ -109,7 +109,7 @@ function requireFeature(feature: string): void {
   }
 }
 
-export function registerIPCHandlers(): void {
+export async function registerIPCHandlers(): Promise<void> {
 
   // Load API keys from keychain on startup
   initializeAPIKeys()

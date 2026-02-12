@@ -70,7 +70,7 @@ app.whenReady().then(async () => {
   }
 
   // Register all IPC handlers
-  registerIPCHandlers()
+  await registerIPCHandlers()
 
   // Initialize deployment manager (auto-starts server if in server mode)
   try {

@@ -11,7 +11,7 @@
 export const MINGLY_VERSION = '0.1.0'
 
 /** Supabase project URL for mingly.ch */
-const SUPABASE_URL = 'https://your-project-ref.supabase.co'
+const SUPABASE_URL = 'https://ebxehissgladuylweisx.supabase.co'
 
 /** Public bucket name for installer files */
 const BUCKET = 'releases'
