@@ -314,20 +314,16 @@ describe('LicenseActivationService', () => {
   // ── Checkout URLs ─────────────────────────────────────────────
 
   describe('checkout URLs', () => {
-    it('should return pro checkout URL', () => {
-      const url = service.getCheckoutUrl('pro')
-      expect(url).toContain('mingly-pro')
-      expect(url).toContain('lemonsqueezy.com')
-    })
+    it('should return the same checkout URL for all tiers', () => {
+      const urlPro = service.getCheckoutUrl('pro')
+      const urlTeam = service.getCheckoutUrl('team')
+      const urlEnterprise = service.getCheckoutUrl('enterprise')
 
-    it('should return team checkout URL', () => {
-      const url = service.getCheckoutUrl('team')
-      expect(url).toContain('mingly-team')
-    })
-
-    it('should return enterprise checkout URL', () => {
-      const url = service.getCheckoutUrl('enterprise')
-      expect(url).toContain('mingly-enterprise')
+      // All tiers share one Lemonsqueezy checkout (customer picks variant)
+      expect(urlPro).toContain('lemonsqueezy.com')
+      expect(urlPro).toContain('d1cc0e68-cc65-4a89-9bc4-680ea6983db5')
+      expect(urlPro).toBe(urlTeam)
+      expect(urlTeam).toBe(urlEnterprise)
     })
   })
 })

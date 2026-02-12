@@ -60,12 +60,12 @@ const LEMONSQUEEZY_API = 'https://api.lemonsqueezy.com/v1/licenses'
 /** Offline grace period: 30 days */
 const OFFLINE_GRACE_DAYS = 30
 
-/** Tier-to-product mapping for Lemonsqueezy checkout URLs */
-const CHECKOUT_PATHS: Record<Exclude<SubscriptionTier, 'free'>, string> = {
-  pro: '/checkout/buy/mingly-pro',
-  team: '/checkout/buy/mingly-team',
-  enterprise: '/checkout/buy/mingly-enterprise'
-}
+/**
+ * Single Lemonsqueezy checkout URL for the Mingly product.
+ * All tiers (Pro/Team/Enterprise) are variants within one product.
+ * The customer selects the desired variant in the Lemonsqueezy checkout.
+ */
+const CHECKOUT_PATH = '/checkout/buy/d1cc0e68-cc65-4a89-9bc4-680ea6983db5'
 
 /**
  * Lemonsqueezy product name → tier mapping.
@@ -132,8 +132,8 @@ export class LicenseActivationService {
     return this.store.license ? { ...this.store.license } : null
   }
 
-  getCheckoutUrl(tier: Exclude<SubscriptionTier, 'free'>): string {
-    return this.store.checkoutBaseUrl + CHECKOUT_PATHS[tier]
+  getCheckoutUrl(_tier?: Exclude<SubscriptionTier, 'free'>): string {
+    return this.store.checkoutBaseUrl + CHECKOUT_PATH
   }
 
   // ---- activation -----------------------------------------------------------
