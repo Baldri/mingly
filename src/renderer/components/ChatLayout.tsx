@@ -2,7 +2,12 @@ import { ConversationSidebar } from './ConversationSidebar'
 import { MessageList } from './MessageList'
 import { MessageInput } from './MessageInput'
 import { SensitiveDataConsentDialog } from './SensitiveDataConsentDialog'
+import { DelegationProposalDialog } from './DelegationProposalDialog'
+import { OrchestrationStatusBar } from './OrchestrationStatusBar'
+import UpgradeDialog from './UpgradeDialog'
+import LicenseKeyDialog from './LicenseKeyDialog'
 import { useChatStore } from '../stores/chat-store'
+import { useOrchestratorStore } from '../stores/orchestrator-store'
 
 export function ChatLayout() {
   const sensitiveDataConsent = useChatStore((state) => state.sensitiveDataConsent)
@@ -11,6 +16,12 @@ export function ChatLayout() {
   const handleUseLocalLLM = useChatStore((state) => state.handleUseLocalLLM)
   const error = useChatStore((state) => state.error)
   const setError = useChatStore((state) => state.setError)
+
+  const activeProposal = useOrchestratorStore((state) => state.activeProposal)
+  const isExecuting = useOrchestratorStore((state) => state.isExecuting)
+  const approveProposal = useOrchestratorStore((state) => state.approveProposal)
+  const denyProposal = useOrchestratorStore((state) => state.denyProposal)
+  const dismissProposal = useOrchestratorStore((state) => state.dismissProposal)
 
   return (
     <div className="flex h-screen overflow-hidden bg-white dark:bg-gray-900">
@@ -36,6 +47,7 @@ export function ChatLayout() {
         )}
 
         <MessageList />
+        <OrchestrationStatusBar />
         <MessageInput />
       </div>
 
@@ -50,6 +62,22 @@ export function ChatLayout() {
           onUseLocalLLM={handleUseLocalLLM}
         />
       )}
+
+      {/* Delegation Proposal Dialog */}
+      {activeProposal && (
+        <DelegationProposalDialog
+          isOpen={!!activeProposal}
+          proposal={activeProposal}
+          isExecuting={isExecuting}
+          onApprove={approveProposal}
+          onDeny={denyProposal}
+          onDismiss={dismissProposal}
+        />
+      )}
+
+      {/* Upgrade & License Dialogs */}
+      <UpgradeDialog />
+      <LicenseKeyDialog />
     </div>
   )
 }

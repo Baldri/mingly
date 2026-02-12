@@ -47,10 +47,24 @@ export class AnthropicClient {
     }
 
     try {
-      // Convert app messages to Anthropic format
+      // Convert app messages to Anthropic format (with vision support)
       const anthropicMessages = messages.map((msg) => ({
         role: msg.role === 'user' ? ('user' as const) : ('assistant' as const),
-        content: msg.content
+        content: msg.attachments?.length
+          ? [
+              ...msg.attachments
+                .filter((att) => att.type === 'image')
+                .map((att) => ({
+                  type: 'image' as const,
+                  source: {
+                    type: 'base64' as const,
+                    media_type: att.mimeType,
+                    data: att.data
+                  }
+                })),
+              { type: 'text' as const, text: msg.content }
+            ]
+          : msg.content
       }))
 
       // Stream the response
@@ -95,7 +109,21 @@ export class AnthropicClient {
     try {
       const anthropicMessages = messages.map((msg) => ({
         role: msg.role === 'user' ? ('user' as const) : ('assistant' as const),
-        content: msg.content
+        content: msg.attachments?.length
+          ? [
+              ...msg.attachments
+                .filter((att) => att.type === 'image')
+                .map((att) => ({
+                  type: 'image' as const,
+                  source: {
+                    type: 'base64' as const,
+                    media_type: att.mimeType,
+                    data: att.data
+                  }
+                })),
+              { type: 'text' as const, text: msg.content }
+            ]
+          : msg.content
       }))
 
       const response = await this.client.messages.create({

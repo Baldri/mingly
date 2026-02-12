@@ -1,7 +1,7 @@
 import { ipcMain, dialog } from 'electron'
 import * as fs from 'fs/promises'
 import { IPC_CHANNELS } from '../shared/types'
-import type { LLMProvider, AppSettings, Message } from '../shared/types'
+import type { LLMProvider, AppSettings, Message, MessageAttachment } from '../shared/types'
 import type { SensitiveDataType, RiskLevel } from './security/sensitive-data-detector'
 import { KeychainManager } from './security/keychain-manager'
 import { getClientManager } from './llm-clients/client-manager'
@@ -26,6 +26,7 @@ import { getTrackingEngine } from './tracking/tracking-engine'
 import { getDeploymentManager } from './server/deployment-manager'
 import { getHybridOrchestrator } from './routing/hybrid-orchestrator'
 import { getRBACManager } from './security/rbac-manager'
+import { getFeatureGateManager } from './services/feature-gate-manager'
 import { getInputSanitizer } from './security/input-sanitizer'
 import { getRateLimiter } from './security/rate-limiter'
 import { validateFilePath, validateCollectionName, validateRAGQuery, validateMCPArgs, validateString } from './security/input-validator'
@@ -94,6 +95,17 @@ function requirePermission(permissionId: string): void {
   const rbac = getRBACManager()
   if (!rbac.hasPermission(permissionId)) {
     throw new Error(`Access denied: missing permission '${permissionId}'`)
+  }
+}
+
+/**
+ * Enforce feature gate check. Throws if the current tier doesn't include the feature.
+ */
+function requireFeature(feature: string): void {
+  const gate = getFeatureGateManager()
+  const result = gate.checkFeature(feature as any)
+  if (!result.allowed) {
+    throw new Error(`Feature '${feature}' requires ${result.requiredTier} plan. Please upgrade.`)
   }
 }
 
@@ -403,6 +415,19 @@ export function registerIPCHandlers(): void {
   // ========================================
 
   wrapHandler(IPC_CHANNELS.CREATE_CONVERSATION, (title: string, provider: string, model: string) => {
+    // Enforce daily conversation limit for Free tier
+    const gate = getFeatureGateManager()
+    const convLimit = gate.checkConversationLimit()
+    if (!convLimit.allowed) {
+      throw new Error(convLimit.reason || 'Daily conversation limit reached')
+    }
+    gate.recordConversation()
+
+    // Gate cloud APIs for Free tier (only local/ollama allowed)
+    if (provider !== 'local') {
+      requireFeature('cloud_apis')
+    }
+
     const conversation = ConversationModel.create(title, provider, model)
     return { success: true, conversation }
   })
@@ -761,11 +786,104 @@ export function registerIPCHandlers(): void {
     return { success: true, config: orchestrator.getConfig() }
   })
 
-  wrapHandler(IPC_CHANNELS.ORCHESTRATOR_ANALYZE, async (message: string, provider: string, model: string) => ({ success: true, proposal: await orchestrator.analyzeForDelegation(message, provider, model) }))
+  wrapHandler(IPC_CHANNELS.ORCHESTRATOR_ANALYZE, async (message: string, provider: string, model: string) => {
+    requireFeature('agents')
+    return { success: true, proposal: await orchestrator.analyzeForDelegation(message, provider, model) }
+  })
   wrapHandler(IPC_CHANNELS.ORCHESTRATOR_APPROVE, (proposalId: string) => ({ success: orchestrator.approveProposal(proposalId) }))
   wrapHandler(IPC_CHANNELS.ORCHESTRATOR_DENY, (proposalId: string) => ({ success: orchestrator.denyProposal(proposalId) }))
   wrapHandler(IPC_CHANNELS.ORCHESTRATOR_EXECUTE, async (proposalId: string) => { const r = await orchestrator.executeDelegation(proposalId); return { success: !!r, result: r } })
   wrapHandler(IPC_CHANNELS.ORCHESTRATOR_GET_PROPOSALS, () => ({ success: true, proposals: orchestrator.getPendingProposals() }))
+
+  // ========================================
+  // Prompt Templates
+  // ========================================
+
+  const { PromptTemplateModel } = await import('./database/models/prompt-template')
+  const { seedBuiltinTemplates } = await import('./prompts/builtin-templates')
+
+  // Seed built-in templates on first run
+  seedBuiltinTemplates(
+    (data) => PromptTemplateModel.create(data),
+    PromptTemplateModel.countBuiltins()
+  )
+
+  wrapHandler(IPC_CHANNELS.TEMPLATE_CREATE, (data: any) => {
+    requireFeature('templates_custom')
+    const template = PromptTemplateModel.create(data)
+    return { success: true, template }
+  })
+
+  wrapHandler(IPC_CHANNELS.TEMPLATE_LIST, (category?: string) => {
+    const templates = PromptTemplateModel.findAll(category as any)
+    return { success: true, templates }
+  })
+
+  wrapHandler(IPC_CHANNELS.TEMPLATE_GET, (id: string) => {
+    const template = PromptTemplateModel.findById(id)
+    return { success: !!template, template }
+  })
+
+  wrapHandler(IPC_CHANNELS.TEMPLATE_UPDATE, (id: string, data: any) => {
+    const template = PromptTemplateModel.update(id, data)
+    return { success: !!template, template }
+  })
+
+  wrapHandler(IPC_CHANNELS.TEMPLATE_DELETE, (id: string) => {
+    const success = PromptTemplateModel.delete(id)
+    return { success }
+  })
+
+  wrapHandler(IPC_CHANNELS.TEMPLATE_TOGGLE_FAVORITE, (id: string) => {
+    const template = PromptTemplateModel.toggleFavorite(id)
+    return { success: !!template, template }
+  })
+
+  wrapHandler(IPC_CHANNELS.TEMPLATE_EXPORT, () => {
+    const templates = PromptTemplateModel.findAll()
+    return { success: true, data: JSON.stringify(templates, null, 2) }
+  })
+
+  wrapHandler(IPC_CHANNELS.TEMPLATE_IMPORT, (jsonString: string) => {
+    const items = JSON.parse(jsonString)
+    let imported = 0
+    for (const item of items) {
+      PromptTemplateModel.create({
+        name: item.name,
+        description: item.description,
+        systemPrompt: item.systemPrompt,
+        category: item.category || 'custom',
+        variables: item.variables,
+        isFavorite: false,
+        isBuiltin: false
+      })
+      imported++
+    }
+    return { success: true, imported }
+  })
+
+  // ========================================
+  // Model Comparison
+  // ========================================
+
+  const { getComparisonService } = await import('./services/comparison-service')
+  const comparisonService = getComparisonService()
+
+  wrapHandler(IPC_CHANNELS.COMPARISON_START, async (prompt: string, models: any[]) => {
+    requireFeature('comparison')
+    const result = await comparisonService.runComparison(prompt, models)
+    return { success: true, session: result.session, results: result.results, errors: result.errors }
+  })
+
+  wrapHandler(IPC_CHANNELS.COMPARISON_GET_HISTORY, (limit?: number) => {
+    const history = comparisonService.getHistory(limit)
+    return { success: true, history }
+  })
+
+  wrapHandler(IPC_CHANNELS.COMPARISON_MARK_WINNER, (sessionId: string, resultId: string) => {
+    const success = comparisonService.markWinner(sessionId, resultId)
+    return { success }
+  })
 
   // ========================================
   // RBAC (Enterprise Access Control)
@@ -819,6 +937,78 @@ export function registerIPCHandlers(): void {
   })
 
   // ========================================
+  // Conversation Export
+  // ========================================
+
+  wrapHandler(IPC_CHANNELS.EXPORT_CONVERSATION, async (conversationId: string, format: string) => {
+    requireFeature('export')
+    const { getExportService } = await import('./services/export-service')
+    const exportService = getExportService()
+
+    const conversation = ConversationModel.findById(conversationId)
+    if (!conversation) throw new Error('Conversation not found')
+
+    const messages = MessageModel.findByConversation(conversationId)
+    const exportFormat = format as 'markdown' | 'json' | 'html'
+
+    const extensions: Record<string, string> = { markdown: 'md', json: 'json', html: 'html' }
+    const ext = extensions[exportFormat] || 'txt'
+
+    const result = await dialog.showSaveDialog({
+      defaultPath: `${conversation.title.replace(/[^a-zA-Z0-9-_ ]/g, '')}.${ext}`,
+      filters: [
+        { name: `${exportFormat.toUpperCase()} Files`, extensions: [ext] }
+      ]
+    })
+
+    if (result.canceled || !result.filePath) {
+      return { success: false, canceled: true }
+    }
+
+    const content = exportService.export({
+      title: conversation.title,
+      provider: conversation.provider,
+      model: conversation.model,
+      messages,
+      format: exportFormat,
+      includeMetadata: true,
+      includeImages: exportFormat !== 'markdown'
+    })
+
+    await fs.writeFile(result.filePath, content, 'utf-8')
+    return { success: true, filePath: result.filePath }
+  })
+
+  // ========================================
+  // Image / Vision
+  // ========================================
+
+  wrapHandler(IPC_CHANNELS.IMAGE_SELECT, async () => {
+    requireFeature('multimodal')
+    const { processImageFile, MAX_IMAGES_PER_MESSAGE } = await import('./utils/image-processor')
+
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp'] }],
+      title: 'Select Images'
+    })
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: true, attachments: [] }
+    }
+
+    const paths = result.filePaths.slice(0, MAX_IMAGES_PER_MESSAGE)
+    const attachments: MessageAttachment[] = []
+
+    for (const filePath of paths) {
+      const att = await processImageFile(filePath)
+      attachments.push(att)
+    }
+
+    return { success: true, attachments }
+  })
+
+  // ========================================
   // File Operations
   // ========================================
 
@@ -845,6 +1035,59 @@ export function registerIPCHandlers(): void {
     } catch (error) {
       return { success: false, error: (error as Error).message }
     }
+  })
+
+  // ── Feature Gating / Subscription ──────────────────────────────
+
+  const featureGateManager = getFeatureGateManager()
+
+  wrapHandler(IPC_CHANNELS.FEATURE_GATE_CHECK, (feature: string) => {
+    return featureGateManager.checkFeature(feature as any)
+  })
+
+  wrapHandler(IPC_CHANNELS.FEATURE_GATE_GET_TIER, () => {
+    return {
+      tier: featureGateManager.getTier(),
+      subscription: featureGateManager.getSubscription(),
+      limits: featureGateManager.getLimits()
+    }
+  })
+
+  wrapHandler(IPC_CHANNELS.FEATURE_GATE_SET_TIER, (tier: string, licenseKey?: string, expiresAt?: number, maxUsers?: number) => {
+    featureGateManager.setTier(tier as any, licenseKey, expiresAt, maxUsers)
+    return { success: true, tier: featureGateManager.getTier() }
+  })
+
+  wrapHandler(IPC_CHANNELS.FEATURE_GATE_GET_LIMITS, () => {
+    return featureGateManager.getLimits()
+  })
+
+  wrapHandler(IPC_CHANNELS.FEATURE_GATE_GET_ALL_FEATURES, () => {
+    return featureGateManager.getAllFeatures()
+  })
+
+  // ── License Activation ────────────────────────────────────────
+
+  const { getLicenseActivationService } = await import('./services/license-activation')
+  const licenseService = getLicenseActivationService()
+
+  wrapHandler(IPC_CHANNELS.LICENSE_ACTIVATE, async (key: string, email?: string) => {
+    const result = await licenseService.activate(key, email)
+    return { success: result.valid, ...result }
+  })
+
+  wrapHandler(IPC_CHANNELS.LICENSE_DEACTIVATE, () => {
+    licenseService.deactivate()
+    return { success: true }
+  })
+
+  wrapHandler(IPC_CHANNELS.LICENSE_GET_INFO, () => {
+    return { success: true, license: licenseService.getLicense() }
+  })
+
+  wrapHandler(IPC_CHANNELS.LICENSE_GET_CHECKOUT_URL, (tier: string) => {
+    const url = licenseService.getCheckoutUrl(tier as any)
+    return { success: true, url }
   })
 
   console.log('✅ IPC handlers registered')

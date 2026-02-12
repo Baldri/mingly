@@ -199,7 +199,7 @@ export class SystemPromptManager {
    */
   private getFallbackPrompts(): SystemPromptConfig {
     return {
-      soul: 'You are a helpful AI assistant in a multi-LLM desktop application.',
+      soul: 'You are a helpful AI assistant in Mingly, a multi-LLM desktop application.',
       skills:
         'You can help with code, writing, analysis, and general conversation. Use intelligent routing to select the best AI provider for each task.',
       personality:

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Conversation, Message } from '../../shared/types'
+import type { Conversation, Message, MessageAttachment } from '../../shared/types'
 import { generateId } from '../utils/id-generator'
 import type { UploadPermissionRequest } from '../../main/security/upload-permission-manager'
 import type { RiskLevel } from '../../main/security/sensitive-data-detector'
@@ -33,7 +33,7 @@ interface ChatState {
     model: string
   ) => Promise<void>
   selectConversation: (id: string) => Promise<void>
-  sendMessage: (content: string) => Promise<void>
+  sendMessage: (content: string, attachments?: MessageAttachment[]) => Promise<void>
   deleteConversation: (id: string) => Promise<void>
   pendingMetadata: any | null
   appendStreamChunk: (chunk: string) => void
@@ -112,8 +112,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  sendMessage: async (content: string) => {
-    console.log('[ChatStore] sendMessage called with:', content)
+  sendMessage: async (content: string, attachments?: MessageAttachment[]) => {
+    console.log('[ChatStore] sendMessage called with:', content, attachments?.length ? `(${attachments.length} attachments)` : '')
     const { currentConversation, messages } = get()
 
     if (!currentConversation) {
@@ -133,7 +133,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       id: generateId(),
       role: 'user',
       content,
-      tokensUsed: 0
+      tokensUsed: 0,
+      ...(attachments?.length ? { attachments } : {})
     }
 
     set({

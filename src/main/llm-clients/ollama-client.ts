@@ -30,10 +30,17 @@ export class OllamaClient implements LLMClient {
     temperature: number = 1.0
   ): AsyncGenerator<StreamChunk> {
     try {
-      // Convert messages to Ollama format
+      // Convert messages to Ollama format (with vision support for llava/bakllava)
       const ollamaMessages = messages.map((msg) => ({
         role: msg.role === 'system' ? 'system' : msg.role === 'user' ? 'user' : 'assistant',
-        content: msg.content
+        content: msg.content,
+        ...(msg.attachments?.length
+          ? {
+              images: msg.attachments
+                .filter((att) => att.type === 'image')
+                .map((att) => att.data)
+            }
+          : {})
       }))
 
       const response = await fetch(`${this.baseURL}/api/chat`, {
@@ -106,7 +113,14 @@ export class OllamaClient implements LLMClient {
   ): Promise<string> {
     const ollamaMessages = messages.map((msg) => ({
       role: msg.role === 'system' ? 'system' : msg.role === 'user' ? 'user' : 'assistant',
-      content: msg.content
+      content: msg.content,
+      ...(msg.attachments?.length
+        ? {
+            images: msg.attachments
+              .filter((att) => att.type === 'image')
+              .map((att) => att.data)
+          }
+        : {})
     }))
 
     const response = await fetch(`${this.baseURL}/api/chat`, {

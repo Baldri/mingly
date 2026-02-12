@@ -117,7 +117,7 @@ describe('Constants', () => {
 
   it('should define keychain and DB config', () => {
     expect(KEYCHAIN_SERVICE).toBe('mingly')
-    expect(DB_NAME).toBe('multi-llm-app.db')
+    expect(DB_NAME).toBe('mingly.db')
     expect(DB_VERSION).toBe(1)
   })
 })

@@ -96,7 +96,7 @@ async function main() {
   console.log('')
   console.log('  ╔══════════════════════════════════════╗')
   console.log('  ║         Mingly Server v' + VERSION.padEnd(14) + '║')
-  console.log('  ║   Multi-LLM API Server (Headless)    ║')
+  console.log('  ║   Mingly API Server (Headless)        ║')
   console.log('  ╚══════════════════════════════════════╝')
   console.log('')
   console.log(`  Port:      ${config.port}`)

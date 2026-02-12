@@ -59,5 +59,5 @@ export const LOCAL_LLM_ENDPOINTS = {
 export const KEYCHAIN_SERVICE = 'mingly'
 
 // Database Configuration
-export const DB_NAME = 'multi-llm-app.db'
+export const DB_NAME = 'mingly.db'
 export const DB_VERSION = 1

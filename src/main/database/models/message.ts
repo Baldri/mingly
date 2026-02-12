@@ -1,13 +1,15 @@
 import { dbRun, dbAll, dbGet } from '../index'
 import { generateId } from '../../utils/id-generator'
-import type { Message } from '../../../shared/types'
+import { AttachmentModel } from './attachment'
+import type { Message, MessageAttachment } from '../../../shared/types'
 
 export class MessageModel {
   static create(
     conversationId: string,
     role: 'user' | 'assistant',
     content: string,
-    tokens?: number
+    tokens?: number,
+    attachments?: MessageAttachment[]
   ): Message {
     const id = generateId()
     const now = Date.now()
@@ -18,7 +20,11 @@ export class MessageModel {
       [id, conversationId, role, content, tokens ?? null, now]
     )
 
-    return { id, conversationId, role, content, tokens, createdAt: now }
+    if (attachments && attachments.length > 0) {
+      AttachmentModel.createMany(id, attachments)
+    }
+
+    return { id, conversationId, role, content, tokens, createdAt: now, attachments }
   }
 
   static findByConversation(conversationId: string): Message[] {
@@ -28,14 +34,22 @@ export class MessageModel {
       [conversationId]
     )
 
-    return rows.map((row) => ({
-      id: row.id as string,
-      conversationId: row.conversation_id as string,
-      role: row.role as 'user' | 'assistant',
-      content: row.content as string,
-      tokens: row.tokens as number | undefined,
-      createdAt: row.created_at as number
-    }))
+    const messageIds = rows.map((row) => row.id as string)
+    const attachmentsMap = AttachmentModel.findByMessages(messageIds)
+
+    return rows.map((row) => {
+      const id = row.id as string
+      const attachments = attachmentsMap.get(id)
+      return {
+        id,
+        conversationId: row.conversation_id as string,
+        role: row.role as 'user' | 'assistant',
+        content: row.content as string,
+        tokens: row.tokens as number | undefined,
+        createdAt: row.created_at as number,
+        ...(attachments && attachments.length > 0 ? { attachments } : {})
+      }
+    })
   }
 
   static deleteByConversation(conversationId: string): void {

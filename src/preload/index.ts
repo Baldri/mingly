@@ -99,6 +99,12 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.UPDATE_SETTINGS, settings)
   },
 
+  // Image / Vision
+  image: {
+    select: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.IMAGE_SELECT)
+  },
+
   // File Operations
   file: {
     select: () =>
@@ -110,7 +116,7 @@ const api = {
 
   // Export
   export: {
-    conversation: (conversationId: string, format: 'json' | 'markdown') =>
+    conversation: (conversationId: string, format: 'json' | 'markdown' | 'html') =>
       ipcRenderer.invoke(IPC_CHANNELS.EXPORT_CONVERSATION, conversationId, format),
 
     gdprData: () =>
@@ -381,6 +387,36 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.ORCHESTRATOR_GET_PROPOSALS)
   },
 
+  // Prompt Templates
+  templates: {
+    create: (data: any) =>
+      ipcRenderer.invoke(IPC_CHANNELS.TEMPLATE_CREATE, data),
+    list: (category?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.TEMPLATE_LIST, category),
+    get: (id: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.TEMPLATE_GET, id),
+    update: (id: string, data: any) =>
+      ipcRenderer.invoke(IPC_CHANNELS.TEMPLATE_UPDATE, id, data),
+    delete: (id: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.TEMPLATE_DELETE, id),
+    toggleFavorite: (id: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.TEMPLATE_TOGGLE_FAVORITE, id),
+    export: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.TEMPLATE_EXPORT),
+    import: (jsonString: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.TEMPLATE_IMPORT, jsonString)
+  },
+
+  // Model Comparison
+  comparison: {
+    start: (prompt: string, models: any[]) =>
+      ipcRenderer.invoke(IPC_CHANNELS.COMPARISON_START, prompt, models),
+    getHistory: (limit?: number) =>
+      ipcRenderer.invoke(IPC_CHANNELS.COMPARISON_GET_HISTORY, limit),
+    markWinner: (sessionId: string, resultId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.COMPARISON_MARK_WINNER, sessionId, resultId)
+  },
+
   // RBAC (Enterprise Access Control)
   rbac: {
     getState: () =>
@@ -435,6 +471,32 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.RBAC_GET_SSO_CONFIG),
     updateSSOConfig: (provider: string, ssoConfig: any, enforce: boolean) =>
       ipcRenderer.invoke(IPC_CHANNELS.RBAC_UPDATE_SSO_CONFIG, provider, ssoConfig, enforce)
+  },
+
+  // Feature Gating / Subscription
+  featureGate: {
+    check: (feature: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.FEATURE_GATE_CHECK, feature),
+    getTier: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.FEATURE_GATE_GET_TIER),
+    setTier: (tier: string, licenseKey?: string, expiresAt?: number, maxUsers?: number) =>
+      ipcRenderer.invoke(IPC_CHANNELS.FEATURE_GATE_SET_TIER, tier, licenseKey, expiresAt, maxUsers),
+    getLimits: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.FEATURE_GATE_GET_LIMITS),
+    getAllFeatures: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.FEATURE_GATE_GET_ALL_FEATURES)
+  },
+
+  // License Activation
+  license: {
+    activate: (key: string, email?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.LICENSE_ACTIVATE, key, email),
+    deactivate: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.LICENSE_DEACTIVATE),
+    getInfo: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.LICENSE_GET_INFO),
+    getCheckoutUrl: (tier: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.LICENSE_GET_CHECKOUT_URL, tier)
   }
 }
 

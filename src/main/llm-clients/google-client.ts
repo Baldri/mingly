@@ -55,12 +55,32 @@ export class GoogleClient {
         throw new Error('Messages array cannot be empty')
       }
 
+      // Convert messages to Gemini format with vision support
       const history = messages.slice(0, -1).map((msg) => ({
         role: msg.role === 'user' ? 'user' : 'model',
-        parts: [{ text: msg.content }]
+        parts: msg.attachments?.length
+          ? [
+              { text: msg.content },
+              ...msg.attachments
+                .filter((att) => att.type === 'image')
+                .map((att) => ({
+                  inlineData: { mimeType: att.mimeType, data: att.data }
+                }))
+            ]
+          : [{ text: msg.content }]
       }))
 
-      const currentMessage = messages[messages.length - 1].content
+      const lastMsg = messages[messages.length - 1]
+      const currentParts = lastMsg.attachments?.length
+        ? [
+            { text: lastMsg.content },
+            ...lastMsg.attachments
+              .filter((att) => att.type === 'image')
+              .map((att) => ({
+                inlineData: { mimeType: att.mimeType, data: att.data }
+              }))
+          ]
+        : lastMsg.content
 
       // Start chat with history
       const chat = genModel.startChat({
@@ -68,7 +88,7 @@ export class GoogleClient {
       })
 
       // Stream the response
-      const result = await chat.sendMessageStream(currentMessage)
+      const result = await chat.sendMessageStream(currentParts)
 
       // Process stream chunks
       for await (const chunk of result.stream) {
@@ -108,19 +128,38 @@ export class GoogleClient {
         }
       })
 
-      // Convert messages to Gemini format
+      // Convert messages to Gemini format with vision support
       const history = messages.slice(0, -1).map((msg) => ({
         role: msg.role === 'user' ? 'user' : 'model',
-        parts: [{ text: msg.content }]
+        parts: msg.attachments?.length
+          ? [
+              { text: msg.content },
+              ...msg.attachments
+                .filter((att) => att.type === 'image')
+                .map((att) => ({
+                  inlineData: { mimeType: att.mimeType, data: att.data }
+                }))
+            ]
+          : [{ text: msg.content }]
       }))
 
-      const currentMessage = messages[messages.length - 1].content
+      const lastMsg = messages[messages.length - 1]
+      const currentParts = lastMsg.attachments?.length
+        ? [
+            { text: lastMsg.content },
+            ...lastMsg.attachments
+              .filter((att) => att.type === 'image')
+              .map((att) => ({
+                inlineData: { mimeType: att.mimeType, data: att.data }
+              }))
+          ]
+        : lastMsg.content
 
       const chat = genModel.startChat({
         history
       })
 
-      const result = await chat.sendMessage(currentMessage)
+      const result = await chat.sendMessage(currentParts)
       const response = await result.response
       return response.text()
     } catch (error) {

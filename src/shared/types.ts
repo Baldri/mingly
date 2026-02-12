@@ -25,12 +25,29 @@ export interface LLMConfig {
   systemPrompt?: string
 }
 
+// Attachment Types (Multimodal)
+export interface ImageAttachment {
+  id: string
+  type: 'image'
+  mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'
+  /** Base64-encoded image data (no data: prefix) */
+  data: string
+  filename?: string
+  width?: number
+  height?: number
+  /** Size in bytes of the original file */
+  originalSize?: number
+}
+
+export type MessageAttachment = ImageAttachment
+
 // Message Types
 export interface Message {
   id: string
   conversationId?: string
   role: 'user' | 'assistant' | 'system'
   content: string
+  attachments?: MessageAttachment[]
   provider?: LLMProvider
   model?: LLMModel | string
   createdAt?: number
@@ -130,6 +147,109 @@ export interface AppSettings {
   wizardCompleted?: boolean
   /** UI language: German or English */
   language?: 'de' | 'en'
+}
+
+// Prompt Template Types
+export type TemplateCategory = 'code' | 'creative' | 'analysis' | 'translation' | 'business' | 'education' | 'custom'
+
+export interface TemplateVariable {
+  name: string
+  label: string
+  defaultValue?: string
+  required: boolean
+}
+
+export interface PromptTemplate {
+  id: string
+  name: string
+  description?: string
+  systemPrompt: string
+  category: TemplateCategory
+  variables?: TemplateVariable[]
+  isFavorite: boolean
+  isBuiltin: boolean
+  usageCount: number
+  createdAt: number
+  updatedAt: number
+}
+
+// Subscription Tier & Feature Gating
+export type SubscriptionTier = 'free' | 'pro' | 'team' | 'enterprise'
+
+export interface SubscriptionInfo {
+  tier: SubscriptionTier
+  activatedAt: number
+  expiresAt?: number
+  /** License key or activation token */
+  licenseKey?: string
+  /** Max users (Team/Enterprise only) */
+  maxUsers?: number
+}
+
+/**
+ * Feature IDs that can be gated by subscription tier.
+ * Maps directly to Phase 1 features and existing capabilities.
+ */
+export type GatedFeature =
+  | 'cloud_apis'            // Pro+: Anthropic, OpenAI, Google cloud models
+  | 'multimodal'            // Pro+: Image upload / vision
+  | 'export'                // Pro+: Conversation export
+  | 'auto_update'           // Pro+: Auto-updater
+  | 'agents'                // Pro+: Orchestrator / delegation
+  | 'templates_custom'      // Pro+: Custom templates (Free gets built-in only)
+  | 'comparison'            // Pro+: Side-by-side model comparison
+  | 'unlimited_conversations' // Pro+: Unlimited conversations per day
+  | 'team_workspaces'       // Team+: Team workspaces
+  | 'shared_rag'            // Team+: Shared RAG knowledge base
+  | 'team_rbac'             // Team+: Team RBAC
+  | 'usage_tracking'        // Team+: Usage tracking dashboard
+  | 'audit_logs'            // Team+: Audit logs
+  | 'sso_oauth'             // Team+: SSO (OAuth)
+  | 'sso_saml_ldap'         // Enterprise: SSO (SAML/LDAP)
+  | 'on_premise'            // Enterprise: On-premise deployment
+  | 'compliance_dashboard'  // Enterprise: Compliance dashboard
+  | 'priority_sla'          // Enterprise: Priority SLA
+  | 'custom_integrations'   // Enterprise: Custom integrations
+
+export interface FeatureGateResult {
+  allowed: boolean
+  reason?: string
+  requiredTier?: SubscriptionTier
+  /** Number of uses remaining (for limited features like free conversations) */
+  remaining?: number
+}
+
+export interface TierLimits {
+  maxConversationsPerDay: number   // 0 = unlimited
+  maxTemplates: number             // 0 = unlimited
+  builtinTemplatesOnly: boolean
+  maxComparisonModels: number      // 0 = disabled
+}
+
+// Comparison Types
+export interface ComparisonModelConfig {
+  provider: string
+  model: string
+}
+
+export interface ComparisonSession {
+  id: string
+  prompt: string
+  models: ComparisonModelConfig[]
+  createdAt: number
+}
+
+export interface ComparisonResult {
+  id: string
+  sessionId: string
+  provider: string
+  model: string
+  response: string
+  tokens?: number
+  cost?: number
+  latencyMs: number
+  isWinner: boolean
+  createdAt: number
 }
 
 // IPC Channel Names
@@ -315,5 +435,37 @@ export const IPC_CHANNELS = {
   // DSGVO/DSG Compliance
   GDPR_DELETE_USER_DATA: 'gdpr:delete-user-data',
   GDPR_EXPORT_USER_DATA: 'gdpr:export-user-data',
-  GDPR_ENFORCE_RETENTION: 'gdpr:enforce-retention'
+  GDPR_ENFORCE_RETENTION: 'gdpr:enforce-retention',
+
+  // Image Upload (Multimodal)
+  IMAGE_SELECT: 'image:select',
+  IMAGE_PROCESS: 'image:process',
+
+  // Prompt Templates
+  TEMPLATE_CREATE: 'template:create',
+  TEMPLATE_LIST: 'template:list',
+  TEMPLATE_GET: 'template:get',
+  TEMPLATE_UPDATE: 'template:update',
+  TEMPLATE_DELETE: 'template:delete',
+  TEMPLATE_TOGGLE_FAVORITE: 'template:toggle-favorite',
+  TEMPLATE_IMPORT: 'template:import',
+  TEMPLATE_EXPORT: 'template:export',
+
+  // Model Comparison
+  COMPARISON_START: 'comparison:start',
+  COMPARISON_GET_HISTORY: 'comparison:get-history',
+  COMPARISON_MARK_WINNER: 'comparison:mark-winner',
+
+  // Feature Gating / Subscription
+  FEATURE_GATE_CHECK: 'feature-gate:check',
+  FEATURE_GATE_GET_TIER: 'feature-gate:get-tier',
+  FEATURE_GATE_SET_TIER: 'feature-gate:set-tier',
+  FEATURE_GATE_GET_LIMITS: 'feature-gate:get-limits',
+  FEATURE_GATE_GET_ALL_FEATURES: 'feature-gate:get-all-features',
+
+  // License Activation
+  LICENSE_ACTIVATE: 'license:activate',
+  LICENSE_DEACTIVATE: 'license:deactivate',
+  LICENSE_GET_INFO: 'license:get-info',
+  LICENSE_GET_CHECKOUT_URL: 'license:get-checkout-url'
 } as const

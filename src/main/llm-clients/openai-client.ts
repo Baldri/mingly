@@ -51,10 +51,22 @@ export class OpenAIClient {
     }
 
     try {
-      // Convert app messages to OpenAI format
+      // Convert app messages to OpenAI format (with vision support)
       const openaiMessages = messages.map((msg) => ({
         role: msg.role,
-        content: msg.content
+        content: msg.attachments?.length
+          ? [
+              { type: 'text' as const, text: msg.content },
+              ...msg.attachments
+                .filter((att) => att.type === 'image')
+                .map((att) => ({
+                  type: 'image_url' as const,
+                  image_url: {
+                    url: `data:${att.mimeType};base64,${att.data}`
+                  }
+                }))
+            ]
+          : msg.content
       }))
 
       // Stream the response
@@ -101,7 +113,19 @@ export class OpenAIClient {
     try {
       const openaiMessages = messages.map((msg) => ({
         role: msg.role,
-        content: msg.content
+        content: msg.attachments?.length
+          ? [
+              { type: 'text' as const, text: msg.content },
+              ...msg.attachments
+                .filter((att) => att.type === 'image')
+                .map((att) => ({
+                  type: 'image_url' as const,
+                  image_url: {
+                    url: `data:${att.mimeType};base64,${att.data}`
+                  }
+                }))
+            ]
+          : msg.content
       }))
 
       const response = await this.client.chat.completions.create({

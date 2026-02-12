@@ -40,7 +40,7 @@ extraMetadata:
 
 publish:
   provider: github
-  owner: mingly-app
+  owner: Baldri
   repo: mingly
 
 nsis:

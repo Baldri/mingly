@@ -234,8 +234,23 @@ function runMigrations(database: SqlJsDatabase): void {
     setSchemaVersion(database, 2)
   }
 
-  // Future migrations:
-  // if (version < 3) { migration3(database); setSchemaVersion(database, 3) }
+  if (version < 3) {
+    log.info('Running migration 3: Create message_attachments table')
+    migration3(database)
+    setSchemaVersion(database, 3)
+  }
+
+  if (version < 4) {
+    log.info('Running migration 4: Create prompt_templates table')
+    migration4(database)
+    setSchemaVersion(database, 4)
+  }
+
+  if (version < 5) {
+    log.info('Running migration 5: Create comparison tables')
+    migration5(database)
+    setSchemaVersion(database, 5)
+  }
 }
 
 function migration1(database: SqlJsDatabase): void {
@@ -322,4 +337,94 @@ function migration2(database: SqlJsDatabase): void {
   `)
 
   log.info('Migration 2 completed: tracking_events table created')
+}
+
+function migration3(database: SqlJsDatabase): void {
+  // Image and file attachments for multimodal messages
+  database.run(`
+    CREATE TABLE IF NOT EXISTS message_attachments (
+      id TEXT PRIMARY KEY,
+      message_id TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'image',
+      mime_type TEXT NOT NULL,
+      data TEXT NOT NULL,
+      filename TEXT,
+      width INTEGER,
+      height INTEGER,
+      original_size INTEGER,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+    )
+  `)
+
+  database.run(`
+    CREATE INDEX IF NOT EXISTS idx_attachments_message
+    ON message_attachments(message_id)
+  `)
+
+  log.info('Migration 3 completed: message_attachments table created')
+}
+
+function migration4(database: SqlJsDatabase): void {
+  database.run(`
+    CREATE TABLE IF NOT EXISTS prompt_templates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      system_prompt TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'custom',
+      variables TEXT,
+      is_favorite INTEGER NOT NULL DEFAULT 0,
+      is_builtin INTEGER NOT NULL DEFAULT 0,
+      usage_count INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+
+  database.run(`
+    CREATE INDEX IF NOT EXISTS idx_templates_category
+    ON prompt_templates(category)
+  `)
+
+  database.run(`
+    CREATE INDEX IF NOT EXISTS idx_templates_favorite
+    ON prompt_templates(is_favorite)
+  `)
+
+  log.info('Migration 4 completed: prompt_templates table created')
+}
+
+function migration5(database: SqlJsDatabase): void {
+  database.run(`
+    CREATE TABLE IF NOT EXISTS comparison_sessions (
+      id TEXT PRIMARY KEY,
+      prompt TEXT NOT NULL,
+      models TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `)
+
+  database.run(`
+    CREATE TABLE IF NOT EXISTS comparison_results (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      response TEXT NOT NULL,
+      tokens INTEGER,
+      cost REAL,
+      latency_ms INTEGER,
+      is_winner INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES comparison_sessions(id) ON DELETE CASCADE
+    )
+  `)
+
+  database.run(`
+    CREATE INDEX IF NOT EXISTS idx_comparison_results_session
+    ON comparison_results(session_id)
+  `)
+
+  log.info('Migration 5 completed: comparison tables created')
 }

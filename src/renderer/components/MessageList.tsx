@@ -106,6 +106,23 @@ const MessageBubble = memo(function MessageBubble({ message, isStreaming }: Mess
             : 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100'
         }`}
       >
+        {/* Attachment images */}
+        {message.attachments && message.attachments.length > 0 && (
+          <div className="flex gap-2 flex-wrap mb-2">
+            {message.attachments
+              .filter((att) => att.type === 'image')
+              .map((att) => (
+                <img
+                  key={att.id}
+                  src={`data:${att.mimeType};base64,${att.data}`}
+                  alt={att.filename || 'image'}
+                  className="max-w-[200px] max-h-[200px] rounded-md object-contain cursor-pointer hover:opacity-90 transition-opacity"
+                  title={att.filename}
+                />
+              ))}
+          </div>
+        )}
+
         <div className="prose prose-sm dark:prose-invert max-w-none">
           {isUser ? (
             <p className="whitespace-pre-wrap m-0">{message.content}</p>
