@@ -154,7 +154,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-latest, windows-latest, ubuntu-latest]
     permissions:
       contents: write
     steps:
@@ -165,6 +165,12 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
 
       - name: Install dependencies
         run: npm ci
