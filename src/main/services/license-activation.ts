@@ -101,7 +101,7 @@ export class LicenseActivationService {
     }
     return {
       license: null,
-      checkoutBaseUrl: 'https://mingly.lemonsqueezy.com'
+      checkoutBaseUrl: 'https://mingly-ch.lemonsqueezy.com'
     }
   }
 
