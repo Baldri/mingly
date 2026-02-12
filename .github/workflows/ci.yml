@@ -182,18 +182,10 @@ jobs:
         run: npx electron-builder --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Disable auto code signing discovery (enable when secrets are configured)
+          # Code signing is disabled until certificates are configured.
+          # To enable: add CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID,
+          # APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID secrets in GitHub.
           CSC_IDENTITY_AUTO_DISCOVERY: false
-          # macOS code signing (set these secrets in GitHub repo settings)
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          # macOS notarization
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Windows code signing
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
 
       - name: Generate checksums (macOS/Linux)
         if: runner.os != 'Windows'
