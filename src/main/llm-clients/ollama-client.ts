@@ -3,12 +3,10 @@ import type { LLMClient } from './client-manager'
 import type { StreamChunk } from './anthropic-client'
 
 export class OllamaClient implements LLMClient {
-  private apiKey = '' // Not used for Ollama
   private baseURL = 'http://localhost:11434'
 
-  setApiKey(apiKey: string): void {
+  setApiKey(_apiKey: string): void {
     // Ollama doesn't need API key, but keep interface compatible
-    this.apiKey = apiKey
   }
 
   async validateApiKey(): Promise<boolean> {

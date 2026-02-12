@@ -15,8 +15,8 @@
  * 6. Results are composed back into the conversation
  */
 
-import { getClientManager, LLMClient } from '../llm-clients/client-manager'
-import { getRouter, RequestCategory } from './intelligent-router'
+import { getClientManager } from '../llm-clients/client-manager'
+import { getRouter, type RequestCategory } from './intelligent-router'
 import { generateId } from '../utils/id-generator'
 import type { Message } from '../../shared/types'
 
@@ -119,12 +119,11 @@ export class HybridOrchestrator {
   async analyzeForDelegation(
     userMessage: string,
     currentProvider: string,
-    currentModel: string
+    _currentModel: string
   ): Promise<DelegationProposal | null> {
     if (!this.config.enabled) return null
 
     const clientManager = getClientManager()
-    const router = getRouter()
 
     // Get available cloud providers
     const availableProviders = clientManager.getProvidersWithApiKeys()
@@ -368,7 +367,7 @@ export class HybridOrchestrator {
 
   // ── Helpers ───────────────────────────────────────────────────
 
-  private buildAnalysis(subTasks: SubTask[], currentProvider: string): string {
+  private buildAnalysis(subTasks: SubTask[], _currentProvider: string): string {
     if (subTasks.length === 1) {
       const st = subTasks[0]
       return `This ${st.category} task would benefit from ${st.suggestedProvider}/${st.suggestedModel} ` +

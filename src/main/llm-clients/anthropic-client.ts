@@ -9,14 +9,13 @@ export interface StreamChunk {
 export class AnthropicClient {
   private client: Anthropic | null = null
 
-  constructor(private apiKey: string) {
+  constructor(apiKey: string) {
     if (apiKey) {
       this.client = new Anthropic({ apiKey })
     }
   }
 
   setApiKey(apiKey: string): void {
-    this.apiKey = apiKey
     this.client = new Anthropic({ apiKey })
   }
 

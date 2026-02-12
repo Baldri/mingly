@@ -5,14 +5,13 @@ import type { StreamChunk } from './anthropic-client'
 export class GoogleClient {
   private client: GoogleGenerativeAI | null = null
 
-  constructor(private apiKey: string) {
+  constructor(apiKey: string) {
     if (apiKey) {
       this.client = new GoogleGenerativeAI(apiKey)
     }
   }
 
   setApiKey(apiKey: string): void {
-    this.apiKey = apiKey
     this.client = new GoogleGenerativeAI(apiKey)
   }
 

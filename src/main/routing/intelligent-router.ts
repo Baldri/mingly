@@ -187,20 +187,15 @@ Respond with ONLY the category name (code/creative/analysis/conversation) and no
     const analysisScore = analysisKeywords.filter((kw) => message.includes(kw)).length
 
     let category: RequestCategory = 'conversation' // default
-    let confidence = 0.5
-
     if (codeScore > 0 || creativeScore > 0 || analysisScore > 0) {
       const maxScore = Math.max(codeScore, creativeScore, analysisScore)
 
       if (codeScore === maxScore) {
         category = 'code'
-        confidence = 0.7
       } else if (creativeScore === maxScore) {
         category = 'creative'
-        confidence = 0.7
       } else if (analysisScore === maxScore) {
         category = 'analysis'
-        confidence = 0.7
       }
     }
 
