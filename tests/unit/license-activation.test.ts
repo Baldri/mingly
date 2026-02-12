@@ -320,7 +320,7 @@ describe('LicenseActivationService', () => {
       const urlEnterprise = service.getCheckoutUrl('enterprise')
 
       // All tiers share one Lemonsqueezy checkout (customer picks variant)
-      expect(urlPro).toContain('lemonsqueezy.com')
+      expect(urlPro).toContain('mingly-ch.lemonsqueezy.com')
       expect(urlPro).toContain('d1cc0e68-cc65-4a89-9bc4-680ea6983db5')
       expect(urlPro).toBe(urlTeam)
       expect(urlTeam).toBe(urlEnterprise)
