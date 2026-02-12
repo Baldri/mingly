@@ -47,3 +47,9 @@ Desktop.ini
 # Testing
 coverage/
 .nyc_output/
+
+# Internal / confidential docs (never publish)
+docs/internal/
+docs/STRATEGY.md
+docs/MINGLY_PROJECT_PLAN.md
+docs/MINGLY_CRITICAL_REVIEW.md
