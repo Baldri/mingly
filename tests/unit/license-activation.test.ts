@@ -57,35 +57,53 @@ describe('LicenseActivationService', () => {
       mockFetch.mockRejectedValue(new Error('network'))
       const result = await service.activate('')
       expect(result.valid).toBe(false)
-      expect(result.error).toContain('format')
+      expect(result.error).toContain('short')
     })
 
-    it('should reject key without MINGLY prefix', async () => {
+    it('should reject very short key', async () => {
       mockFetch.mockRejectedValue(new Error('network'))
-      const result = await service.activate('NOTMINGLY-PRO-ABCD1234-5678')
+      const result = await service.activate('ABC')
       expect(result.valid).toBe(false)
-      expect(result.error).toContain('prefix')
+      expect(result.error).toContain('short')
     })
 
-    it('should reject key with unknown tier', async () => {
+    it('should reject MINGLY-format key with unknown tier', async () => {
       mockFetch.mockRejectedValue(new Error('network'))
       const result = await service.activate('MINGLY-PLATINUM-ABCD1234-5678')
       expect(result.valid).toBe(false)
       expect(result.error).toContain('tier')
     })
 
-    it('should reject key with too-short segment', async () => {
+    it('should reject MINGLY-format key with too-short segment', async () => {
       mockFetch.mockRejectedValue(new Error('network'))
       const result = await service.activate('MINGLY-PRO-AB-56')
       expect(result.valid).toBe(false)
       expect(result.error).toContain('short')
     })
 
-    it('should reject key with too few parts', async () => {
+    it('should accept Lemonsqueezy UUID-style keys for online validation', async () => {
+      // Lemonsqueezy keys like "38b1460a-5104-4067-a91d-77b872934d51"
+      // are accepted for format validation but need online check
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          activated: true,
+          valid: true,
+          license_key: {},
+          meta: { product_name: 'Mingly Pro' }
+        })
+      })
+      const result = await service.activate('38b1460a-5104-4067-a91d-77b872934d51')
+      expect(result.valid).toBe(true)
+      expect(result.tier).toBe('pro')
+      expect(result.mode).toBe('online')
+    })
+
+    it('should reject Lemonsqueezy key when offline (no MINGLY prefix)', async () => {
       mockFetch.mockRejectedValue(new Error('network'))
-      const result = await service.activate('MINGLY-PRO')
+      const result = await service.activate('38b1460a-5104-4067-a91d-77b872934d51')
       expect(result.valid).toBe(false)
-      expect(result.error).toContain('format')
+      expect(result.error).toContain('internet')
     })
   })
 
@@ -156,13 +174,57 @@ describe('LicenseActivationService', () => {
     it('should activate when Lemonsqueezy returns valid', async () => {
       mockFetch.mockResolvedValue({
         ok: true,
-        json: async () => ({ activated: true, valid: true, license_key: {} })
+        json: async () => ({ activated: true, valid: true, license_key: {}, meta: { product_name: 'Mingly Pro' } })
       })
 
       const result = await service.activate('MINGLY-PRO-ABCDEF1234-5678')
       expect(result.valid).toBe(true)
       expect(result.mode).toBe('online')
       expect(result.tier).toBe('pro')
+    })
+
+    it('should extract tier from Lemonsqueezy product_name', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          activated: true,
+          valid: true,
+          license_key: {},
+          meta: { product_name: 'Mingly Team' }
+        })
+      })
+
+      // Even though the key says PRO, the API says Team → Team wins
+      const result = await service.activate('MINGLY-PRO-ABCDEF1234-5678')
+      expect(result.valid).toBe(true)
+      expect(result.tier).toBe('team')
+    })
+
+    it('should extract tier from Lemonsqueezy variant_name', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          activated: true,
+          valid: true,
+          license_key: {},
+          meta: { product_name: 'Mingly License', variant_name: 'Enterprise Annual' }
+        })
+      })
+
+      const result = await service.activate('MINGLY-PRO-ABCDEF1234-5678')
+      expect(result.valid).toBe(true)
+      expect(result.tier).toBe('enterprise')
+    })
+
+    it('should fall back to key-based tier if API has no product name', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ activated: true, valid: true, license_key: {} })
+      })
+
+      const result = await service.activate('MINGLY-TEAM-ABCDEF1234-5678')
+      expect(result.valid).toBe(true)
+      expect(result.tier).toBe('team')
     })
 
     it('should reject when Lemonsqueezy returns 422', async () => {
@@ -197,7 +259,8 @@ describe('LicenseActivationService', () => {
         json: async () => ({
           activated: true,
           valid: true,
-          license_key: { expires_at: expiresDate }
+          license_key: { expires_at: expiresDate },
+          meta: { product_name: 'Mingly Pro' }
         })
       })
 

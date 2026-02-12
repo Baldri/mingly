@@ -67,6 +67,17 @@ const CHECKOUT_PATHS: Record<Exclude<SubscriptionTier, 'free'>, string> = {
   enterprise: '/checkout/buy/mingly-enterprise'
 }
 
+/**
+ * Lemonsqueezy product name → tier mapping.
+ * The API returns `meta.product_name` in the activation response.
+ * We match case-insensitively against these keywords.
+ */
+const PRODUCT_NAME_TO_TIER: Array<{ pattern: RegExp; tier: SubscriptionTier }> = [
+  { pattern: /enterprise/i, tier: 'enterprise' },
+  { pattern: /team/i, tier: 'team' },
+  { pattern: /pro/i, tier: 'pro' }
+]
+
 // ---------------------------------------------------------------------------
 // LicenseActivationService
 // ---------------------------------------------------------------------------
@@ -139,7 +150,7 @@ export class LicenseActivationService {
       return { valid: false, error: formatCheck.error, mode: 'offline' }
     }
 
-    // Try online validation first
+    // Try online validation first (works for both Mingly and Lemonsqueezy keys)
     const onlineResult = await this.validateOnline(normalizedKey)
     if (onlineResult !== null) {
       if (onlineResult.valid) {
@@ -148,7 +159,15 @@ export class LicenseActivationService {
       return onlineResult
     }
 
-    // Offline fallback
+    // Offline fallback — only works for MINGLY-{TIER}-... format keys
+    if (!formatCheck.isMinglyFormat) {
+      return {
+        valid: false,
+        error: 'Could not validate license key. Please check your internet connection and try again.',
+        mode: 'offline'
+      }
+    }
+
     const offlineResult = this.validateOffline(normalizedKey)
     if (offlineResult.valid) {
       this.applyLicense(normalizedKey, offlineResult.tier!, email, offlineResult.expiresAt, offlineResult.maxUsers, false)
@@ -167,23 +186,34 @@ export class LicenseActivationService {
 
   // ---- format validation ----------------------------------------------------
 
-  private validateFormat(key: string): { valid: boolean; error?: string } {
-    // Expected: MINGLY-{TIER}-{8+ chars}-{4 chars}
+  /**
+   * Validate key format. Accepts two formats:
+   *   1. Mingly format: MINGLY-{TIER}-{6+ chars}-{4+ chars}  (offline / manual)
+   *   2. Lemonsqueezy format: any non-empty string ≥8 chars   (online validation)
+   *
+   * Lemonsqueezy generates keys like "38b1460a-5104-4067-a91d-77b872934d51"
+   * or custom formats — we accept anything ≥8 chars and let the API decide.
+   */
+  private validateFormat(key: string): { valid: boolean; error?: string; isMinglyFormat: boolean } {
+    if (key.length < 8) {
+      return { valid: false, error: 'License key too short', isMinglyFormat: false }
+    }
+
+    // Check if it's our own MINGLY-TIER-... format
     const parts = key.split('-')
-    if (parts.length < 4) {
-      return { valid: false, error: 'Invalid key format. Expected: MINGLY-TIER-XXXXXX-XXXX' }
+    if (parts[0] === 'MINGLY' && parts.length >= 4) {
+      const tierPart = parts[1].toLowerCase()
+      if (!['pro', 'team', 'enterprise'].includes(tierPart)) {
+        return { valid: false, error: `Unknown tier: ${parts[1]}`, isMinglyFormat: true }
+      }
+      if (parts[2].length < 6) {
+        return { valid: false, error: 'Key segment too short', isMinglyFormat: true }
+      }
+      return { valid: true, isMinglyFormat: true }
     }
-    if (parts[0] !== 'MINGLY') {
-      return { valid: false, error: 'Invalid key prefix' }
-    }
-    const tierPart = parts[1].toLowerCase()
-    if (!['pro', 'team', 'enterprise'].includes(tierPart)) {
-      return { valid: false, error: `Unknown tier: ${parts[1]}` }
-    }
-    if (parts[2].length < 6) {
-      return { valid: false, error: 'Key segment too short' }
-    }
-    return { valid: true }
+
+    // Anything else → assume Lemonsqueezy key, validate online
+    return { valid: true, isMinglyFormat: false }
   }
 
   // ---- online validation (Lemonsqueezy) -------------------------------------
@@ -217,7 +247,8 @@ export class LicenseActivationService {
         return { valid: false, error: data.error || 'Activation failed', mode: 'online' }
       }
 
-      const tier = this.extractTierFromKey(key)
+      // Extract tier: prefer API product name, fall back to key format
+      const tier = this.extractTierFromResponse(data) || this.extractTierFromKey(key)
       return {
         valid: true,
         tier,
@@ -250,6 +281,24 @@ export class LicenseActivationService {
 
   // ---- helpers --------------------------------------------------------------
 
+  /**
+   * Extract tier from Lemonsqueezy API activation response.
+   * Checks `meta.product_name` and `meta.variant_name` for tier keywords.
+   */
+  private extractTierFromResponse(data: any): SubscriptionTier | null {
+    const productName = data?.meta?.product_name || ''
+    const variantName = data?.meta?.variant_name || ''
+    const combined = `${productName} ${variantName}`
+
+    for (const { pattern, tier } of PRODUCT_NAME_TO_TIER) {
+      if (pattern.test(combined)) return tier
+    }
+    return null
+  }
+
+  /**
+   * Extract tier from MINGLY-{TIER}-... key format (offline fallback).
+   */
   private extractTierFromKey(key: string): SubscriptionTier {
     const parts = key.split('-')
     const tierPart = (parts[1] || '').toLowerCase()
