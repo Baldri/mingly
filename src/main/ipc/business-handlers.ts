@@ -106,16 +106,19 @@ export function registerBusinessHandlers(): void {
   wrapHandler(IPC_CHANNELS.ORCHESTRATOR_GET_PROPOSALS, () => { requireFeature('agents'); return { success: true, proposals: orchestrator.getPendingProposals() } })
 
   // ========================================
-  // Auto-Updater — Pro+ tier
+  // Auto-Updater
+  // Status & check: all tiers (Free gets notification only)
+  // Download & install: Pro+ tier
   // ========================================
 
+  // Pass current tier to updater so it adjusts auto-download behavior
+  updater.setTier(featureGateManager.getTier())
+
   wrapHandler(IPC_CHANNELS.UPDATER_GET_STATUS, () => {
-    requireFeature('auto_update')
     return { success: true, ...updater.getStatus() }
   })
 
   wrapHandler(IPC_CHANNELS.UPDATER_CHECK, async () => {
-    requireFeature('auto_update')
     const status = await updater.checkForUpdates()
     return { success: true, ...status }
   })
@@ -129,6 +132,11 @@ export function registerBusinessHandlers(): void {
   wrapHandler(IPC_CHANNELS.UPDATER_INSTALL, () => {
     requireFeature('auto_update')
     updater.installUpdate()
+    return { success: true }
+  })
+
+  wrapHandler(IPC_CHANNELS.UPDATER_OPEN_RELEASE_PAGE, () => {
+    updater.openReleasePage()
     return { success: true }
   })
 }

@@ -4,20 +4,34 @@
  * Handles checking for and applying app updates via electron-updater.
  * In dev mode, gracefully falls back to simulated no-op behavior.
  *
- * Production flow:
+ * Platform support:
+ * - macOS:   Updates via .zip (electron-updater extracts and replaces)
+ * - Windows: Updates via NSIS installer (silent background install)
+ * - Linux:   Updates via AppImage (replaces the running AppImage)
+ *
+ * All updates are fetched from GitHub Releases (Baldri/mingly).
+ *
+ * Tier behavior:
+ * - Pro+: Auto-download and install on quit
+ * - Free: Check only, notify user, redirect to GitHub Releases for manual download
+ *
+ * Production flow (Pro+):
  * 1. Check for updates on app start + every 4 hours
  * 2. Download update in background (autoDownload)
  * 3. Notify renderer via IPC ('updater:status')
  * 4. Install on next quit (autoInstallOnAppQuit)
  */
 
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, shell } from 'electron'
 import { EventEmitter } from 'events'
+import type { SubscriptionTier } from '../../shared/types'
 
 export interface UpdateInfo {
   version: string
   releaseDate?: string
   releaseNotes?: string
+  /** Direct download URL for manual update (Free tier) */
+  downloadUrl?: string
 }
 
 export interface UpdateStatus {
@@ -28,7 +42,13 @@ export interface UpdateStatus {
   error: string | null
   info: UpdateInfo | null
   progress: number | null  // 0-100
+  /** Whether auto-update is available (Pro+) or manual only (Free) */
+  autoUpdateEnabled: boolean
 }
+
+const GITHUB_RELEASES = 'https://github.com/Baldri/mingly/releases'
+const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000 // 4 hours
+const INITIAL_CHECK_DELAY_MS = 10_000 // 10 seconds
 
 export class AutoUpdater extends EventEmitter {
   private status: UpdateStatus = {
@@ -38,34 +58,76 @@ export class AutoUpdater extends EventEmitter {
     downloaded: false,
     error: null,
     info: null,
-    progress: null
+    progress: null,
+    autoUpdateEnabled: false
   }
 
   private mainWindow: BrowserWindow | null = null
   private updater: any = null
   private checkInterval: ReturnType<typeof setInterval> | null = null
+  private tier: SubscriptionTier = 'free'
 
   setWindow(window: BrowserWindow): void {
     this.mainWindow = window
   }
 
   /**
+   * Set the current subscription tier.
+   * Pro+: full auto-download & install.
+   * Free: check-only, notify user.
+   */
+  setTier(tier: SubscriptionTier): void {
+    this.tier = tier
+    const autoEnabled = tier !== 'free'
+
+    this.status.autoUpdateEnabled = autoEnabled
+
+    if (this.updater) {
+      this.updater.autoDownload = autoEnabled
+      this.updater.autoInstallOnAppQuit = autoEnabled
+    }
+  }
+
+  /**
    * Initialize the auto-updater.
-   * Attempts to load electron-updater (production only).
+   * Loads electron-updater in production, simulates in dev.
    */
   initialize(): void {
     if (!app.isPackaged) {
-      console.log('Auto-updater: dev mode — using simulated checks')
+      console.log('[updater] dev mode — using simulated checks')
       return
     }
 
     try {
+      // electron-updater must be required at runtime (not available in dev)
       const { autoUpdater } = require('electron-updater')
       this.updater = autoUpdater
 
-      this.updater.autoDownload = true
-      this.updater.autoInstallOnAppQuit = true
+      // Configure for GitHub releases
+      this.updater.setFeedURL({
+        provider: 'github',
+        owner: 'Baldri',
+        repo: 'mingly'
+      })
 
+      // Tier-based behavior (default to check-only until tier is set)
+      const autoEnabled = this.tier !== 'free'
+      this.updater.autoDownload = autoEnabled
+      this.updater.autoInstallOnAppQuit = autoEnabled
+      this.status.autoUpdateEnabled = autoEnabled
+
+      // Allow pre-release versions when the user is on a pre-release channel
+      this.updater.allowPrerelease = false
+
+      // Logging
+      this.updater.logger = {
+        info: (msg: string) => console.log('[updater]', msg),
+        warn: (msg: string) => console.warn('[updater]', msg),
+        error: (msg: string) => console.error('[updater]', msg),
+        debug: (msg: string) => console.log('[updater:debug]', msg)
+      }
+
+      // Event handlers
       this.updater.on('checking-for-update', () => {
         this.status = { ...this.status, checking: true, error: null }
         this.notifyRenderer()
@@ -79,7 +141,8 @@ export class AutoUpdater extends EventEmitter {
           info: {
             version: info.version,
             releaseDate: info.releaseDate,
-            releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : ''
+            releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : '',
+            downloadUrl: `${GITHUB_RELEASES}/tag/v${info.version}`
           }
         }
         this.notifyRenderer()
@@ -108,7 +171,8 @@ export class AutoUpdater extends EventEmitter {
           info: {
             version: info.version,
             releaseDate: info.releaseDate,
-            releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : ''
+            releaseNotes: typeof info.releaseNotes === 'string' ? info.releaseNotes : '',
+            downloadUrl: `${GITHUB_RELEASES}/tag/v${info.version}`
           }
         }
         this.notifyRenderer()
@@ -124,16 +188,17 @@ export class AutoUpdater extends EventEmitter {
         this.notifyRenderer()
       })
 
-      console.log('Auto-updater: initialized with electron-updater')
-    } catch {
-      console.log('Auto-updater: electron-updater not available')
+      const platform = process.platform
+      console.log(`[updater] initialized on ${platform} (tier: ${this.tier})`)
+    } catch (err) {
+      console.warn('[updater] electron-updater not available:', (err as Error).message)
     }
 
-    // Initial check after 10 seconds
-    setTimeout(() => this.checkForUpdates(), 10_000)
+    // Initial check after delay
+    setTimeout(() => this.checkForUpdates(), INITIAL_CHECK_DELAY_MS)
 
-    // Check every 4 hours
-    this.checkInterval = setInterval(() => this.checkForUpdates(), 4 * 60 * 60 * 1000)
+    // Periodic checks
+    this.checkInterval = setInterval(() => this.checkForUpdates(), CHECK_INTERVAL_MS)
   }
 
   getStatus(): UpdateStatus {
@@ -142,11 +207,10 @@ export class AutoUpdater extends EventEmitter {
 
   async checkForUpdates(): Promise<UpdateStatus> {
     if (this.updater) {
-      // Real electron-updater check
       try {
         await this.updater.checkForUpdates()
       } catch (error) {
-        console.warn('Update check failed:', (error as Error).message)
+        console.warn('[updater] check failed:', (error as Error).message)
       }
       return this.getStatus()
     }
@@ -171,8 +235,6 @@ export class AutoUpdater extends EventEmitter {
     }
 
     if (this.updater) {
-      // electron-updater handles download automatically when autoDownload=true
-      // This method is for manual trigger if autoDownload is disabled
       try {
         await this.updater.downloadUpdate()
       } catch (error) {
@@ -191,8 +253,16 @@ export class AutoUpdater extends EventEmitter {
     if (this.updater) {
       this.updater.quitAndInstall()
     } else {
-      console.log('Auto-updater: would quit and install (dev mode)')
+      console.log('[updater] would quit and install (dev mode)')
     }
+  }
+
+  /**
+   * Open the GitHub Releases page for manual download (Free tier).
+   */
+  openReleasePage(): void {
+    const url = this.status.info?.downloadUrl || GITHUB_RELEASES
+    shell.openExternal(url)
   }
 
   shutdown(): void {

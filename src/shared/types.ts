@@ -408,6 +408,7 @@ export const IPC_CHANNELS = {
   UPDATER_DOWNLOAD: 'updater:download',
   UPDATER_INSTALL: 'updater:install',
   UPDATER_GET_STATUS: 'updater:get-status',
+  UPDATER_OPEN_RELEASE_PAGE: 'updater:open-release-page',
 
   // Deployment / Server + Client
   DEPLOYMENT_GET_CONFIG: 'deployment:get-config',

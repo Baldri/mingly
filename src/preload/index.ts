@@ -539,6 +539,8 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.UPDATER_DOWNLOAD),
     install: () =>
       ipcRenderer.invoke(IPC_CHANNELS.UPDATER_INSTALL),
+    openReleasePage: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.UPDATER_OPEN_RELEASE_PAGE),
     onStatus: (callback: (status: any) => void) => {
       const listener = (_event: any, status: any) => callback(status)
       ipcRenderer.on('updater:status', listener)
