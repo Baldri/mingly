@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, memo } from 'react'
 import type { NetworkAIServerConfig } from '../../shared/network-ai-types'
+import { ConfirmDialog } from './ConfirmDialog'
 
 // Pure lookup functions — defined outside component to avoid re-creation on each render
 const SERVER_TYPE_LABELS: Record<string, string> = {
@@ -33,6 +34,8 @@ export const NetworkAIServersTab = memo(function NetworkAIServersTab() {
   const [loading, setLoading] = useState(true)
   const [discovering, setDiscovering] = useState(false)
   const [testingServer, setTestingServer] = useState<string | null>(null)
+  const [testResult, setTestResult] = useState<{ serverId: string; success: boolean; message: string } | null>(null)
+  const [pendingRemoveId, setPendingRemoveId] = useState<string | null>(null)
 
   // Add server form state
   const [showAddForm, setShowAddForm] = useState(false)
@@ -82,23 +85,24 @@ export const NetworkAIServersTab = memo(function NetworkAIServersTab() {
     }
   }
 
-  const handleTestConnection = async (serverId: string) => {
+  const handleTestConnection = useCallback(async (serverId: string) => {
     try {
       setTestingServer(serverId)
+      setTestResult(null)
       const result = await window.electronAPI.networkAI.testConnection(serverId)
 
       if (result.success) {
-        alert(`✅ Connection successful!\nResponse time: ${result.responseTime}ms`)
+        setTestResult({ serverId, success: true, message: `Connection successful! Response time: ${result.responseTime}ms` })
       } else {
-        alert(`❌ Connection failed:\n${result.error}`)
+        setTestResult({ serverId, success: false, message: `Connection failed: ${result.error}` })
       }
     } catch (error) {
       console.error('Failed to test connection:', error)
-      alert(`❌ Connection failed:\n${error}`)
+      setTestResult({ serverId, success: false, message: `Connection failed: ${error}` })
     } finally {
       setTestingServer(null)
     }
-  }
+  }, [])
 
   const handleAddServer = async () => {
     try {
@@ -134,18 +138,23 @@ export const NetworkAIServersTab = memo(function NetworkAIServersTab() {
     }
   }
 
-  const handleRemoveServer = async (serverId: string) => {
-    if (!confirm('Are you sure you want to remove this server?')) return
+  const handleRemoveServer = useCallback((serverId: string) => {
+    setPendingRemoveId(serverId)
+  }, [])
 
+  const confirmRemove = useCallback(async () => {
+    if (!pendingRemoveId) return
     try {
-      const result = await window.electronAPI.networkAI.removeServer(serverId)
+      const result = await window.electronAPI.networkAI.removeServer(pendingRemoveId)
       if (result.success) {
-        setServers(servers.filter((s) => s.id !== serverId))
+        setServers(prev => prev.filter((s) => s.id !== pendingRemoveId))
       }
     } catch (error) {
       console.error('Failed to remove server:', error)
+    } finally {
+      setPendingRemoveId(null)
     }
-  }
+  }, [pendingRemoveId])
 
   if (loading) {
     return (
@@ -395,6 +404,19 @@ export const NetworkAIServersTab = memo(function NetworkAIServersTab() {
                     </svg>
                   </button>
                 </div>
+                {testResult && testResult.serverId === server.id && (
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className={`mt-2 rounded-md px-3 py-1.5 text-xs ${
+                      testResult.success
+                        ? 'bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400'
+                        : 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-400'
+                    }`}
+                  >
+                    {testResult.message}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -428,6 +450,17 @@ export const NetworkAIServersTab = memo(function NetworkAIServersTab() {
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        isOpen={!!pendingRemoveId}
+        title="Remove Server"
+        message="Are you sure you want to remove this server? You can re-add it later."
+        confirmLabel="Remove"
+        cancelLabel="Cancel"
+        variant="danger"
+        onConfirm={confirmRemove}
+        onCancel={() => setPendingRemoveId(null)}
+      />
     </div>
   )
 })

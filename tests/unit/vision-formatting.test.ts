@@ -186,6 +186,57 @@ describe('Vision Formatting', () => {
     })
   })
 
+  describe('Generic OpenAI-compatible format', () => {
+    // Same format as OpenAI (image_url with data URLs) — used by LM Studio, LocalAI, vLLM, etc.
+    function formatGenericOpenAIMessage(msg: Message) {
+      return {
+        role: msg.role,
+        content: msg.attachments?.length
+          ? [
+              { type: 'text' as const, text: msg.content },
+              ...msg.attachments
+                .filter((att) => att.type === 'image')
+                .map((att) => ({
+                  type: 'image_url' as const,
+                  image_url: {
+                    url: `data:${att.mimeType};base64,${att.data}`
+                  }
+                }))
+            ]
+          : msg.content
+      }
+    }
+
+    it('should format text-only message as string', () => {
+      const result = formatGenericOpenAIMessage(createTextOnlyMessage())
+      expect(typeof result.content).toBe('string')
+      expect(result.content).toBe('Hello!')
+    })
+
+    it('should format image as data URL (same as OpenAI)', () => {
+      const result = formatGenericOpenAIMessage(createMessageWithImage())
+      const blocks = result.content as any[]
+      expect(blocks).toHaveLength(2)
+      expect(blocks[0].type).toBe('text')
+      expect(blocks[0].text).toBe('What is in this image?')
+      expect(blocks[1].type).toBe('image_url')
+      expect(blocks[1].image_url.url).toBe('data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==')
+    })
+
+    it('should handle multiple images', () => {
+      const msg = createMessageWithImage()
+      msg.attachments = [
+        ...msg.attachments!,
+        { id: 'att-2', type: 'image', mimeType: 'image/jpeg', data: 'abc123', filename: 'photo.jpg' } as ImageAttachment
+      ]
+      const result = formatGenericOpenAIMessage(msg)
+      const blocks = result.content as any[]
+      expect(blocks).toHaveLength(3) // 1 text + 2 images
+      expect(blocks[1].image_url.url).toContain('image/png')
+      expect(blocks[2].image_url.url).toContain('image/jpeg')
+    })
+  })
+
   describe('backward compatibility', () => {
     it('messages without attachments field should format as text', () => {
       const msg: Message = {

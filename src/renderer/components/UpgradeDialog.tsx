@@ -12,7 +12,12 @@ const TIER_DETAILS: Record<SubscriptionTier, {
   price: string
   priceYearly?: string
   features: string[]
-  color: string
+  colorClass: string
+  borderClass: string
+  bgActiveClass: string
+  badgeBgClass: string
+  checkColorClass: string
+  btnClass: string
 }> = {
   free: {
     name: 'Free',
@@ -23,7 +28,12 @@ const TIER_DETAILS: Record<SubscriptionTier, {
       '3 Konversationen / Tag',
       'Basis-RAG (lokal)'
     ],
-    color: '#6b7280'
+    colorClass: 'text-gray-500',
+    borderClass: 'border-gray-500',
+    bgActiveClass: 'bg-gray-500/10',
+    badgeBgClass: 'bg-gray-500',
+    checkColorClass: 'text-gray-500',
+    btnClass: ''
   },
   pro: {
     name: 'Pro',
@@ -40,7 +50,12 @@ const TIER_DETAILS: Record<SubscriptionTier, {
       'Unbegrenzte Konversationen',
       'Auto-Update'
     ],
-    color: '#2563eb'
+    colorClass: 'text-blue-600',
+    borderClass: 'border-blue-600',
+    bgActiveClass: 'bg-blue-600/10',
+    badgeBgClass: 'bg-blue-600',
+    checkColorClass: 'text-blue-600',
+    btnClass: 'bg-blue-600 hover:bg-blue-700 text-white'
   },
   team: {
     name: 'Team',
@@ -56,7 +71,12 @@ const TIER_DETAILS: Record<SubscriptionTier, {
       'SSO (OAuth)',
       'Min. 5 User'
     ],
-    color: '#7c3aed'
+    colorClass: 'text-purple-600',
+    borderClass: 'border-purple-600',
+    bgActiveClass: 'bg-purple-600/10',
+    badgeBgClass: 'bg-purple-600',
+    checkColorClass: 'text-purple-600',
+    btnClass: 'bg-purple-600 hover:bg-purple-700 text-white'
   },
   enterprise: {
     name: 'Enterprise',
@@ -70,7 +90,12 @@ const TIER_DETAILS: Record<SubscriptionTier, {
       'Custom Integrations',
       'Dedizierter Support'
     ],
-    color: '#b45309'
+    colorClass: 'text-amber-700',
+    borderClass: 'border-amber-700',
+    bgActiveClass: 'bg-amber-700/10',
+    badgeBgClass: 'bg-amber-700',
+    checkColorClass: 'text-amber-700',
+    btnClass: 'border border-amber-700 text-amber-700 bg-transparent hover:bg-amber-700/10'
   }
 }
 
@@ -126,80 +151,65 @@ const UpgradeDialog: React.FC = () => {
   const tiers: SubscriptionTier[] = ['free', 'pro', 'team', 'enterprise']
 
   return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 1000,
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      backgroundColor: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)'
-    }}>
-      <div style={{
-        background: 'var(--bg-primary, #1a1a2e)', borderRadius: 16,
-        padding: 32, maxWidth: 900, width: '95vw', maxHeight: '90vh', overflowY: 'auto',
-        border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 25px 50px rgba(0,0,0,0.4)'
-      }}>
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="bg-[#1a1a2e] rounded-2xl p-8 max-w-[900px] w-[95vw] max-h-[90vh] overflow-y-auto border border-white/10 shadow-2xl">
         {/* Header */}
-        <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <h2 style={{ fontSize: 24, fontWeight: 700, color: '#fff', margin: 0 }}>
+        <div className="text-center mb-6">
+          <h2 className="text-2xl font-bold text-white m-0">
             Upgrade dein Mingly
           </h2>
           {featureLabel && (
-            <p style={{ color: '#94a3b8', marginTop: 8, fontSize: 14 }}>
-              <strong style={{ color: '#f59e0b' }}>{featureLabel}</strong> ist ab dem Pro-Plan verfuegbar.
+            <p className="text-slate-400 mt-2 text-sm">
+              <strong className="text-amber-500">{featureLabel}</strong> ist ab dem Pro-Plan verfuegbar.
             </p>
           )}
         </div>
 
         {/* Tier cards */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+        <div className="grid grid-cols-4 gap-4">
           {tiers.map(tier => {
             const info = TIER_DETAILS[tier]
             const isCurrent = tier === currentTier
             const isHighlighted = tier === 'pro'
 
             return (
-              <div key={tier} style={{
-                border: `2px solid ${isCurrent ? info.color : isHighlighted ? '#2563eb' : 'rgba(255,255,255,0.1)'}`,
-                borderRadius: 12, padding: 20,
-                background: isCurrent ? `${info.color}15` : 'rgba(255,255,255,0.03)',
-                position: 'relative'
-              }}>
+              <div
+                key={tier}
+                className={`rounded-xl p-5 relative border-2 ${
+                  isCurrent
+                    ? `${info.borderClass} ${info.bgActiveClass}`
+                    : isHighlighted
+                      ? 'border-blue-600 bg-white/[0.03]'
+                      : 'border-white/10 bg-white/[0.03]'
+                }`}
+              >
                 {isCurrent && (
-                  <div style={{
-                    position: 'absolute', top: -10, left: '50%', transform: 'translateX(-50%)',
-                    background: info.color, color: '#fff', fontSize: 11, fontWeight: 600,
-                    padding: '2px 10px', borderRadius: 10
-                  }}>
+                  <div className={`absolute -top-2.5 left-1/2 -translate-x-1/2 ${info.badgeBgClass} text-white text-[11px] font-semibold px-2.5 py-0.5 rounded-full`}>
                     Aktuell
                   </div>
                 )}
                 {isHighlighted && !isCurrent && (
-                  <div style={{
-                    position: 'absolute', top: -10, left: '50%', transform: 'translateX(-50%)',
-                    background: '#2563eb', color: '#fff', fontSize: 11, fontWeight: 600,
-                    padding: '2px 10px', borderRadius: 10
-                  }}>
+                  <div className="absolute -top-2.5 left-1/2 -translate-x-1/2 bg-blue-600 text-white text-[11px] font-semibold px-2.5 py-0.5 rounded-full">
                     Empfohlen
                   </div>
                 )}
 
-                <h3 style={{ color: info.color, fontSize: 18, fontWeight: 700, margin: '0 0 4px' }}>
+                <h3 className={`${info.colorClass} text-lg font-bold mb-1`}>
                   {info.name}
                 </h3>
-                <div style={{ color: '#fff', fontSize: 20, fontWeight: 700, margin: '0 0 4px' }}>
+                <div className="text-white text-xl font-bold mb-1">
                   {info.price}
                 </div>
                 {info.priceYearly && (
-                  <div style={{ color: '#64748b', fontSize: 12, marginBottom: 12 }}>
+                  <div className="text-slate-500 text-xs mb-3">
                     oder {info.priceYearly}
                   </div>
                 )}
 
-                <ul style={{ listStyle: 'none', padding: 0, margin: '12px 0' }}>
+                <ul className="list-none p-0 my-3 space-y-1">
                   {info.features.map((f, i) => (
-                    <li key={i} style={{
-                      color: '#cbd5e1', fontSize: 12, padding: '3px 0',
-                      display: 'flex', alignItems: 'flex-start', gap: 6
-                    }}>
-                      <span style={{ color: info.color, flexShrink: 0 }}>&#10003;</span>
+                    <li key={i} className="text-slate-300 text-xs py-0.5 flex items-start gap-1.5">
+                      <span className={`${info.checkColorClass} shrink-0`}>&#10003;</span>
                       {f}
                     </li>
                   ))}
@@ -208,13 +218,7 @@ const UpgradeDialog: React.FC = () => {
                 {tier !== 'free' && tier !== currentTier && (
                   <button
                     onClick={() => handleUpgrade(tier as Exclude<SubscriptionTier, 'free'>)}
-                    style={{
-                      width: '100%', padding: '8px 0', borderRadius: 8, border: 'none',
-                      background: tier === 'enterprise' ? 'transparent' : info.color,
-                      color: tier === 'enterprise' ? info.color : '#fff',
-                      fontWeight: 600, fontSize: 13, cursor: 'pointer',
-                      ...(tier === 'enterprise' ? { border: `1px solid ${info.color}` } : {})
-                    }}
+                    className={`w-full py-2 rounded-lg border-none font-semibold text-[13px] cursor-pointer transition-colors ${info.btnClass}`}
                   >
                     {tier === 'enterprise' ? 'Kontaktieren' : 'Upgraden'}
                   </button>
@@ -225,27 +229,16 @@ const UpgradeDialog: React.FC = () => {
         </div>
 
         {/* Footer */}
-        <div style={{
-          display: 'flex', justifyContent: 'center', gap: 16, marginTop: 24,
-          paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.1)'
-        }}>
+        <div className="flex justify-center gap-4 mt-6 pt-4 border-t border-white/10">
           <button
             onClick={handleEnterKey}
-            style={{
-              padding: '8px 20px', borderRadius: 8, border: '1px solid #2563eb',
-              background: 'transparent', color: '#2563eb', fontWeight: 600,
-              fontSize: 13, cursor: 'pointer'
-            }}
+            className="px-5 py-2 rounded-lg border border-blue-600 bg-transparent text-blue-600 font-semibold text-[13px] cursor-pointer hover:bg-blue-600/10 transition-colors"
           >
             Lizenzschluessel eingeben
           </button>
           <button
             onClick={closeUpgradeDialog}
-            style={{
-              padding: '8px 20px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.2)',
-              background: 'transparent', color: '#94a3b8', fontWeight: 500,
-              fontSize: 13, cursor: 'pointer'
-            }}
+            className="px-5 py-2 rounded-lg border border-white/20 bg-transparent text-slate-400 font-medium text-[13px] cursor-pointer hover:bg-white/5 transition-colors"
           >
             Schliessen
           </button>

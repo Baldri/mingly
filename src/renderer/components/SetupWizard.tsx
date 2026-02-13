@@ -1,4 +1,4 @@
-import { useState, useCallback, memo } from 'react'
+import { useState, useCallback } from 'react'
 import { Globe, Key, Server, Database, CheckCircle, Monitor, Wifi, ChevronRight } from 'lucide-react'
 import { useTranslation } from '../utils/i18n'
 import { useSettingsStore } from '../stores/settings-store'

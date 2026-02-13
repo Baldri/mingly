@@ -136,11 +136,14 @@ export function CustomProviderModal({ isOpen, onClose, onAddProvider }: Props) {
     }
   }
 
+  const [validationError, setValidationError] = useState<string | null>(null)
+
   const handleAddCustom = () => {
     if (!customId || !customName || !customApiBase) {
-      alert('Please fill in all required fields')
+      setValidationError('Please fill in all required fields (Provider ID, Display Name, API Base URL)')
       return
     }
+    setValidationError(null)
 
     onAddProvider({
       id: customId,
@@ -341,6 +344,16 @@ export function CustomProviderModal({ isOpen, onClose, onAddProvider }: Props) {
               </div>
             )}
           </div>
+
+          {/* Validation Error */}
+          {validationError && (
+            <div
+              role="alert"
+              className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300"
+            >
+              {validationError}
+            </div>
+          )}
 
           {/* Actions */}
           <div className="flex gap-2 justify-end pt-4 border-t border-gray-300 dark:border-gray-700">

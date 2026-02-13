@@ -1,6 +1,7 @@
-import React, { useEffect, useCallback, memo } from 'react'
+import React, { useState, useEffect, useCallback, memo } from 'react'
 import { Plus, MessageSquare, Trash2 } from 'lucide-react'
 import { useChatStore } from '../stores/chat-store'
+import { ConfirmDialog } from './ConfirmDialog'
 
 export const ConversationSidebar = memo(function ConversationSidebar() {
   const conversations = useChatStore((state) => state.conversations)
@@ -9,16 +10,23 @@ export const ConversationSidebar = memo(function ConversationSidebar() {
   const selectConversation = useChatStore((state) => state.selectConversation)
   const deleteConversation = useChatStore((state) => state.deleteConversation)
 
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+
   useEffect(() => {
     loadConversations()
   }, [loadConversations])
 
-  const handleDelete = useCallback(async (id: string, e: React.MouseEvent) => {
+  const handleDelete = useCallback((id: string, e: React.MouseEvent | React.KeyboardEvent) => {
     e.stopPropagation()
-    if (confirm('Delete this conversation?')) {
-      await deleteConversation(id)
+    setPendingDeleteId(id)
+  }, [])
+
+  const confirmDelete = useCallback(async () => {
+    if (pendingDeleteId) {
+      await deleteConversation(pendingDeleteId)
+      setPendingDeleteId(null)
     }
-  }, [deleteConversation])
+  }, [pendingDeleteId, deleteConversation])
 
   const handleNewChat = useCallback(() => {
     const event = new CustomEvent('open-new-conversation')
@@ -38,13 +46,13 @@ export const ConversationSidebar = memo(function ConversationSidebar() {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <nav className="flex-1 overflow-y-auto" aria-label="Conversations">
         {conversations.length === 0 ? (
           <div className="p-4 text-center text-gray-500 dark:text-gray-400 text-sm">
             No conversations yet
           </div>
         ) : (
-          <div className="p-2 space-y-1">
+          <div className="p-2 space-y-1" role="list">
             {conversations.map((conversation) => (
               <ConversationItem
                 key={conversation.id}
@@ -56,7 +64,18 @@ export const ConversationSidebar = memo(function ConversationSidebar() {
             ))}
           </div>
         )}
-      </div>
+      </nav>
+
+      <ConfirmDialog
+        isOpen={!!pendingDeleteId}
+        title="Delete Conversation"
+        message="Are you sure you want to delete this conversation? This action cannot be undone."
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        variant="danger"
+        onConfirm={confirmDelete}
+        onCancel={() => setPendingDeleteId(null)}
+      />
     </div>
   )
 })
@@ -65,7 +84,7 @@ interface ConversationItemProps {
   conversation: { id: string; title: string; provider: string; model: string }
   isActive: boolean
   onSelect: (id: string) => void
-  onDelete: (id: string, e: React.MouseEvent) => void
+  onDelete: (id: string, e: React.MouseEvent | React.KeyboardEvent) => void
 }
 
 const ConversationItem = memo(function ConversationItem({
@@ -78,38 +97,56 @@ const ConversationItem = memo(function ConversationItem({
     onSelect(conversation.id)
   }, [onSelect, conversation.id])
 
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      onSelect(conversation.id)
+    }
+  }, [onSelect, conversation.id])
+
   const handleDeleteClick = useCallback((e: React.MouseEvent) => {
     onDelete(conversation.id, e)
   }, [onDelete, conversation.id])
 
   return (
     <div
-      onClick={handleClick}
-      className={`p-3 rounded-lg cursor-pointer transition-colors group relative ${
-        isActive
-          ? 'bg-blue-100 dark:bg-blue-900'
-          : 'hover:bg-gray-200 dark:hover:bg-gray-800'
-      }`}
+      role="listitem"
     >
-      <div className="flex items-start gap-2">
-        <MessageSquare
-          size={16}
-          className="flex-shrink-0 mt-1 text-gray-600 dark:text-gray-400"
-        />
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium truncate text-gray-900 dark:text-gray-100">
-            {conversation.title}
-          </p>
-          <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-            {conversation.provider} · {conversation.model}
-          </p>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={handleClick}
+        onKeyDown={handleKeyDown}
+        aria-current={isActive ? 'true' : undefined}
+        aria-label={`${conversation.title} — ${conversation.provider}`}
+        className={`p-3 rounded-lg cursor-pointer transition-colors group relative focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+          isActive
+            ? 'bg-blue-100 dark:bg-blue-900'
+            : 'hover:bg-gray-200 dark:hover:bg-gray-800'
+        }`}
+      >
+        <div className="flex items-start gap-2">
+          <MessageSquare
+            size={16}
+            className="flex-shrink-0 mt-1 text-gray-600 dark:text-gray-400"
+            aria-hidden="true"
+          />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium truncate text-gray-900 dark:text-gray-100">
+              {conversation.title}
+            </p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+              {conversation.provider} · {conversation.model}
+            </p>
+          </div>
+          <button
+            onClick={handleDeleteClick}
+            aria-label={`Delete ${conversation.title}`}
+            className="opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity p-1 hover:bg-red-500 hover:text-white rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+          >
+            <Trash2 size={14} />
+          </button>
         </div>
-        <button
-          onClick={handleDeleteClick}
-          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-500 hover:text-white rounded"
-        >
-          <Trash2 size={14} />
-        </button>
       </div>
     </div>
   )

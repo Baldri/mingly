@@ -38,21 +38,27 @@ export const MessageList = memo(function MessageList() {
   }
 
   return (
-    <Virtuoso
-      ref={virtuosoRef}
-      className="flex-1"
-      data={displayMessages}
-      followOutput="smooth"
-      initialTopMostItemIndex={displayMessages.length - 1}
-      itemContent={(_index, message) => (
-        <div className="px-4 py-2">
-          <MessageBubble
-            message={message}
-            isStreaming={message.id === 'streaming'}
-          />
-        </div>
-      )}
-    />
+    <div className="flex-1 flex flex-col min-h-0">
+      {/* Live region for screen readers — announces streaming status */}
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {isStreaming ? 'Assistant is typing a response...' : ''}
+      </div>
+      <Virtuoso
+        ref={virtuosoRef}
+        className="flex-1"
+        data={displayMessages}
+        followOutput="smooth"
+        initialTopMostItemIndex={displayMessages.length - 1}
+        itemContent={(_index, message) => (
+          <div className="px-4 py-2">
+            <MessageBubble
+              message={message}
+              isStreaming={message.id === 'streaming'}
+            />
+          </div>
+        )}
+      />
+    </div>
   )
 })
 

@@ -1,9 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import type { AllowedDirectory, FileAccessPermission } from '../../shared/file-access-types'
+import { ConfirmDialog } from './ConfirmDialog'
 
 export function FileAccessTab() {
   const [directories, setDirectories] = useState<AllowedDirectory[]>([])
   const [loading, setLoading] = useState(true)
+  const [pendingRevokeId, setPendingRevokeId] = useState<string | null>(null)
 
   useEffect(() => {
     loadDirectories()
@@ -34,18 +36,23 @@ export function FileAccessTab() {
     }
   }
 
-  const handleRevokeAccess = async (directoryId: string) => {
-    if (!confirm('Are you sure you want to revoke access to this directory?')) return
+  const handleRevokeAccess = useCallback((directoryId: string) => {
+    setPendingRevokeId(directoryId)
+  }, [])
 
+  const confirmRevoke = useCallback(async () => {
+    if (!pendingRevokeId) return
     try {
-      const result = await window.electronAPI.fileAccess.revokeDirectory(directoryId)
+      const result = await window.electronAPI.fileAccess.revokeDirectory(pendingRevokeId)
       if (result.success) {
-        setDirectories(directories.filter((d) => d.id !== directoryId))
+        setDirectories(prev => prev.filter((d) => d.id !== pendingRevokeId))
       }
     } catch (error) {
       console.error('Failed to revoke directory access:', error)
+    } finally {
+      setPendingRevokeId(null)
     }
-  }
+  }, [pendingRevokeId])
 
   const getPermissionLabel = (permissions: FileAccessPermission[]): string => {
     if (permissions.includes('read-create')) return 'Read + Create'
@@ -206,6 +213,17 @@ export function FileAccessTab() {
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        isOpen={!!pendingRevokeId}
+        title="Revoke Directory Access"
+        message="Are you sure you want to revoke access to this directory? Mingly will no longer be able to read or create files in it."
+        confirmLabel="Revoke"
+        cancelLabel="Cancel"
+        variant="danger"
+        onConfirm={confirmRevoke}
+        onCancel={() => setPendingRevokeId(null)}
+      />
 
       {/* Security Info */}
       <div className="rounded-lg border border-green-200 bg-green-50 p-4 dark:border-green-900 dark:bg-green-900/20">

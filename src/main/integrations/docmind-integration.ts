@@ -54,8 +54,8 @@ export interface DocMindConfig {
 
 const DEFAULT_CONFIG: DocMindConfig = {
   enabled: true,
-  projectPath: '/Users/holgervonellerts/projects/rag-wissen',
-  pythonPath: 'python3',
+  projectPath: process.env.DOCMIND_PROJECT_PATH || '',
+  pythonPath: process.env.DOCMIND_PYTHON_PATH || 'python3',
 
   mcp: {
     enabled: true,

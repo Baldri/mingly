@@ -52,7 +52,19 @@ export class GenericOpenAIClient implements LLMClient {
     try {
       const openaiMessages = messages.map((msg) => ({
         role: msg.role,
-        content: msg.content
+        content: msg.attachments?.length
+          ? [
+              { type: 'text' as const, text: msg.content },
+              ...msg.attachments
+                .filter((att) => att.type === 'image')
+                .map((att) => ({
+                  type: 'image_url' as const,
+                  image_url: {
+                    url: `data:${att.mimeType};base64,${att.data}`
+                  }
+                }))
+            ]
+          : msg.content
       }))
 
       const response = await fetch(`${this.baseURL}/chat/completions`, {
@@ -126,7 +138,19 @@ export class GenericOpenAIClient implements LLMClient {
   ): Promise<string> {
     const openaiMessages = messages.map((msg) => ({
       role: msg.role,
-      content: msg.content
+      content: msg.attachments?.length
+        ? [
+            { type: 'text' as const, text: msg.content },
+            ...msg.attachments
+              .filter((att) => att.type === 'image')
+              .map((att) => ({
+                type: 'image_url' as const,
+                image_url: {
+                  url: `data:${att.mimeType};base64,${att.data}`
+                }
+              }))
+          ]
+        : msg.content
     }))
 
     const response = await fetch(`${this.baseURL}/chat/completions`, {
