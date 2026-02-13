@@ -13,12 +13,13 @@ Mingly gives you unified access to Claude, ChatGPT, Gemini, and local LLMs in a 
 - **Multi-Provider** — Claude, GPT-4, Gemini, Ollama (local) in one interface
 - **Intelligent Routing** — AI-powered request classification routes to the best model
 - **Hybrid Orchestration** — Local LLM detects cloud needs, delegates with your approval
-- **Knowledge Base** — Index your local documents for context-aware AI responses (RAG)
+- **Knowledge Base** — Index your local documents for context-aware AI responses (RAG + RAG-Wissen)
+- **MCP Tools** — Extend functionality with Model Context Protocol tools + auto-tool-selection
 - **Server Mode** — Share AI access across your network via REST + WebSocket API
-- **Enterprise Ready** — RBAC, audit logging, budget controls, GDPR compliance
+- **Enterprise Ready** — RBAC, audit logging, budget controls, GDPR/DSG compliance
 - **Activity Tracking** — Token/cost analytics per provider, daily summaries, budget alerts
-- **Secure** — API keys in OS keychain, input sanitization, rate limiting, sensitive data detection
-- **MCP Integration** — Extend functionality with Model Context Protocol tools
+- **Secure** — AES-256-GCM encrypted API keys, input sanitization, CSP, rate limiting, sensitive data detection
+- **DocMind Integration** — MCPO + RAG context injection for document intelligence
 - **Integrations** — Slack, Notion, Obsidian + custom workflows
 
 ## Pricing
@@ -76,6 +77,18 @@ The API server starts on port 3939. See [Server Documentation](docs/en/CONFIGURA
 | Deutsch  | [Installation](docs/de/INSTALLATION.md) | [Konfiguration](docs/de/KONFIGURATION.md) | [Nutzung](docs/de/NUTZUNG.md) | [FAQ](docs/de/FAQ.md) |
 
 Full documentation available on the [Wiki](https://github.com/Baldri/mingly/wiki).
+
+## Security
+
+Security is a core design principle. See [SECURITY.md](SECURITY.md) for details on:
+
+- Encrypted API key storage (AES-256-GCM)
+- MCP command injection prevention (whitelist + sanitizer)
+- Content Security Policy (environment-aware)
+- Navigation and window.open protection
+- RBAC with audit logging
+
+Report vulnerabilities to security@mingly.ch or via [GitHub Security Advisories](https://github.com/Baldri/mingly/security/advisories).
 
 ## Contributing
 

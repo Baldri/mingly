@@ -15,7 +15,7 @@ Thank you for your interest in contributing to Mingly! This guide covers everyth
 ### Getting Started
 
 ```bash
-git clone https://github.com/mingly-app/mingly.git
+git clone https://github.com/Baldri/mingly.git
 cd mingly
 npm install
 npm run dev
@@ -27,20 +27,28 @@ This starts both the Vite dev server (renderer) and Electron (main process).
 
 ```
 src/
-  main/          # Electron main process (Node.js)
-    database/    # sql.js database layer
-    llm-clients/ # Provider SDKs (Anthropic, OpenAI, Google, Ollama)
-    server/      # REST + WebSocket API server
-    services/    # ServiceLayer (transport-agnostic business logic)
-    security/    # Input sanitization, rate limiting, RBAC
-    mcp/         # Model Context Protocol integration
-    rag/         # RAG (Retrieval-Augmented Generation)
-  renderer/      # React frontend (browser context)
-    components/  # UI components
-    stores/      # Zustand state management
-    utils/       # Utilities (i18n, etc.)
-  server/        # Headless server entry point
-  shared/        # Types, constants shared between main/renderer
+  main/              # Electron main process (Node.js)
+    database/        # sql.js database layer
+    llm-clients/     # Provider SDKs (Anthropic, OpenAI, Google, Ollama, Generic OpenAI)
+    server/          # REST + WebSocket API server
+    services/        # ServiceLayer (transport-agnostic business logic)
+    security/        # Input sanitization, rate limiting, RBAC, sensitive data detection
+    mcp/             # Model Context Protocol integration + auto-tool-selector
+    rag/             # RAG (Retrieval-Augmented Generation) + RAG-Wissen client
+    ipc/             # Modular IPC handler modules
+    integrations/    # Slack, Notion, Obsidian, DocMind
+    tracking/        # Usage analytics + budget management
+    network/         # Network AI server bridge
+    utils/           # MCP sanitizer, encrypted store, simple store
+  renderer/          # React frontend (browser context)
+    components/      # UI components
+    stores/          # Zustand state management
+    utils/           # Utilities (i18n, id-generator, etc.)
+  server/            # Headless server entry point
+  shared/            # Types, constants shared between main/renderer
+tests/
+  unit/              # Unit tests (Vitest)
+  e2e/               # Integration / E2E tests
 ```
 
 ### Available Scripts
@@ -108,7 +116,7 @@ npm run test:watch
 
 ## Reporting Issues
 
-Use [GitHub Issues](https://github.com/mingly-app/mingly/issues) to report bugs or request features. Include:
+Use [GitHub Issues](https://github.com/Baldri/mingly/issues) to report bugs or request features. Include:
 
 - Steps to reproduce
 - Expected vs actual behavior
