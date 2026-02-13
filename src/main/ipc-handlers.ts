@@ -14,6 +14,7 @@ import { getMCPToolSelector } from './mcp/mcp-tool-selector'
 import { getBudgetManager } from './tracking/budget-manager'
 import { getTrackingEngine } from './tracking/tracking-engine'
 import { getInputSanitizer } from './security/input-sanitizer'
+import { getFeatureGateManager } from './services/feature-gate-manager'
 import type { UploadPermissionRequest } from './security/upload-permission-manager'
 import crypto from 'crypto'
 
@@ -73,6 +74,15 @@ export async function registerIPCHandlers(): Promise<void> {
     async (event, conversationId: string, messages: Message[], provider_: string, model: string, temperature: number = 1.0) => {
       let provider = provider_
       try {
+        // Gate cloud APIs for Free tier (only local/ollama allowed)
+        if (provider !== 'local') {
+          const gate = getFeatureGateManager()
+          const result = gate.checkFeature('cloud_apis')
+          if (!result.allowed) {
+            throw new Error(`Feature 'cloud_apis' requires ${result.requiredTier} plan. Please upgrade.`)
+          }
+        }
+
         const userMessage = messages[messages.length - 1].content
 
         // 0a. Prompt Injection Defense: Scan user input for injection patterns

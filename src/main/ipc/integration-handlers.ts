@@ -5,36 +5,36 @@
 import { IPC_CHANNELS } from '../../shared/types'
 import { getIntegrationManager } from '../integrations/integration-manager'
 import { getDocMindIntegration } from '../integrations/docmind-integration'
-import { wrapHandler, requirePermission } from './ipc-utils'
+import { wrapHandler, requirePermission, requireFeature } from './ipc-utils'
 
 export function registerIntegrationHandlers(): void {
   const integrationManager = getIntegrationManager()
   const docMind = getDocMindIntegration()
 
   // ========================================
-  // Integrations (Slack, Notion, Obsidian)
+  // Integrations (Slack, Notion, Obsidian) — Enterprise tier
   // ========================================
 
-  wrapHandler(IPC_CHANNELS.INTEGRATION_GET_STATUS, () => ({ success: true, status: integrationManager.getStatus() }))
+  wrapHandler(IPC_CHANNELS.INTEGRATION_GET_STATUS, () => { requireFeature('custom_integrations'); return { success: true, status: integrationManager.getStatus() } })
 
   // Slack
-  wrapHandler(IPC_CHANNELS.INTEGRATION_SLACK_CONFIGURE, (webhookUrl: string, teamName?: string, botToken?: string) => { requirePermission('integrations.manage'); return integrationManager.configureSlack(webhookUrl, teamName, botToken) })
-  wrapHandler(IPC_CHANNELS.INTEGRATION_SLACK_SHARE, async (params: any) => { requirePermission('integrations.manage'); return integrationManager.shareToSlack(params) })
-  wrapHandler(IPC_CHANNELS.INTEGRATION_SLACK_DISCONNECT, () => { requirePermission('integrations.manage'); return integrationManager.disconnectSlack() })
-  wrapHandler(IPC_CHANNELS.INTEGRATION_SLACK_LIST_CHANNELS, async () => { requirePermission('integrations.manage'); return integrationManager.listSlackChannels() })
-  wrapHandler(IPC_CHANNELS.INTEGRATION_SLACK_INDEX_TO_RAG, async (opts?: any) => { requirePermission('integrations.manage'); return integrationManager.indexSlackToRAG(opts) })
+  wrapHandler(IPC_CHANNELS.INTEGRATION_SLACK_CONFIGURE, (webhookUrl: string, teamName?: string, botToken?: string) => { requireFeature('custom_integrations'); requirePermission('integrations.manage'); return integrationManager.configureSlack(webhookUrl, teamName, botToken) })
+  wrapHandler(IPC_CHANNELS.INTEGRATION_SLACK_SHARE, async (params: any) => { requireFeature('custom_integrations'); requirePermission('integrations.manage'); return integrationManager.shareToSlack(params) })
+  wrapHandler(IPC_CHANNELS.INTEGRATION_SLACK_DISCONNECT, () => { requireFeature('custom_integrations'); requirePermission('integrations.manage'); return integrationManager.disconnectSlack() })
+  wrapHandler(IPC_CHANNELS.INTEGRATION_SLACK_LIST_CHANNELS, async () => { requireFeature('custom_integrations'); requirePermission('integrations.manage'); return integrationManager.listSlackChannels() })
+  wrapHandler(IPC_CHANNELS.INTEGRATION_SLACK_INDEX_TO_RAG, async (opts?: any) => { requireFeature('custom_integrations'); requirePermission('integrations.manage'); return integrationManager.indexSlackToRAG(opts) })
 
   // Notion
-  wrapHandler(IPC_CHANNELS.INTEGRATION_NOTION_CONFIGURE, (apiKey: string, workspaceName?: string) => { requirePermission('integrations.manage'); return integrationManager.configureNotion(apiKey, workspaceName) })
-  wrapHandler(IPC_CHANNELS.INTEGRATION_NOTION_SAVE, async (params: any) => { requirePermission('integrations.manage'); return integrationManager.saveToNotion(params) })
-  wrapHandler(IPC_CHANNELS.INTEGRATION_NOTION_DISCONNECT, () => { requirePermission('integrations.manage'); return integrationManager.disconnectNotion() })
-  wrapHandler(IPC_CHANNELS.INTEGRATION_NOTION_LIST_DATABASES, async () => { requirePermission('integrations.manage'); return integrationManager.listNotionDatabases() })
-  wrapHandler(IPC_CHANNELS.INTEGRATION_NOTION_INDEX_TO_RAG, async (opts?: any) => { requirePermission('integrations.manage'); return integrationManager.indexNotionToRAG(opts) })
+  wrapHandler(IPC_CHANNELS.INTEGRATION_NOTION_CONFIGURE, (apiKey: string, workspaceName?: string) => { requireFeature('custom_integrations'); requirePermission('integrations.manage'); return integrationManager.configureNotion(apiKey, workspaceName) })
+  wrapHandler(IPC_CHANNELS.INTEGRATION_NOTION_SAVE, async (params: any) => { requireFeature('custom_integrations'); requirePermission('integrations.manage'); return integrationManager.saveToNotion(params) })
+  wrapHandler(IPC_CHANNELS.INTEGRATION_NOTION_DISCONNECT, () => { requireFeature('custom_integrations'); requirePermission('integrations.manage'); return integrationManager.disconnectNotion() })
+  wrapHandler(IPC_CHANNELS.INTEGRATION_NOTION_LIST_DATABASES, async () => { requireFeature('custom_integrations'); requirePermission('integrations.manage'); return integrationManager.listNotionDatabases() })
+  wrapHandler(IPC_CHANNELS.INTEGRATION_NOTION_INDEX_TO_RAG, async (opts?: any) => { requireFeature('custom_integrations'); requirePermission('integrations.manage'); return integrationManager.indexNotionToRAG(opts) })
 
   // Obsidian
-  wrapHandler(IPC_CHANNELS.INTEGRATION_OBSIDIAN_SET_VAULT, async (vaultPath: string) => { requirePermission('integrations.manage'); return integrationManager.setObsidianVault(vaultPath) })
-  wrapHandler(IPC_CHANNELS.INTEGRATION_OBSIDIAN_INDEX, async () => { requirePermission('integrations.manage'); return integrationManager.indexObsidianVault() })
-  wrapHandler(IPC_CHANNELS.INTEGRATION_OBSIDIAN_DISCONNECT, () => { requirePermission('integrations.manage'); return integrationManager.disconnectObsidian() })
+  wrapHandler(IPC_CHANNELS.INTEGRATION_OBSIDIAN_SET_VAULT, async (vaultPath: string) => { requireFeature('custom_integrations'); requirePermission('integrations.manage'); return integrationManager.setObsidianVault(vaultPath) })
+  wrapHandler(IPC_CHANNELS.INTEGRATION_OBSIDIAN_INDEX, async () => { requireFeature('custom_integrations'); requirePermission('integrations.manage'); return integrationManager.indexObsidianVault() })
+  wrapHandler(IPC_CHANNELS.INTEGRATION_OBSIDIAN_DISCONNECT, () => { requireFeature('custom_integrations'); requirePermission('integrations.manage'); return integrationManager.disconnectObsidian() })
 
   // ========================================
   // DocMind Integration

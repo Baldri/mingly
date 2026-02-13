@@ -6,7 +6,7 @@ import { IPC_CHANNELS } from '../../shared/types'
 import { getMCPClientManager } from '../mcp/mcp-client-manager'
 import { getMCPToolSelector } from '../mcp/mcp-tool-selector'
 import { validateString, validateMCPArgs } from '../security/input-validator'
-import { wrapHandler, requirePermission } from './ipc-utils'
+import { wrapHandler, requirePermission, requireFeature } from './ipc-utils'
 
 export function registerMCPHandlers(): void {
   const mcpManager = getMCPClientManager()
@@ -32,6 +32,7 @@ export function registerMCPHandlers(): void {
   }))
 
   wrapHandler(IPC_CHANNELS.EXECUTE_MCP_TOOL, async (serverId: string, toolName: string, args: any) => {
+    requireFeature('agents')
     requirePermission('mcp.execute')
     const sv = validateString(serverId, 'serverId', 256); if (!sv.valid) throw new Error(sv.error)
     const tv = validateString(toolName, 'toolName', 256); if (!tv.valid) throw new Error(tv.error)
