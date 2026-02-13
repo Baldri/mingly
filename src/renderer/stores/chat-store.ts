@@ -12,6 +12,9 @@ interface SensitiveDataConsentState {
     value: string
     riskLevel: RiskLevel
   }>
+  /** Message content to retry after consent is granted */
+  pendingMessage: string | null
+  pendingAttachments: MessageAttachment[] | null
 }
 
 interface ChatState {
@@ -62,7 +65,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sensitiveDataConsent: {
     isOpen: false,
     request: null,
-    matches: []
+    matches: [],
+    pendingMessage: null,
+    pendingAttachments: null
   },
 
   loadConversations: async () => {
@@ -252,11 +257,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // Sensitive Data Consent Actions
   showSensitiveDataConsent: (request: UploadPermissionRequest, matches: any[]) => {
+    // Capture the last user message so we can retry after consent
+    const { messages } = get()
+    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
     set({
       sensitiveDataConsent: {
         isOpen: true,
         request,
-        matches
+        matches,
+        pendingMessage: lastUserMsg?.content ?? null,
+        pendingAttachments: (lastUserMsg as any)?.attachments ?? null
       }
     })
   },
@@ -266,7 +276,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       sensitiveDataConsent: {
         isOpen: false,
         request: null,
-        matches: []
+        matches: [],
+        pendingMessage: null,
+        pendingAttachments: null
       }
     })
   },
@@ -282,12 +294,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
         rememberChoice
       )
 
+      // Capture pending message before hiding (which clears it)
+      const pendingMsg = get().sensitiveDataConsent.pendingMessage
+      const pendingAtt = get().sensitiveDataConsent.pendingAttachments
+
       // Hide dialog
       get().hideSensitiveDataConsent()
 
-      // Retry sending message
-      // TODO: Store original message and retry
-      console.log('Permission granted, retry sending message')
+      // Retry sending the original message now that permission is granted
+      if (pendingMsg) {
+        await get().sendMessage(pendingMsg, pendingAtt ?? undefined)
+      }
     } catch (error) {
       console.error('Failed to grant permission:', error)
       set({ error: 'Failed to grant permission' })
@@ -327,12 +344,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
         rememberChoice
       )
 
+      // Capture pending message before hiding (which clears it)
+      const pendingMsg = get().sensitiveDataConsent.pendingMessage
+      const pendingAtt = get().sensitiveDataConsent.pendingAttachments
+      const { currentConversation } = get()
+
       // Hide dialog
       get().hideSensitiveDataConsent()
 
-      // TODO: Switch to local LLM and retry
-      // For now, just show message
-      set({ error: 'Please switch to a local LLM provider and try again' })
+      // Switch conversation to local Ollama provider and retry
+      if (currentConversation && pendingMsg) {
+        try {
+          await window.electronAPI.conversations.update(currentConversation.id, {
+            provider: 'ollama',
+            model: 'llama3.2'
+          })
+          set({
+            currentConversation: {
+              ...currentConversation,
+              provider: 'ollama',
+              model: 'llama3.2'
+            }
+          })
+          await get().sendMessage(pendingMsg, pendingAtt ?? undefined)
+        } catch {
+          set({ error: 'Failed to switch to local LLM. Make sure Ollama is running.' })
+        }
+      } else {
+        set({ error: 'Please switch to a local LLM provider and try again' })
+      }
     } catch (error) {
       console.error('Failed to switch to local LLM:', error)
       set({ error: 'Failed to switch to local LLM' })

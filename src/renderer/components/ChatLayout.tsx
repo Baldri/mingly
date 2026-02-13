@@ -4,6 +4,7 @@ import { MessageInput } from './MessageInput'
 import { SensitiveDataConsentDialog } from './SensitiveDataConsentDialog'
 import { DelegationProposalDialog } from './DelegationProposalDialog'
 import { OrchestrationStatusBar } from './OrchestrationStatusBar'
+import { RAGStatusBar } from './RAGStatusBar'
 import UpgradeDialog from './UpgradeDialog'
 import LicenseKeyDialog from './LicenseKeyDialog'
 import { useChatStore } from '../stores/chat-store'
@@ -47,6 +48,7 @@ export function ChatLayout() {
         )}
 
         <MessageList />
+        <RAGStatusBar />
         <OrchestrationStatusBar />
         <MessageInput />
       </div>
