@@ -14,6 +14,7 @@
  *   - User onboarding flow support
  */
 
+import { randomUUID } from 'crypto'
 import { app } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
@@ -673,7 +674,7 @@ export class RBACManager {
 
   private audit(action: string, resource: string, details?: string): void {
     const entry: AuditEntry = {
-      id: `audit_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: `audit_${Date.now()}_${randomUUID().slice(0, 8)}`,
       timestamp: Date.now(),
       userId: this.config.currentUser.id,
       userName: this.config.currentUser.name,

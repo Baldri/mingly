@@ -5,6 +5,8 @@ import { initializeDatabase, closeDatabase } from './database'
 import { getMCPClientManager } from './mcp/mcp-client-manager'
 import { getDeploymentManager } from './server/deployment-manager'
 import { getLocalAIBridge } from './network/local-ai-bridge'
+import { getDocMindIntegration } from './integrations/docmind-integration'
+import { getAutoUpdater } from './updater/auto-updater'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -40,6 +42,21 @@ function createWindow(): void {
       mainWindow?.webContents.closeDevTools()
     })
   }
+
+  // Block navigation to external URLs (prevents navigation-based attacks)
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const allowedOrigins = ['http://localhost:5173', 'file://']
+    if (!allowedOrigins.some(origin => url.startsWith(origin))) {
+      event.preventDefault()
+      console.warn(`[Security] Blocked navigation to: ${url}`)
+    }
+  })
+
+  // Block new window creation (popup attacks)
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    console.warn(`[Security] Blocked window.open to: ${url}`)
+    return { action: 'deny' }
+  })
 
   // Load the app
   if (process.env.NODE_ENV === 'development' || !app.isPackaged) {
@@ -86,19 +103,39 @@ app.whenReady().then(async () => {
     console.error('Failed to initialize local AI bridge:', error)
   }
 
-  // Set Content Security Policy headers
+  // Initialize DocMind integration (MCP + REST + Context Injection)
+  try {
+    const docMindResult = await getDocMindIntegration().initialize()
+    console.log('DocMind integration initialized:', docMindResult)
+  } catch (error) {
+    console.error('Failed to initialize DocMind integration (non-blocking):', error)
+  }
+
+  // Set Content Security Policy headers — stricter in production
+  const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
+  const connectSrc = isDev
+    ? "'self' https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com http://localhost:* http://127.0.0.1:* ws://localhost:*"
+    : "'self' https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com http://localhost:* http://127.0.0.1:*"
+
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': [
-          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com http://localhost:* http://127.0.0.1:* ws://localhost:*; img-src 'self' data:; font-src 'self'"
+          `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ${connectSrc}; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`
         ]
       }
     })
   })
 
   createWindow()
+
+  // Initialize auto-updater (after window is created)
+  if (mainWindow) {
+    const updater = getAutoUpdater()
+    updater.setWindow(mainWindow)
+    updater.initialize()
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -114,7 +151,9 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', async () => {
+  getAutoUpdater().shutdown()
   getLocalAIBridge().shutdown()
+  await getDocMindIntegration().disconnectMCP()
   await getDeploymentManager().shutdown()
   await getMCPClientManager().shutdown()
   closeDatabase()

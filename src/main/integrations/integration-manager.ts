@@ -21,7 +21,17 @@ const SLACK_WEBHOOK_HOST = 'hooks.slack.com'
 const SLACK_API_BASE = 'https://slack.com/api'
 const NOTION_API_BASE = 'https://api.notion.com/v1'
 const NOTION_API_VERSION = '2022-06-28'
-const RAG_SERVER_URL = process.env.RAG_SERVER_URL || 'http://localhost:8001'
+const RAG_SERVER_URL = (() => {
+  const envUrl = process.env.RAG_SERVER_URL
+  if (!envUrl) return 'http://localhost:8001'
+  try {
+    const parsed = new URL(envUrl)
+    if (!['http:', 'https:'].includes(parsed.protocol)) return 'http://localhost:8001'
+    return envUrl
+  } catch {
+    return 'http://localhost:8001'
+  }
+})()
 const DEFAULT_TIMEOUT_MS = 30_000
 
 /** fetch() with AbortController timeout */

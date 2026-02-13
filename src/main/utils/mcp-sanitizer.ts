@@ -22,7 +22,23 @@ const BLOCKED_ENV_KEYS = new Set([
   'DYLD_LIBRARY_PATH', 'DYLD_FRAMEWORK_PATH',
   'NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE',
   'PYTHONSTARTUP', 'PYTHONPATH',
+  'JAVA_TOOL_OPTIONS', 'JAVA_OPTIONS', '_JAVA_OPTIONS',
+  'PERLLIB', 'PERL5LIB', 'PERL5OPT',
+  'RUBYOPT', 'RUBYLIB',
+  'GCONV_PATH', 'GETCONF_DIR',
+  'BASH_ENV', 'ENV', 'CDPATH',
+  'PROMPT_COMMAND',
 ])
+
+// Safe directories for absolute paths (platform-aware)
+const SAFE_COMMAND_DIRS = [
+  '/usr/bin/', '/usr/local/bin/', '/opt/homebrew/bin/',
+  '/usr/sbin/', '/usr/local/sbin/',
+  '/bin/', '/sbin/',
+]
+
+// Max argument length to prevent excessively long payloads
+const MAX_ARG_LENGTH = 4096
 
 export interface SanitizeResult {
   valid: boolean
@@ -53,13 +69,31 @@ export function validateCommand(command: string): SanitizeResult {
     return { valid: true }
   }
 
-  // Allow absolute paths (user explicitly chose a binary)
+  // Allow absolute paths only from safe directories
   if (trimmed.startsWith('/') || trimmed.startsWith('~') || /^[A-Z]:\\/.test(trimmed)) {
+    const resolved = trimmed.startsWith('~')
+      ? trimmed // tilde paths resolve at spawn time; validate structure only
+      : trimmed
+    const inSafeDir = SAFE_COMMAND_DIRS.some(dir => resolved.startsWith(dir))
+    if (!inSafeDir && !trimmed.startsWith('~')) {
+      return {
+        valid: false,
+        error: `Absolute path "${trimmed}" is outside safe directories. Allowed: ${SAFE_COMMAND_DIRS.join(', ')}`
+      }
+    }
     return { valid: true }
   }
 
-  // Allow npx-style package runners
+  // Allow npx/bunx package runners — validate package name
   if (trimmed.startsWith('npx ') || trimmed.startsWith('bunx ')) {
+    const packagePart = trimmed.slice(trimmed.indexOf(' ') + 1).trim()
+    // Package names: @scope/name or name, optionally @version
+    if (!/^(@[\w-]+\/)?[\w.-]+(@[\w.-]+)?$/.test(packagePart)) {
+      return {
+        valid: false,
+        error: `Package name "${packagePart}" contains invalid characters. Only alphanumeric, hyphens, dots, and scoped packages are allowed.`
+      }
+    }
     return { valid: true }
   }
 
@@ -75,6 +109,13 @@ export function validateCommand(command: string): SanitizeResult {
 export function validateArgs(args: string[]): SanitizeResult {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
+
+    if (arg.length > MAX_ARG_LENGTH) {
+      return {
+        valid: false,
+        error: `Argument ${i} exceeds maximum length of ${MAX_ARG_LENGTH} characters`
+      }
+    }
 
     if (SHELL_METACHAR_PATTERN.test(arg)) {
       return {

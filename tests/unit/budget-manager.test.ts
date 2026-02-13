@@ -24,12 +24,16 @@ vi.mock('fs', () => ({
   writeFileSync: vi.fn()
 }))
 
+// getSummary is called synchronously in checkBudget and with await in getStatus.
+// mockReturnValue works for both: sync returns the object directly, await on a
+// non-thenable resolves immediately to the same object.
 vi.mock('../../src/main/tracking/tracking-engine', () => ({
   getTrackingEngine: vi.fn().mockReturnValue({
-    getSummary: vi.fn().mockResolvedValue({
+    getSummary: vi.fn().mockReturnValue({
+      totalCost: 15.5,
       byProvider: {
-        anthropic: { totalCost: 10.5 },
-        openai: { totalCost: 5.0 }
+        anthropic: { cost: 10.5, totalCost: 10.5 },
+        openai: { cost: 5.0, totalCost: 5.0 }
       }
     })
   })

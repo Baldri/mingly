@@ -1,26 +1,68 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense, Component, type ReactNode, type ErrorInfo } from 'react'
 import { Moon, Sun, Settings } from 'lucide-react'
 import { ChatLayout } from './components/ChatLayout'
-import { SettingsPage } from './components/SettingsPage'
-import { SetupWizard } from './components/SetupWizard'
-import { NewConversationModal } from './components/NewConversationModal'
+import { LoadingSpinner } from './components/LoadingSpinner'
+import { OnboardingTooltip, TourStartButton } from './components/OnboardingTooltip'
 import { useSettingsStore } from './stores/settings-store'
 import { useChatStore } from './stores/chat-store'
+
+/** Global Error Boundary — catches render errors and shows recovery UI */
+class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: Error | null }> {
+  constructor(props: { children: ReactNode }) {
+    super(props)
+    this.state = { hasError: false, error: null }
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('[ErrorBoundary]', error, info.componentStack)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex h-screen items-center justify-center bg-white dark:bg-gray-900 p-8" role="alert">
+          <div className="max-w-md text-center">
+            <h2 className="text-2xl font-bold text-red-600 mb-4">Something went wrong</h2>
+            <p className="text-gray-600 dark:text-gray-400 mb-4">
+              {this.state.error?.message || 'An unexpected error occurred.'}
+            </p>
+            <button
+              onClick={() => this.setState({ hasError: false, error: null })}
+              className="rounded-lg bg-blue-500 px-6 py-2 text-white hover:bg-blue-600 transition-colors"
+            >
+              Try Again
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+/** Lazy-loaded heavy components — only fetched when needed */
+const SettingsPage = lazy(() => import('./components/SettingsPage').then(m => ({ default: m.SettingsPage })))
+const SetupWizard = lazy(() => import('./components/SetupWizard').then(m => ({ default: m.SetupWizard })))
+const NewConversationModal = lazy(() => import('./components/NewConversationModal').then(m => ({ default: m.NewConversationModal })))
 
 function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('dark')
   const [showSettings, setShowSettings] = useState(false)
   const [showNewConversation, setShowNewConversation] = useState(false)
   const [showWelcome, setShowWelcome] = useState(true)
+  const [isLoading, setIsLoading] = useState(true)
 
   const { settings, loadSettings, checkAPIKeys, apiKeysConfigured } = useSettingsStore()
   const { loadConversations, conversations } = useChatStore()
 
   useEffect(() => {
-    // Initialize app
-    loadSettings()
-    checkAPIKeys()
-    loadConversations()
+    // Initialize app with loading state
+    Promise.all([loadSettings(), checkAPIKeys(), loadConversations()])
+      .finally(() => setIsLoading(false))
 
     // Apply theme
     document.documentElement.classList.toggle('dark', theme === 'dark')
@@ -49,21 +91,32 @@ function App() {
 
   const hasAnyAPIKey = Object.values(apiKeysConfigured).some(Boolean)
 
+  // Show loading spinner during initial bootstrap
+  if (isLoading) {
+    return <LoadingSpinner label="Starting Mingly..." />
+  }
+
   // Setup wizard for first-time users
   if (settings && !settings.wizardCompleted) {
     return (
-      <SetupWizard
-        onComplete={() => {
-          checkAPIKeys()
-          setShowWelcome(false)
-        }}
-      />
+      <Suspense fallback={<LoadingSpinner label="Loading setup..." />}>
+        <SetupWizard
+          onComplete={() => {
+            checkAPIKeys()
+            setShowWelcome(false)
+          }}
+        />
+      </Suspense>
     )
   }
 
   // Full-page settings view (replaces chat/welcome entirely)
   if (showSettings) {
-    return <SettingsPage onBack={() => setShowSettings(false)} />
+    return (
+      <Suspense fallback={<LoadingSpinner label="Loading settings..." />}>
+        <SettingsPage onBack={() => setShowSettings(false)} />
+      </Suspense>
+    )
   }
 
   if (showWelcome && !hasAnyAPIKey) {
@@ -76,6 +129,7 @@ function App() {
           <div className="flex items-center gap-2">
             <button
               onClick={toggleTheme}
+              aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
               className="rounded-lg p-2 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
             >
               {theme === 'light' ? (
@@ -87,6 +141,7 @@ function App() {
 
             <button
               onClick={() => setShowSettings(true)}
+              aria-label="Open settings"
               className="rounded-lg p-2 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
             >
               <Settings className="h-5 w-5" />
@@ -144,6 +199,7 @@ function App() {
           <div className="flex items-center gap-2">
             <button
               onClick={toggleTheme}
+              aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
               className="rounded-lg p-2 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
             >
               {theme === 'light' ? (
@@ -155,6 +211,7 @@ function App() {
 
             <button
               onClick={() => setShowSettings(true)}
+              aria-label="Open settings"
               className="rounded-lg p-2 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
             >
               <Settings className="h-5 w-5" />
@@ -168,10 +225,18 @@ function App() {
         </div>
       </div>
 
-      <NewConversationModal
-        isOpen={showNewConversation}
-        onClose={() => setShowNewConversation(false)}
-      />
+      {/* Onboarding System */}
+      <OnboardingTooltip />
+      <TourStartButton />
+
+      {showNewConversation && (
+        <Suspense fallback={null}>
+          <NewConversationModal
+            isOpen={showNewConversation}
+            onClose={() => setShowNewConversation(false)}
+          />
+        </Suspense>
+      )}
     </>
   )
 }
@@ -213,4 +278,12 @@ function SetupStep({ step, title, description, action, onAction, completed }: {
   )
 }
 
-export default App
+function AppWithErrorBoundary() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  )
+}
+
+export default AppWithErrorBoundary

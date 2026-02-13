@@ -335,6 +335,24 @@ const api = {
     }
   },
 
+  // DocMind Integration
+  docmind: {
+    getConfig: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.DOCMIND_GET_CONFIG),
+    updateConfig: (updates: any) =>
+      ipcRenderer.invoke(IPC_CHANNELS.DOCMIND_UPDATE_CONFIG, updates),
+    getStatus: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.DOCMIND_GET_STATUS),
+    initialize: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.DOCMIND_INITIALIZE),
+    connectMCP: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.DOCMIND_CONNECT_MCP),
+    disconnectMCP: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.DOCMIND_DISCONNECT_MCP),
+    checkRest: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.DOCMIND_CHECK_REST)
+  },
+
   // Budget Management
   budget: {
     getConfig: () =>
@@ -497,6 +515,23 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.LICENSE_GET_INFO),
     getCheckoutUrl: (tier: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.LICENSE_GET_CHECKOUT_URL, tier)
+  },
+
+  // Auto-Updater
+  updater: {
+    getStatus: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.UPDATER_GET_STATUS),
+    check: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.UPDATER_CHECK),
+    download: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.UPDATER_DOWNLOAD),
+    install: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.UPDATER_INSTALL),
+    onStatus: (callback: (status: any) => void) => {
+      const listener = (_event: any, status: any) => callback(status)
+      ipcRenderer.on('updater:status', listener)
+      return () => ipcRenderer.removeListener('updater:status', listener)
+    }
   }
 }
 

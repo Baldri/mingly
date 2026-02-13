@@ -8,7 +8,20 @@ export default defineConfig({
   base: './',
   build: {
     outDir: '../../dist/renderer',
-    emptyOutDir: true
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-markdown': [
+            'react-markdown',
+            'react-syntax-highlighter'
+          ],
+          'vendor-virtuoso': [
+            'react-virtuoso'
+          ]
+        }
+      }
+    }
   },
   resolve: {
     alias: {

@@ -19,6 +19,8 @@ export interface RAGWissenConfig {
   enabled: boolean
   /** Default collection to search */
   defaultCollection: string
+  /** API mode: 'rest' for DocMind FastAPI, 'jsonrpc' for MCP-over-HTTP */
+  apiMode: 'rest' | 'jsonrpc'
 }
 
 export interface RAGWissenSearchResult {
@@ -41,7 +43,8 @@ const DEFAULT_CONFIG: RAGWissenConfig = {
   port: 8001,
   protocol: 'http',
   enabled: true,
-  defaultCollection: 'documents'
+  defaultCollection: 'documents',
+  apiMode: 'jsonrpc'
 }
 
 const store = new SimpleStore()
@@ -105,6 +108,48 @@ export class RAGWissenClient {
     collection?: string,
     limit: number = 5
   ): Promise<{ success: boolean; results?: RAGWissenSearchResult[]; error?: string }> {
+    return this.config.apiMode === 'rest'
+      ? this.searchREST(query, limit)
+      : this.searchJsonRpc(query, collection, limit)
+  }
+
+  private async searchREST(
+    query: string,
+    limit: number
+  ): Promise<{ success: boolean; results?: RAGWissenSearchResult[]; error?: string }> {
+    try {
+      const response = await fetch(`${this.baseUrl}/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, limit }),
+        signal: AbortSignal.timeout(30_000)
+      })
+
+      if (!response.ok) {
+        return { success: false, error: `HTTP ${response.status}` }
+      }
+
+      const data = await response.json() as any
+      const results: RAGWissenSearchResult[] = (data.results || []).map((r: any) => ({
+        filename: r.file_name,
+        filepath: r.file_path,
+        content: r.content,
+        score: r.score,
+        chunk_index: r.chunk_index,
+        file_type: r.file_type
+      }))
+
+      return { success: true, results }
+    } catch (error) {
+      return { success: false, error: (error as Error).message }
+    }
+  }
+
+  private async searchJsonRpc(
+    query: string,
+    collection?: string,
+    limit: number = 5
+  ): Promise<{ success: boolean; results?: RAGWissenSearchResult[]; error?: string }> {
     try {
       const response = await fetch(`${this.baseUrl}/mcp`, {
         method: 'POST',
@@ -145,6 +190,7 @@ export class RAGWissenClient {
 
   /**
    * Get context for LLM injection — searches and formats results.
+   * In REST mode, uses the /retrieve endpoint directly for pre-formatted context.
    */
   async getContext(
     query: string,
@@ -156,6 +202,10 @@ export class RAGWissenClient {
     sources?: Array<{ filename: string; score: number }>
     error?: string
   }> {
+    if (this.config.apiMode === 'rest') {
+      return this.getContextREST(query)
+    }
+
     const searchResult = await this.search(query, collection, limit)
 
     if (!searchResult.success || !searchResult.results?.length) {
@@ -182,6 +232,40 @@ ${r.content}`
       success: true,
       context: contextParts.join('\n\n'),
       sources
+    }
+  }
+
+  private async getContextREST(query: string): Promise<{
+    success: boolean
+    context?: string
+    sources?: Array<{ filename: string; score: number }>
+    error?: string
+  }> {
+    try {
+      const response = await fetch(`${this.baseUrl}/retrieve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, max_tokens: 2000 }),
+        signal: AbortSignal.timeout(30_000)
+      })
+
+      if (!response.ok) {
+        return { success: false, error: `HTTP ${response.status}` }
+      }
+
+      const data = await response.json() as any
+      const sources = (data.sources || []).map((s: any) => ({
+        filename: s.file || s.file_name,
+        score: s.score
+      }))
+
+      return {
+        success: true,
+        context: data.context || '',
+        sources
+      }
+    } catch (error) {
+      return { success: false, error: (error as Error).message }
     }
   }
 

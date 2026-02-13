@@ -4,6 +4,7 @@
  * Stores data in the sql.js database for local-only analytics.
  */
 
+import { randomUUID } from 'crypto'
 import { dbRun, dbAll, dbGet } from '../database/index'
 
 // ── Cost tables (USD per 1M tokens) ────────────────────────────
@@ -131,7 +132,7 @@ export class TrackingEngine {
       outputTokens
     )
 
-    const id = `trk_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`
+    const id = `trk_${Date.now()}_${randomUUID().slice(0, 8)}`
     const now = Date.now()
 
     dbRun(

@@ -20,11 +20,14 @@ import { getRAGHttpClient } from './rag/rag-http-client'
 import { getContextInjector } from './rag/context-injector'
 import { getRAGWissenClient } from './rag/rag-wissen-client'
 import { getMCPClientManager } from './mcp/mcp-client-manager'
+import { getMCPToolSelector } from './mcp/mcp-tool-selector'
 import { getIntegrationManager } from './integrations/integration-manager'
 import { getBudgetManager } from './tracking/budget-manager'
 import { getTrackingEngine } from './tracking/tracking-engine'
 import { getDeploymentManager } from './server/deployment-manager'
 import { getHybridOrchestrator } from './routing/hybrid-orchestrator'
+import { getDocMindIntegration } from './integrations/docmind-integration'
+import { getAutoUpdater } from './updater/auto-updater'
 import { getRBACManager } from './security/rbac-manager'
 import { getFeatureGateManager } from './services/feature-gate-manager'
 import { getInputSanitizer } from './security/input-sanitizer'
@@ -85,6 +88,7 @@ const ragManager = getRAGManager()
 const ragHttpClient = getRAGHttpClient()
 const contextInjector = getContextInjector()
 const mcpManager = getMCPClientManager()
+const mcpToolSelector = getMCPToolSelector()
 const trackingEngine = getTrackingEngine()
 
 /**
@@ -154,7 +158,8 @@ export async function registerIPCHandlers(): Promise<void> {
   // LLM Operations
   ipcMain.handle(
     IPC_CHANNELS.SEND_MESSAGE,
-    async (event, conversationId: string, messages: Message[], provider: string, model: string, temperature: number = 1.0) => {
+    async (event, conversationId: string, messages: Message[], provider_: string, model: string, temperature: number = 1.0) => {
+      let provider = provider_
       try {
         const userMessage = messages[messages.length - 1].content
 
@@ -272,12 +277,29 @@ export async function registerIPCHandlers(): Promise<void> {
         const actualMessage = commandHandler.extractMessage(userMessage, commandResult)
         const mode = commandHandler.getMode(commandResult)
 
-        // 3. Build system prompt with mode
+        // 3. Budget enforcement — check BEFORE expensive RAG/MCP operations
+        const budgetMgr = getBudgetManager()
+        const budgetCheck = budgetMgr.checkBudget(provider)
+        if (!budgetCheck.allowed) {
+          if (budgetCheck.fallbackProvider) {
+            console.log(`💰 Budget exceeded for ${provider}, falling back to ${budgetCheck.fallbackProvider}`)
+            provider = budgetCheck.fallbackProvider
+          } else {
+            event.sender.send('message:error', budgetCheck.reason || 'Monthly budget exceeded for this provider.')
+            return {
+              success: false,
+              error: budgetCheck.reason || 'Monthly budget exceeded for this provider.',
+              budgetExceeded: true
+            }
+          }
+        }
+
+        // 4. Build system prompt with mode
         let systemPrompt = await systemPromptManager.buildSystemPrompt({
           customMode: mode
         })
 
-        // 3b. Auto-inject RAG context if enabled
+        // 4b. Auto-inject RAG context if enabled
         let ragSources: Array<{ filename: string; score: number }> = []
         try {
           const ragResult = await contextInjector.getContext(actualMessage)
@@ -292,7 +314,22 @@ export async function registerIPCHandlers(): Promise<void> {
           console.warn('RAG context injection failed (non-blocking):', ragError)
         }
 
-        // 4. Prepend system prompt to messages
+        // 4c. Auto-inject MCP tool results if enabled
+        let mcpToolsUsed: Array<{ serverId: string; toolName: string; success: boolean; timeMs: number }> = []
+        try {
+          const mcpResult = await mcpToolSelector.selectAndExecute(actualMessage)
+          if (mcpResult.context) {
+            systemPrompt = mcpToolSelector.buildAugmentedPrompt(systemPrompt, mcpResult.context)
+            mcpToolsUsed = mcpResult.toolsUsed
+            console.log(
+              `🔧 MCP tools executed (${mcpResult.toolsUsed.length} tools, ${mcpResult.totalTimeMs}ms)`
+            )
+          }
+        } catch (mcpError) {
+          console.warn('MCP auto-tool-selection failed (non-blocking):', mcpError)
+        }
+
+        // 5. Prepend system prompt to messages
         const messagesWithSystem: Message[] = [
           { id: generateId(), role: 'system', content: systemPrompt },
           ...messages.slice(0, -1), // Previous messages
@@ -301,7 +338,7 @@ export async function registerIPCHandlers(): Promise<void> {
 
         console.log(`Sending message to ${provider}/${model}${mode ? ` (mode: ${mode})` : ''}`)
 
-        // 5. Validate provider and stream the response
+        // 6. Validate provider and stream the response
         if (!validateProvider(provider)) {
           throw new Error(`Invalid provider: ${provider}`)
         }
@@ -375,6 +412,7 @@ export async function registerIPCHandlers(): Promise<void> {
           success: true,
           response: fullResponse,
           ragSources: ragSources.length > 0 ? ragSources : undefined,
+          mcpToolsUsed: mcpToolsUsed.length > 0 ? mcpToolsUsed : undefined,
           metadata: {
             provider,
             model,
@@ -709,6 +747,14 @@ export async function registerIPCHandlers(): Promise<void> {
     const av = validateMCPArgs(args); if (!av.valid) throw new Error(av.error)
     const result = await mcpManager.executeTool(serverId, toolName, args || {})
     return { success: !result.error, ...result }
+  })
+
+  // MCP Auto-Tool-Selection Config
+  wrapHandler(IPC_CHANNELS.MCP_AUTO_TOOL_GET_CONFIG, () => ({ success: true, config: mcpToolSelector.getConfig() }))
+
+  wrapHandler(IPC_CHANNELS.MCP_AUTO_TOOL_UPDATE_CONFIG, (updates: any) => {
+    mcpToolSelector.updateConfig(updates)
+    return { success: true, config: mcpToolSelector.getConfig() }
   })
 
   // ========================================
@@ -1088,6 +1134,67 @@ export async function registerIPCHandlers(): Promise<void> {
   wrapHandler(IPC_CHANNELS.LICENSE_GET_CHECKOUT_URL, (tier: string) => {
     const url = licenseService.getCheckoutUrl(tier as any)
     return { success: true, url }
+  })
+
+  // ── DocMind Integration ─────────────────────────────────────────
+
+  const docMind = getDocMindIntegration()
+
+  wrapHandler(IPC_CHANNELS.DOCMIND_GET_CONFIG, () => {
+    return { success: true, config: docMind.getConfig() }
+  })
+
+  wrapHandler(IPC_CHANNELS.DOCMIND_UPDATE_CONFIG, (updates: any) => {
+    docMind.updateConfig(updates)
+    return { success: true, config: docMind.getConfig() }
+  })
+
+  wrapHandler(IPC_CHANNELS.DOCMIND_GET_STATUS, async () => {
+    const status = await docMind.getStatus()
+    return { success: true, ...status }
+  })
+
+  wrapHandler(IPC_CHANNELS.DOCMIND_INITIALIZE, async () => {
+    const result = await docMind.initialize()
+    return { success: true, ...result }
+  })
+
+  wrapHandler(IPC_CHANNELS.DOCMIND_CONNECT_MCP, async () => {
+    const result = await docMind.connectMCP()
+    return result
+  })
+
+  wrapHandler(IPC_CHANNELS.DOCMIND_DISCONNECT_MCP, async () => {
+    const result = await docMind.disconnectMCP()
+    return result
+  })
+
+  wrapHandler(IPC_CHANNELS.DOCMIND_CHECK_REST, async () => {
+    const result = await docMind.checkRESTHealth()
+    return result
+  })
+
+  // ── Auto-Updater ───────────────────────────────────────────────
+
+  const updater = getAutoUpdater()
+
+  wrapHandler(IPC_CHANNELS.UPDATER_GET_STATUS, () => {
+    return { success: true, ...updater.getStatus() }
+  })
+
+  wrapHandler(IPC_CHANNELS.UPDATER_CHECK, async () => {
+    const status = await updater.checkForUpdates()
+    return { success: true, ...status }
+  })
+
+  wrapHandler(IPC_CHANNELS.UPDATER_DOWNLOAD, async () => {
+    const status = await updater.downloadUpdate()
+    return { success: true, ...status }
+  })
+
+  wrapHandler(IPC_CHANNELS.UPDATER_INSTALL, () => {
+    updater.installUpdate()
+    return { success: true }
   })
 
   console.log('✅ IPC handlers registered')

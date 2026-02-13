@@ -321,7 +321,7 @@ export const IntegrationsTab = memo(function IntegrationsTab() {
 
 // ---- Shared Card Component ----
 
-function IntegrationCard({ title, description, icon, configured, connectedLabel, onDisconnect, children }: {
+const IntegrationCard = memo(function IntegrationCard({ title, description, icon, configured, connectedLabel, onDisconnect, children }: {
   title: string
   description: string
   icon: React.ReactNode
@@ -363,30 +363,30 @@ function IntegrationCard({ title, description, icon, configured, connectedLabel,
       {children}
     </div>
   )
-}
+})
 
 // ---- Icons ----
 
-function SlackIcon() {
+const SlackIcon = memo(function SlackIcon() {
   return (
     <svg className="h-6 w-6 text-purple-600 dark:text-purple-400" viewBox="0 0 24 24" fill="currentColor">
       <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"/>
     </svg>
   )
-}
+})
 
-function NotionIcon() {
+const NotionIcon = memo(function NotionIcon() {
   return (
     <svg className="h-6 w-6 text-gray-900 dark:text-white" viewBox="0 0 24 24" fill="currentColor">
       <path d="M4.459 4.208c.746.606 1.026.56 2.428.466l13.215-.793c.28 0 .047-.28-.046-.326L18.09 2.31c-.466-.373-.746-.56-1.493-.56L3.46 2.483c-.746.046-1.026.466-.7.886l1.699.84zm.793 1.886v13.869c0 .746.373 1.026 1.166.98l14.475-.84c.793-.046.887-.513.887-1.073V5.233c0-.56-.187-.84-.7-.793l-15.128.84c-.56.047-.7.327-.7.814zm14.29.467c.093.42 0 .84-.42.886l-.7.14v10.264c-.607.327-1.167.513-1.633.513-.746 0-.933-.233-1.493-.933l-4.572-7.177v6.943l1.447.327s0 .84-1.166.84l-3.22.187c-.093-.187 0-.653.327-.733l.84-.213V8.24l-1.167-.094c-.093-.42.14-1.026.793-1.073l3.453-.233 4.759 7.27V8.007l-1.213-.14c-.094-.514.28-.887.747-.933l3.172-.187z"/>
     </svg>
   )
-}
+})
 
-function ObsidianIcon() {
+const ObsidianIcon = memo(function ObsidianIcon() {
   return (
     <svg className="h-6 w-6 text-violet-600 dark:text-violet-400" viewBox="0 0 24 24" fill="currentColor">
       <path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 2.18L19.82 7.6 12 12 4.18 7.6 12 4.18zM4 9.28l7 3.5v7.94l-7-3.5V9.28zm9 11.44v-7.94l7-3.5v7.94l-7 3.5z"/>
     </svg>
   )
-}
+})

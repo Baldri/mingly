@@ -23,6 +23,21 @@ export default defineConfig({
         '@shared': resolve('src/shared')
       }
     },
-    plugins: [react()]
+    plugins: [react()],
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            'vendor-markdown': [
+              'react-markdown',
+              'react-syntax-highlighter'
+            ],
+            'vendor-virtuoso': [
+              'react-virtuoso'
+            ]
+          }
+        }
+      }
+    }
   }
 })

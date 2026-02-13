@@ -1,11 +1,11 @@
-import { useRef, useState, useCallback, useMemo, memo } from 'react'
-import ReactMarkdown from 'react-markdown'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { useRef, useState, useCallback, useMemo, memo, lazy, Suspense } from 'react'
 import { Copy, User, Bot, ChevronDown, ChevronUp } from 'lucide-react'
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso'
 import { useChatStore } from '../stores/chat-store'
 import type { Message } from '../../shared/types'
+
+/** Lazy-loaded Markdown renderer — keeps react-markdown + prism out of the initial bundle */
+const MarkdownRenderer = lazy(() => import('./MarkdownRenderer'))
 
 export const MessageList = memo(function MessageList() {
   const messages = useChatStore((state) => state.messages)
@@ -71,26 +71,6 @@ const MessageBubble = memo(function MessageBubble({ message, isStreaming }: Mess
   const hasMetadata = !isUser && !isStreaming && (message.provider || message.tokens || message.cost)
   const hasRagSources = !isUser && !isStreaming && message.ragSources && message.ragSources.length > 0
 
-  const markdownComponents = useMemo(() => ({
-    code({ node, inline, className, children, ...props }: any) {
-      const match = /language-(\w+)/.exec(className || '')
-      return !inline && match ? (
-        <SyntaxHighlighter
-          style={oneDark}
-          language={match[1]}
-          PreTag="div"
-          {...props}
-        >
-          {String(children).replace(/\n$/, '')}
-        </SyntaxHighlighter>
-      ) : (
-        <code className={className} {...props}>
-          {children}
-        </code>
-      )
-    }
-  }), [])
-
   return (
     <div className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
       {!isUser && (
@@ -127,9 +107,9 @@ const MessageBubble = memo(function MessageBubble({ message, isStreaming }: Mess
           {isUser ? (
             <p className="whitespace-pre-wrap m-0">{message.content}</p>
           ) : (
-            <ReactMarkdown components={markdownComponents}>
-              {message.content}
-            </ReactMarkdown>
+            <Suspense fallback={<p className="whitespace-pre-wrap m-0">{message.content.substring(0, 200)}{message.content.length > 200 ? '...' : ''}</p>}>
+              <MarkdownRenderer content={message.content} />
+            </Suspense>
           )}
           {isStreaming && (
             <span className="inline-block w-2 h-4 ml-1 bg-current animate-pulse" />

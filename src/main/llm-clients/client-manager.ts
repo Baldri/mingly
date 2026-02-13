@@ -70,6 +70,10 @@ export class LLMClientManager {
   }
 
   setApiKey(provider: string, apiKey: string): void {
+    // Clear old key reference before setting new one
+    if (this.apiKeys.has(provider)) {
+      this.apiKeys.delete(provider)
+    }
     this.apiKeys.set(provider, apiKey)
 
     const client = this.clients.get(provider)
@@ -80,6 +84,30 @@ export class LLMClientManager {
 
   getApiKey(provider: string): string | undefined {
     return this.apiKeys.get(provider)
+  }
+
+  /**
+   * Remove an API key from memory. Call when a key is deleted or on shutdown.
+   */
+  clearApiKey(provider: string): void {
+    this.apiKeys.delete(provider)
+    const client = this.clients.get(provider)
+    if (client) {
+      client.setApiKey('')
+    }
+  }
+
+  /**
+   * Clear all API keys from memory. Call on app shutdown for security.
+   */
+  clearAllApiKeys(): void {
+    for (const provider of this.apiKeys.keys()) {
+      const client = this.clients.get(provider)
+      if (client) {
+        client.setApiKey('')
+      }
+    }
+    this.apiKeys.clear()
   }
 
   hasApiKey(provider: string): boolean {
@@ -98,7 +126,7 @@ export class LLMClientManager {
       throw new Error(`Unknown provider: ${provider}`)
     }
 
-    console.log(`[ClientManager] Validating ${provider} - hasApiKey: ${this.hasApiKey(provider)}`)
+    console.log(`[ClientManager] Validating ${provider}`)
 
     // For providers without API key requirement, just check connectivity
     if (provider === 'ollama' || provider === 'local' || this.customProviders.get(provider)?.apiKeyRequired === false) {

@@ -17,7 +17,7 @@ export class OpenAIClient {
   }
 
   async validateApiKey(): Promise<boolean> {
-    console.log(`[OpenAI] Validating API key - client exists: ${!!this.client}, apiKey length: ${this.apiKey?.length || 0}`)
+    console.log(`[OpenAI] Validating API key - client exists: ${!!this.client}, hasKey: ${!!this.apiKey}`)
 
     if (!this.client) {
       console.error('[OpenAI] Client not initialized')

@@ -1,4 +1,4 @@
-import { useState, useEffect, memo } from 'react'
+import { useState, useEffect, useCallback, useMemo, memo } from 'react'
 import type { MCPServer, MCPTool } from '../../shared/types'
 
 export const MCPServersTab = memo(function MCPServersTab() {
@@ -114,11 +114,17 @@ export const MCPServersTab = memo(function MCPServersTab() {
     }
   }
 
-  const getServerTools = (serverId: string): MCPTool[] => {
-    const server = servers.find((s) => s.id === serverId)
-    if (!server) return []
-    return tools.filter((t) => t.serverName === server.name)
-  }
+  const toolsByServer = useMemo(() => {
+    const map = new Map<string, MCPTool[]>()
+    for (const server of servers) {
+      map.set(server.id, tools.filter((t) => t.serverName === server.name))
+    }
+    return map
+  }, [servers, tools])
+
+  const getServerTools = useCallback((serverId: string): MCPTool[] => {
+    return toolsByServer.get(serverId) || []
+  }, [toolsByServer])
 
   if (loading) {
     return (

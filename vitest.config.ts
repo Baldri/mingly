@@ -5,8 +5,8 @@ export default defineConfig({
   test: {
     globals: true,
     // Main process tests (Node environment)
-    include: ['src/main/**/*.test.ts', 'tests/unit/**/*.test.ts'],
-    exclude: ['node_modules', 'dist', 'tests/e2e'],
+    include: ['src/main/**/*.test.ts', 'tests/unit/**/*.test.ts', 'tests/e2e/**/*.spec.ts'],
+    exclude: ['node_modules', 'dist'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'text-summary'],

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useCallback, memo } from 'react'
 import { Globe, Key, Server, Database, CheckCircle, Monitor, Wifi, ChevronRight } from 'lucide-react'
 import { useTranslation } from '../utils/i18n'
 import { useSettingsStore } from '../stores/settings-store'
@@ -19,34 +19,34 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
   const { updateSettings, saveAPIKey } = useSettingsStore()
   const { t } = useTranslation()
 
-  const handleNext = () => {
-    if (step < TOTAL_STEPS) setStep(step + 1)
-  }
+  const handleNext = useCallback(() => {
+    setStep(s => Math.min(s + 1, TOTAL_STEPS))
+  }, [])
 
-  const handleBack = () => {
-    if (step > 1) setStep(step - 1)
-  }
+  const handleBack = useCallback(() => {
+    setStep(s => Math.max(s - 1, 1))
+  }, [])
 
-  const handleSaveKey = async (provider: string) => {
+  const handleSaveKey = useCallback(async (provider: string) => {
     const key = apiKeys[provider]
     if (!key?.trim()) return
     const success = await saveAPIKey(provider, key.trim())
     if (success) {
       setSavedKeys((prev) => ({ ...prev, [provider]: true }))
     }
-  }
+  }, [apiKeys, saveAPIKey])
 
-  const handleFinish = async () => {
+  const handleFinish = useCallback(async () => {
     await updateSettings({
       wizardCompleted: true,
       deploymentMode: selectedMode,
     })
     onComplete()
-  }
+  }, [selectedMode, updateSettings, onComplete])
 
-  const handleLanguageChange = async (lang: 'de' | 'en') => {
+  const handleLanguageChange = useCallback(async (lang: 'de' | 'en') => {
     await updateSettings({ language: lang })
-  }
+  }, [updateSettings])
 
   return (
     <div className="flex h-screen flex-col bg-white dark:bg-gray-900 text-gray-900 dark:text-white">

@@ -131,15 +131,55 @@ export class BudgetManager {
   /**
    * Check if sending a message with the given provider is within budget.
    * Returns the provider to use (may fallback if budget exceeded).
+   *
+   * Uses synchronous DB queries to check current month's spending against limits.
    */
   checkBudget(provider: string): { allowed: boolean; fallbackProvider?: string; reason?: string } {
     if (!this.config.enabled) return { allowed: true }
 
+    const tracking = getTrackingEngine()
+    const now = new Date()
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
+    const summary = tracking.getSummary(monthStart)
+
+    // 1. Check global limit
+    if (this.config.globalMonthlyLimit > 0 && summary.totalCost >= this.config.globalMonthlyLimit) {
+      return {
+        allowed: false,
+        reason: `Global monthly budget of $${this.config.globalMonthlyLimit.toFixed(2)} exceeded (spent: $${summary.totalCost.toFixed(2)}). Reset at start of next month.`
+      }
+    }
+
+    // 2. Check provider-specific limit
     const budget = this.config.providers[provider]
     if (!budget) return { allowed: true }
 
-    // We'd need synchronous cost tracking here - for now, always allow
-    // Budget checks happen post-hoc in the analytics dashboard
+    const providerData = summary.byProvider[provider]
+    const providerSpent = providerData?.cost || 0
+
+    if (budget.monthlyLimit > 0 && providerSpent >= budget.monthlyLimit) {
+      // If auto-fallback is configured, suggest the fallback provider
+      if (budget.autoFallback && budget.fallbackProvider) {
+        // Verify fallback provider isn't also over budget
+        const fallbackBudget = this.config.providers[budget.fallbackProvider]
+        const fallbackData = summary.byProvider[budget.fallbackProvider]
+        const fallbackSpent = fallbackData?.cost || 0
+
+        if (!fallbackBudget || fallbackBudget.monthlyLimit <= 0 || fallbackSpent < fallbackBudget.monthlyLimit) {
+          return {
+            allowed: false,
+            fallbackProvider: budget.fallbackProvider,
+            reason: `${provider} budget exceeded ($${providerSpent.toFixed(2)}/$${budget.monthlyLimit.toFixed(2)}), falling back to ${budget.fallbackProvider}.`
+          }
+        }
+      }
+
+      return {
+        allowed: false,
+        reason: `Monthly budget for ${provider} of $${budget.monthlyLimit.toFixed(2)} exceeded (spent: $${providerSpent.toFixed(2)}). Reset at start of next month.`
+      }
+    }
+
     return { allowed: true }
   }
 }

@@ -1,7 +1,34 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, memo } from 'react'
 import type { NetworkAIServerConfig } from '../../shared/network-ai-types'
 
-export function NetworkAIServersTab() {
+// Pure lookup functions — defined outside component to avoid re-creation on each render
+const SERVER_TYPE_LABELS: Record<string, string> = {
+  'ollama': 'Ollama',
+  'vllm': 'vLLM',
+  'text-generation-webui': 'Text Gen WebUI',
+  'llamacpp': 'llama.cpp',
+  'openai-compatible': 'OpenAI Compatible',
+  'custom': 'Custom'
+}
+
+const SERVER_TYPE_COLORS: Record<string, string> = {
+  'ollama': 'bg-purple-100 text-purple-600 dark:bg-purple-900/20 dark:text-purple-400',
+  'vllm': 'bg-blue-100 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400',
+  'text-generation-webui': 'bg-green-100 text-green-600 dark:bg-green-900/20 dark:text-green-400',
+  'llamacpp': 'bg-orange-100 text-orange-600 dark:bg-orange-900/20 dark:text-orange-400',
+  'openai-compatible': 'bg-cyan-100 text-cyan-600 dark:bg-cyan-900/20 dark:text-cyan-400',
+  'custom': 'bg-gray-100 text-gray-600 dark:bg-gray-900/20 dark:text-gray-400'
+}
+
+function getServerTypeLabel(type: string): string {
+  return SERVER_TYPE_LABELS[type] || type
+}
+
+function getServerTypeColor(type: string): string {
+  return SERVER_TYPE_COLORS[type] || SERVER_TYPE_COLORS['custom']
+}
+
+export const NetworkAIServersTab = memo(function NetworkAIServersTab() {
   const [servers, setServers] = useState<NetworkAIServerConfig[]>([])
   const [loading, setLoading] = useState(true)
   const [discovering, setDiscovering] = useState(false)
@@ -118,30 +145,6 @@ export function NetworkAIServersTab() {
     } catch (error) {
       console.error('Failed to remove server:', error)
     }
-  }
-
-  const getServerTypeLabel = (type: string): string => {
-    const labels: Record<string, string> = {
-      'ollama': 'Ollama',
-      'vllm': 'vLLM',
-      'text-generation-webui': 'Text Gen WebUI',
-      'llamacpp': 'llama.cpp',
-      'openai-compatible': 'OpenAI Compatible',
-      'custom': 'Custom'
-    }
-    return labels[type] || type
-  }
-
-  const getServerTypeColor = (type: string): string => {
-    const colors: Record<string, string> = {
-      'ollama': 'bg-purple-100 text-purple-600 dark:bg-purple-900/20 dark:text-purple-400',
-      'vllm': 'bg-blue-100 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400',
-      'text-generation-webui': 'bg-green-100 text-green-600 dark:bg-green-900/20 dark:text-green-400',
-      'llamacpp': 'bg-orange-100 text-orange-600 dark:bg-orange-900/20 dark:text-orange-400',
-      'openai-compatible': 'bg-cyan-100 text-cyan-600 dark:bg-cyan-900/20 dark:text-cyan-400',
-      'custom': 'bg-gray-100 text-gray-600 dark:bg-gray-900/20 dark:text-gray-400'
-    }
-    return colors[type] || colors['custom']
   }
 
   if (loading) {
@@ -427,4 +430,4 @@ export function NetworkAIServersTab() {
       </div>
     </div>
   )
-}
+})

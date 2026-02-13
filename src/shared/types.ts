@@ -1,5 +1,5 @@
 // LLM Provider Types
-export type LLMProvider = 'anthropic' | 'openai' | 'google' | 'local'
+export type LLMProvider = 'anthropic' | 'openai' | 'google' | 'local' | 'ollama'
 
 export type LLMModel =
   | 'gpt-4'
@@ -15,6 +15,7 @@ export type LLMModel =
   | 'gemma2:2b'
   | 'llama3:8b'
   | 'mistral:7b'
+  | 'llama3.2'
 
 export interface LLMConfig {
   provider: LLMProvider
@@ -272,6 +273,8 @@ export const IPC_CHANNELS = {
   DISCONNECT_MCP_SERVER: 'mcp:disconnect',
   LIST_MCP_TOOLS: 'mcp:list-tools',
   EXECUTE_MCP_TOOL: 'mcp:execute-tool',
+  MCP_AUTO_TOOL_GET_CONFIG: 'mcp:auto-tool-get-config',
+  MCP_AUTO_TOOL_UPDATE_CONFIG: 'mcp:auto-tool-update-config',
 
   // Conversations
   CREATE_CONVERSATION: 'conversations:create',
@@ -378,10 +381,25 @@ export const IPC_CHANNELS = {
   INTEGRATION_OBSIDIAN_INDEX: 'integration:obsidian-index',
   INTEGRATION_OBSIDIAN_DISCONNECT: 'integration:obsidian-disconnect',
 
+  // DocMind Integration
+  DOCMIND_GET_CONFIG: 'docmind:get-config',
+  DOCMIND_UPDATE_CONFIG: 'docmind:update-config',
+  DOCMIND_GET_STATUS: 'docmind:get-status',
+  DOCMIND_INITIALIZE: 'docmind:initialize',
+  DOCMIND_CONNECT_MCP: 'docmind:connect-mcp',
+  DOCMIND_DISCONNECT_MCP: 'docmind:disconnect-mcp',
+  DOCMIND_CHECK_REST: 'docmind:check-rest',
+
   // Budget Management
   BUDGET_GET_CONFIG: 'budget:get-config',
   BUDGET_UPDATE_CONFIG: 'budget:update-config',
   BUDGET_GET_STATUS: 'budget:get-status',
+
+  // Auto-Updater
+  UPDATER_CHECK: 'updater:check',
+  UPDATER_DOWNLOAD: 'updater:download',
+  UPDATER_INSTALL: 'updater:install',
+  UPDATER_GET_STATUS: 'updater:get-status',
 
   // Deployment / Server + Client
   DEPLOYMENT_GET_CONFIG: 'deployment:get-config',

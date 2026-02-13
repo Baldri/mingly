@@ -1,14 +1,17 @@
+import { lazy, Suspense } from 'react'
 import { ConversationSidebar } from './ConversationSidebar'
 import { MessageList } from './MessageList'
 import { MessageInput } from './MessageInput'
-import { SensitiveDataConsentDialog } from './SensitiveDataConsentDialog'
-import { DelegationProposalDialog } from './DelegationProposalDialog'
 import { OrchestrationStatusBar } from './OrchestrationStatusBar'
 import { RAGStatusBar } from './RAGStatusBar'
-import UpgradeDialog from './UpgradeDialog'
-import LicenseKeyDialog from './LicenseKeyDialog'
 import { useChatStore } from '../stores/chat-store'
 import { useOrchestratorStore } from '../stores/orchestrator-store'
+
+/** Lazy-loaded dialogs — only fetched when triggered */
+const SensitiveDataConsentDialog = lazy(() => import('./SensitiveDataConsentDialog').then(m => ({ default: m.SensitiveDataConsentDialog })))
+const DelegationProposalDialog = lazy(() => import('./DelegationProposalDialog').then(m => ({ default: m.DelegationProposalDialog })))
+const UpgradeDialog = lazy(() => import('./UpgradeDialog'))
+const LicenseKeyDialog = lazy(() => import('./LicenseKeyDialog'))
 
 export function ChatLayout() {
   const sensitiveDataConsent = useChatStore((state) => state.sensitiveDataConsent)
@@ -53,33 +56,39 @@ export function ChatLayout() {
         <MessageInput />
       </div>
 
-      {/* Sensitive Data Consent Dialog */}
+      {/* Sensitive Data Consent Dialog — lazy loaded */}
       {sensitiveDataConsent.isOpen && sensitiveDataConsent.request && (
-        <SensitiveDataConsentDialog
-          isOpen={sensitiveDataConsent.isOpen}
-          onClose={hideSensitiveDataConsent}
-          request={sensitiveDataConsent.request}
-          matches={sensitiveDataConsent.matches}
-          onSendAnyway={handleConsentGranted}
-          onUseLocalLLM={handleUseLocalLLM}
-        />
+        <Suspense fallback={null}>
+          <SensitiveDataConsentDialog
+            isOpen={sensitiveDataConsent.isOpen}
+            onClose={hideSensitiveDataConsent}
+            request={sensitiveDataConsent.request}
+            matches={sensitiveDataConsent.matches}
+            onSendAnyway={handleConsentGranted}
+            onUseLocalLLM={handleUseLocalLLM}
+          />
+        </Suspense>
       )}
 
-      {/* Delegation Proposal Dialog */}
+      {/* Delegation Proposal Dialog — lazy loaded */}
       {activeProposal && (
-        <DelegationProposalDialog
-          isOpen={!!activeProposal}
-          proposal={activeProposal}
-          isExecuting={isExecuting}
-          onApprove={approveProposal}
-          onDeny={denyProposal}
-          onDismiss={dismissProposal}
-        />
+        <Suspense fallback={null}>
+          <DelegationProposalDialog
+            isOpen={!!activeProposal}
+            proposal={activeProposal}
+            isExecuting={isExecuting}
+            onApprove={approveProposal}
+            onDeny={denyProposal}
+            onDismiss={dismissProposal}
+          />
+        </Suspense>
       )}
 
-      {/* Upgrade & License Dialogs */}
-      <UpgradeDialog />
-      <LicenseKeyDialog />
+      {/* Upgrade & License Dialogs — lazy loaded */}
+      <Suspense fallback={null}>
+        <UpgradeDialog />
+        <LicenseKeyDialog />
+      </Suspense>
     </div>
   )
 }
