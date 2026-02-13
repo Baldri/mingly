@@ -81,8 +81,8 @@ describe('LicenseActivationService', () => {
       expect(result.error).toContain('short')
     })
 
-    it('should accept Lemonsqueezy UUID-style keys for online validation', async () => {
-      // Lemonsqueezy keys like "38b1460a-5104-4067-a91d-77b872934d51"
+    it('should accept UUID-style keys for online validation', async () => {
+      // UUID keys like "38b1460a-5104-4067-a91d-77b872934d51"
       // are accepted for format validation but need online check
       mockFetch.mockResolvedValue({
         ok: true,
@@ -99,7 +99,7 @@ describe('LicenseActivationService', () => {
       expect(result.mode).toBe('online')
     })
 
-    it('should reject Lemonsqueezy key when offline (no MINGLY prefix)', async () => {
+    it('should reject non-MINGLY key when offline', async () => {
       mockFetch.mockRejectedValue(new Error('network'))
       const result = await service.activate('38b1460a-5104-4067-a91d-77b872934d51')
       expect(result.valid).toBe(false)
@@ -168,10 +168,10 @@ describe('LicenseActivationService', () => {
     })
   })
 
-  // ── Online activation (mocked Lemonsqueezy) ───────────────────
+  // ── Online activation (mocked Supabase Edge Function) ──────────
 
   describe('online activation', () => {
-    it('should activate when Lemonsqueezy returns valid', async () => {
+    it('should activate when online validation returns valid', async () => {
       mockFetch.mockResolvedValue({
         ok: true,
         json: async () => ({ activated: true, valid: true, license_key: {}, meta: { product_name: 'Mingly Pro' } })
@@ -183,7 +183,7 @@ describe('LicenseActivationService', () => {
       expect(result.tier).toBe('pro')
     })
 
-    it('should extract tier from Lemonsqueezy product_name', async () => {
+    it('should extract tier from API product_name', async () => {
       mockFetch.mockResolvedValue({
         ok: true,
         json: async () => ({
@@ -200,7 +200,7 @@ describe('LicenseActivationService', () => {
       expect(result.tier).toBe('team')
     })
 
-    it('should extract tier from Lemonsqueezy variant_name', async () => {
+    it('should extract tier from API variant_name', async () => {
       mockFetch.mockResolvedValue({
         ok: true,
         json: async () => ({
@@ -227,10 +227,10 @@ describe('LicenseActivationService', () => {
       expect(result.tier).toBe('team')
     })
 
-    it('should reject when Lemonsqueezy returns 422', async () => {
+    it('should reject when API returns 400', async () => {
       mockFetch.mockResolvedValue({
         ok: false,
-        status: 422,
+        status: 400,
         json: async () => ({ error: 'Invalid license key' })
       })
 
@@ -252,7 +252,7 @@ describe('LicenseActivationService', () => {
       expect(result.mode).toBe('offline')
     })
 
-    it('should extract expiry from Lemonsqueezy response', async () => {
+    it('should extract expiry from API response', async () => {
       const expiresDate = '2027-02-11T00:00:00Z'
       mockFetch.mockResolvedValue({
         ok: true,
@@ -314,16 +314,19 @@ describe('LicenseActivationService', () => {
   // ── Checkout URLs ─────────────────────────────────────────────
 
   describe('checkout URLs', () => {
-    it('should return the same checkout URL for all tiers', () => {
+    it('should return tier-specific Stripe checkout URLs', () => {
       const urlPro = service.getCheckoutUrl('pro')
       const urlTeam = service.getCheckoutUrl('team')
       const urlEnterprise = service.getCheckoutUrl('enterprise')
 
-      // All tiers share one Lemonsqueezy checkout (customer picks variant)
-      expect(urlPro).toContain('mingly-ch.lemonsqueezy.com')
-      expect(urlPro).toContain('d1cc0e68-cc65-4a89-9bc4-680ea6983db5')
-      expect(urlPro).toBe(urlTeam)
-      expect(urlTeam).toBe(urlEnterprise)
+      expect(urlPro).toContain('buy.stripe.com')
+      expect(urlTeam).toContain('buy.stripe.com')
+      expect(urlEnterprise).toContain('digital-opua.ch')
+
+      // Pro and Team are different Stripe Payment Links
+      expect(urlPro).not.toBe(urlTeam)
+      // Enterprise is mailto
+      expect(urlEnterprise).toContain('mailto:')
     })
   })
 })

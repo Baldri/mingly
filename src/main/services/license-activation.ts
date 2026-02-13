@@ -2,14 +2,14 @@
  * License Activation Service — validates and activates license keys.
  *
  * Supports two validation modes:
- *   1. Online: Validates against Lemonsqueezy API (production)
- *   2. Offline: SHA-256 hash-based validation (fallback / dev)
+ *   1. Online: Validates against Supabase Edge Function (production)
+ *   2. Offline: Format-based validation with grace period (fallback / dev)
  *
  * License key format: MINGLY-{TIER}-{RANDOM}-{CHECKSUM}
  *   e.g. MINGLY-PRO-A1B2C3D4E5F6-7890
  *
- * In production, the key is validated by the Lemonsqueezy /v1/licenses/activate
- * endpoint. If the network is unavailable, the offline fallback checks the key
+ * In production, the key is validated by the validate-license Supabase Edge
+ * Function. If the network is unavailable, the offline fallback checks the key
  * format and activates with a grace period (30 days).
  */
 
@@ -46,30 +46,33 @@ export interface LicenseInfo {
 
 interface LicenseStore {
   license: LicenseInfo | null
-  /** Lemonsqueezy store URL for checkout */
-  checkoutBaseUrl: string
 }
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Lemonsqueezy API base (production) */
-const LEMONSQUEEZY_API = 'https://api.lemonsqueezy.com/v1/licenses'
+/** Supabase Edge Function for license validation */
+const VALIDATE_LICENSE_URL =
+  'https://ebxehissgladuylweisx.supabase.co/functions/v1/validate-license'
 
 /** Offline grace period: 30 days */
 const OFFLINE_GRACE_DAYS = 30
 
 /**
- * Single Lemonsqueezy checkout URL for the Mingly product.
- * All tiers (Pro/Team/Enterprise) are variants within one product.
- * The customer selects the desired variant in the Lemonsqueezy checkout.
+ * Stripe Payment Link URLs per tier (monthly by default).
  */
-const CHECKOUT_PATH = '/checkout/buy/d1cc0e68-cc65-4a89-9bc4-680ea6983db5'
+const STRIPE_CHECKOUT_URLS: Record<string, string> = {
+  pro: 'https://buy.stripe.com/28EaEYexh6yb2qT66G6AM02',
+  'pro-yearly': 'https://buy.stripe.com/8x24gAgFp4q3d5xeDc6AM03',
+  team: 'https://buy.stripe.com/eVq00kah1g8L4z18eO6AM00',
+  'team-yearly': 'https://buy.stripe.com/4gMbJ20Gr2hVd5xamW6AM01',
+  enterprise: 'mailto:welcome@digital-opua.ch',
+}
 
 /**
- * Lemonsqueezy product name → tier mapping.
- * The API returns `meta.product_name` in the activation response.
+ * Product name → tier mapping.
+ * The validate-license Edge Function returns `meta.product_name`.
  * We match case-insensitively against these keywords.
  */
 const PRODUCT_NAME_TO_TIER: Array<{ pattern: RegExp; tier: SubscriptionTier }> = [
@@ -110,10 +113,7 @@ export class LicenseActivationService {
     } catch {
       // Corrupted → fresh start
     }
-    return {
-      license: null,
-      checkoutBaseUrl: 'https://mingly-ch.lemonsqueezy.com'
-    }
+    return { license: null }
   }
 
   private save(): void {
@@ -132,8 +132,9 @@ export class LicenseActivationService {
     return this.store.license ? { ...this.store.license } : null
   }
 
-  getCheckoutUrl(_tier?: Exclude<SubscriptionTier, 'free'>): string {
-    return this.store.checkoutBaseUrl + CHECKOUT_PATH
+  getCheckoutUrl(tier?: Exclude<SubscriptionTier, 'free'>): string {
+    const key = tier ?? 'pro'
+    return STRIPE_CHECKOUT_URLS[key] ?? STRIPE_CHECKOUT_URLS.pro
   }
 
   // ---- activation -----------------------------------------------------------
@@ -150,7 +151,7 @@ export class LicenseActivationService {
       return { valid: false, error: formatCheck.error, mode: 'offline' }
     }
 
-    // Try online validation first (works for both Mingly and Lemonsqueezy keys)
+    // Try online validation first (works for both MINGLY-format and other keys)
     const onlineResult = await this.validateOnline(normalizedKey)
     if (onlineResult !== null) {
       if (onlineResult.valid) {
@@ -189,10 +190,7 @@ export class LicenseActivationService {
   /**
    * Validate key format. Accepts two formats:
    *   1. Mingly format: MINGLY-{TIER}-{6+ chars}-{4+ chars}  (offline / manual)
-   *   2. Lemonsqueezy format: any non-empty string ≥8 chars   (online validation)
-   *
-   * Lemonsqueezy generates keys like "38b1460a-5104-4067-a91d-77b872934d51"
-   * or custom formats — we accept anything ≥8 chars and let the API decide.
+   *   2. Any string ≥8 chars (online validation via Supabase Edge Function)
    */
   private validateFormat(key: string): { valid: boolean; error?: string; isMinglyFormat: boolean } {
     if (key.length < 8) {
@@ -212,15 +210,15 @@ export class LicenseActivationService {
       return { valid: true, isMinglyFormat: true }
     }
 
-    // Anything else → assume Lemonsqueezy key, validate online
+    // Anything else → validate online
     return { valid: true, isMinglyFormat: false }
   }
 
-  // ---- online validation (Lemonsqueezy) -------------------------------------
+  // ---- online validation (Supabase Edge Function) ----------------------------
 
   private async validateOnline(key: string): Promise<LicenseValidationResult | null> {
     try {
-      const response = await fetch(`${LEMONSQUEEZY_API}/activate`, {
+      const response = await fetch(VALIDATE_LICENSE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({ license_key: key, instance_name: this.getInstanceId() }),
@@ -228,7 +226,7 @@ export class LicenseActivationService {
       })
 
       if (!response.ok) {
-        if (response.status === 404 || response.status === 422) {
+        if (response.status === 404 || response.status === 400) {
           // Key not found or invalid → definitive rejection
           const body = await response.json().catch(() => ({}))
           return {
@@ -282,7 +280,7 @@ export class LicenseActivationService {
   // ---- helpers --------------------------------------------------------------
 
   /**
-   * Extract tier from Lemonsqueezy API activation response.
+   * Extract tier from online validation response.
    * Checks `meta.product_name` and `meta.variant_name` for tier keywords.
    */
   private extractTierFromResponse(data: any): SubscriptionTier | null {
