@@ -123,6 +123,18 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.EXPORT_GDPR_DATA)
   },
 
+  // Local LLM Discovery & Routing
+  localLLM: {
+    discover: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.LOCAL_LLM_DISCOVER),
+
+    selectModel: (modelId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.LOCAL_LLM_SELECT_MODEL, modelId),
+
+    route: (message: string, models: Array<{ id: string; name: string; source: string; port: number }>) =>
+      ipcRenderer.invoke(IPC_CHANNELS.LOCAL_LLM_ROUTE, message, models)
+  },
+
   // Network AI Servers
   networkAI: {
     addServer: (config: any) =>

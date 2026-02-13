@@ -20,6 +20,106 @@ export function registerInfrastructureHandlers(): void {
   const uploadPermissionManager = getUploadPermissionManager()
 
   // ========================================
+  // Local LLM Auto-Discovery
+  // ========================================
+
+  wrapHandler(IPC_CHANNELS.LOCAL_LLM_DISCOVER, async () => {
+    const results: Array<{
+      source: string
+      name: string
+      size?: number
+      modified?: string
+      id: string
+      port: number
+    }> = []
+
+    // All known local LLM providers with their detection endpoints
+    const providers = [
+      { source: 'ollama', port: 11434, path: '/api/tags', parse: (d: any) => (d.models || []).map((m: any) => ({ name: m.name, size: m.size, modified: m.modified_at })) },
+      { source: 'lm-studio', port: 1234, path: '/v1/models', parse: (d: any) => (d.data || []).map((m: any) => ({ name: m.id })) },
+      { source: 'vllm', port: 8000, path: '/v1/models', parse: (d: any) => (d.data || []).map((m: any) => ({ name: m.id })) },
+      { source: 'localai', port: 8080, path: '/v1/models', parse: (d: any) => (d.data || []).map((m: any) => ({ name: m.id })) },
+      { source: 'text-gen-webui', port: 5000, path: '/v1/models', parse: (d: any) => (d.data || []).map((m: any) => ({ name: m.id })) },
+      { source: 'llamacpp', port: 8081, path: '/v1/models', parse: (d: any) => (d.data || []).map((m: any) => ({ name: m.id })) },
+    ]
+
+    // Scan all endpoints in parallel for speed
+    await Promise.all(providers.map(async ({ source, port, path, parse }) => {
+      try {
+        const res = await fetch(`http://localhost:${port}${path}`, {
+          signal: AbortSignal.timeout(3000)
+        })
+        if (res.ok) {
+          const data = await res.json()
+          for (const m of parse(data)) {
+            results.push({
+              source,
+              name: m.name,
+              size: m.size,
+              modified: m.modified,
+              id: `${source}:${m.name}`,
+              port
+            })
+          }
+        }
+      } catch {
+        // Provider not running — skip
+      }
+    }))
+
+    return { success: true, models: results }
+  })
+
+  wrapHandler(IPC_CHANNELS.LOCAL_LLM_SELECT_MODEL, async (modelId: string) => {
+    // Parse source and model name from "source:modelName"
+    const colonIdx = modelId.indexOf(':')
+    if (colonIdx === -1) return { success: false, error: 'Invalid model ID format' }
+    const source = modelId.slice(0, colonIdx)
+    const modelName = modelId.slice(colonIdx + 1)
+
+    // Map source to server type and port
+    const sourceConfig: Record<string, { type: string; port: number; name: string }> = {
+      'ollama': { type: 'ollama', port: 11434, name: 'Ollama' },
+      'lm-studio': { type: 'openai-compatible', port: 1234, name: 'LM Studio' },
+      'vllm': { type: 'vllm', port: 8000, name: 'vLLM' },
+      'localai': { type: 'openai-compatible', port: 8080, name: 'LocalAI' },
+      'text-gen-webui': { type: 'text-generation-webui', port: 5000, name: 'Text Gen WebUI' },
+      'llamacpp': { type: 'llamacpp', port: 8081, name: 'llama.cpp' },
+    }
+
+    const config = sourceConfig[source]
+    if (!config) return { success: false, error: `Unknown model source: ${source}` }
+
+    const serverId = `localhost:${config.port}`
+    let server = networkAIManager.getServer(serverId)
+    if (!server) {
+      server = networkAIManager.addServer({
+        name: `${config.name} (local)`,
+        type: config.type as any,
+        protocol: 'http',
+        host: 'localhost',
+        port: config.port,
+        apiKeyRequired: false,
+        isLocal: true,
+        isLAN: false,
+        tlsVerify: false,
+        allowSelfSigned: true
+      })
+    }
+
+    // For Ollama, use the built-in 'local' provider alias
+    const provider = source === 'ollama' ? 'local' : `network:${serverId}`
+    return { success: true, provider, model: modelName, server }
+  })
+
+  wrapHandler(IPC_CHANNELS.LOCAL_LLM_ROUTE, async (message: string, models: Array<{ id: string; name: string; source: string; port: number }>) => {
+    const { getRouter } = await import('../routing/intelligent-router')
+    const router = getRouter()
+    const result = await router.routeLocalModel(message, models)
+    return { success: true, ...result }
+  })
+
+  // ========================================
   // Network AI Server Management
   // ========================================
 

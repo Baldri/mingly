@@ -148,6 +148,8 @@ export interface AppSettings {
   wizardCompleted?: boolean
   /** UI language: German or English */
   language?: 'de' | 'en'
+  /** Whether document context / RAG is enabled (Free: file access only, Pro+: vector DB RAG) */
+  ragEnabled?: boolean
 }
 
 // Prompt Template Types
@@ -200,6 +202,7 @@ export type GatedFeature =
   | 'templates_custom'      // Pro+: Custom templates (Free gets built-in only)
   | 'comparison'            // Pro+: Side-by-side model comparison
   | 'unlimited_conversations' // Pro+: Unlimited conversations per day
+  | 'advanced_rag'           // Pro+: Vector DB RAG (Qdrant, ChromaDB, Weaviate, Pinecone)
   | 'team_workspaces'       // Team+: Team workspaces
   | 'shared_rag'            // Team+: Shared RAG knowledge base
   | 'team_rbac'             // Team+: Team RBAC
@@ -290,6 +293,11 @@ export const IPC_CHANNELS = {
   // File Operations
   SELECT_FILE: 'file:select',
   READ_FILE: 'file:read',
+
+  // Local LLM Discovery
+  LOCAL_LLM_DISCOVER: 'local-llm:discover',
+  LOCAL_LLM_SELECT_MODEL: 'local-llm:select-model',
+  LOCAL_LLM_ROUTE: 'local-llm:route',
 
   // Network AI Servers
   NETWORK_AI_ADD_SERVER: 'network-ai:add-server',

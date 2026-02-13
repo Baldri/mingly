@@ -1,13 +1,23 @@
-import { useState, useCallback } from 'react'
-import { Globe, Key, Server, Database, CheckCircle, Monitor, Wifi, ChevronRight } from 'lucide-react'
+import { useState, useCallback, useEffect } from 'react'
+import { Globe, Key, Server, Database, CheckCircle, Monitor, Wifi, ChevronRight, Search, Cpu, Loader2, FolderOpen, HardDrive, CheckCircle2 } from 'lucide-react'
 import { useTranslation } from '../utils/i18n'
 import { useSettingsStore } from '../stores/settings-store'
+import { useSubscriptionStore } from '../stores/subscription-store'
 
 interface SetupWizardProps {
   onComplete: () => void
 }
 
-const TOTAL_STEPS = 5
+interface DiscoveredModel {
+  source: string
+  name: string
+  size?: number
+  modified?: string
+  id: string
+  port: number
+}
+
+const TOTAL_STEPS = 6
 
 export function SetupWizard({ onComplete }: SetupWizardProps) {
   const [step, setStep] = useState(1)
@@ -15,6 +25,8 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
   const [ragEnabled, setRagEnabled] = useState(false)
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({})
   const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({})
+  const [selectedModels, setSelectedModels] = useState<string[]>([])
+  const [ragDirectory, setRagDirectory] = useState<string | null>(null)
 
   const { updateSettings, saveAPIKey } = useSettingsStore()
   const { t } = useTranslation()
@@ -36,13 +48,36 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
     }
   }, [apiKeys, saveAPIKey])
 
+  const tier = useSubscriptionStore((s) => s.tier)
+
   const handleFinish = useCallback(async () => {
+    // Register selected local models
+    for (const modelId of selectedModels) {
+      try {
+        await window.electronAPI.localLLM.selectModel(modelId)
+      } catch (err) {
+        console.warn('Failed to register local model:', modelId, err)
+      }
+    }
+
+    // RAG setup depends on tier:
+    // - Free: only file access (no vector DB context injection)
+    // - Pro+: enable full RAG context injection with vector DB
+    if (ragEnabled && tier !== 'free') {
+      try {
+        await window.electronAPI.ragContext.updateConfig({ enabled: true })
+      } catch (err) {
+        console.warn('Failed to enable RAG context injection:', err)
+      }
+    }
+
     await updateSettings({
       wizardCompleted: true,
       deploymentMode: selectedMode,
+      ragEnabled,
     })
     onComplete()
-  }, [selectedMode, updateSettings, onComplete])
+  }, [selectedMode, selectedModels, ragEnabled, tier, updateSettings, onComplete])
 
   const handleLanguageChange = useCallback(async (lang: 'de' | 'en') => {
     await updateSettings({ language: lang })
@@ -71,7 +106,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
                 </div>
                 {i < TOTAL_STEPS - 1 && (
                   <div
-                    className={`mx-2 h-0.5 w-12 sm:w-20 transition-colors ${
+                    className={`mx-2 h-0.5 w-8 sm:w-14 transition-colors ${
                       i + 1 < step ? 'bg-blue-500' : 'bg-gray-200 dark:bg-gray-700'
                     }`}
                   />
@@ -103,25 +138,36 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
             />
           )}
           {step === 3 && (
+            <StepLocalModels
+              t={t}
+              selectedModels={selectedModels}
+              onSelectionChange={setSelectedModels}
+            />
+          )}
+          {step === 4 && (
             <StepMode
               t={t}
               selectedMode={selectedMode}
               onModeChange={setSelectedMode}
             />
           )}
-          {step === 4 && (
+          {step === 5 && (
             <StepRAG
               t={t}
               ragEnabled={ragEnabled}
               onToggle={setRagEnabled}
+              ragDirectory={ragDirectory}
+              onDirectoryChange={setRagDirectory}
             />
           )}
-          {step === 5 && (
+          {step === 6 && (
             <StepReady
               t={t}
               savedKeys={savedKeys}
               selectedMode={selectedMode}
               ragEnabled={ragEnabled}
+              selectedModels={selectedModels}
+              ragDirectory={ragDirectory}
             />
           )}
         </div>
@@ -286,7 +332,7 @@ function StepAPIKeys({
           </div>
         ))}
 
-        {/* Local model option */}
+        {/* Local model hint */}
         <div className="rounded-lg border border-dashed border-gray-300 dark:border-gray-600 p-4">
           <div className="flex items-center gap-3">
             <Monitor className="h-5 w-5 text-gray-400" />
@@ -303,7 +349,153 @@ function StepAPIKeys({
   )
 }
 
-// ── Step 3: Mode Selection ───────────────────────────────────────
+// ── Step 3: Local LLM Discovery ─────────────────────────────────
+
+const SOURCE_BADGES: Record<string, { label: string; color: string }> = {
+  ollama: { label: 'Ollama', color: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' },
+  'lm-studio': { label: 'LM Studio', color: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400' },
+  vllm: { label: 'vLLM', color: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' },
+  localai: { label: 'LocalAI', color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' },
+  'text-gen-webui': { label: 'Text Gen WebUI', color: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' },
+  llamacpp: { label: 'llama.cpp', color: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' },
+}
+
+function StepLocalModels({
+  t,
+  selectedModels,
+  onSelectionChange,
+}: {
+  t: (key: string) => string
+  selectedModels: string[]
+  onSelectionChange: (models: string[]) => void
+}) {
+  const [models, setModels] = useState<DiscoveredModel[]>([])
+  const [isScanning, setIsScanning] = useState(true)
+  const tier = useSubscriptionStore((s) => s.tier)
+  const isFree = tier === 'free'
+
+  useEffect(() => {
+    let cancelled = false
+    async function scan() {
+      setIsScanning(true)
+      try {
+        const result = await window.electronAPI.localLLM.discover()
+        if (!cancelled && result.success) {
+          setModels(result.models)
+        }
+      } catch (err) {
+        console.warn('Local LLM discovery failed:', err)
+      } finally {
+        if (!cancelled) setIsScanning(false)
+      }
+    }
+    scan()
+    return () => { cancelled = true }
+  }, [])
+
+  const handleToggle = useCallback((modelId: string) => {
+    const isSelected = selectedModels.includes(modelId)
+    if (isSelected) {
+      onSelectionChange(selectedModels.filter(id => id !== modelId))
+    } else if (isFree) {
+      // Free tier: only 1 model allowed — replace selection
+      onSelectionChange([modelId])
+    } else {
+      onSelectionChange([...selectedModels, modelId])
+    }
+  }, [isFree, selectedModels, onSelectionChange])
+
+  // Group models by source
+  const grouped = models.reduce<Record<string, DiscoveredModel[]>>((acc, m) => {
+    if (!acc[m.source]) acc[m.source] = []
+    acc[m.source].push(m)
+    return acc
+  }, {})
+
+  const formatSize = (bytes?: number) => {
+    if (!bytes) return null
+    const gb = bytes / (1024 * 1024 * 1024)
+    return gb >= 1 ? `${gb.toFixed(1)} GB` : `${(bytes / (1024 * 1024)).toFixed(0)} MB`
+  }
+
+  return (
+    <div>
+      <div className="mb-6 text-center">
+        <Search className="mx-auto mb-3 h-10 w-10 text-blue-500" />
+        <h2 className="text-2xl font-bold">{t('wizard.localLLM.title')}</h2>
+        <p className="mt-1 text-gray-500 dark:text-gray-400">{t('wizard.localLLM.subtitle')}</p>
+      </div>
+
+      {isScanning ? (
+        <div className="flex flex-col items-center gap-3 py-12">
+          <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+          <p className="text-sm text-gray-500 dark:text-gray-400">{t('wizard.localLLM.scanning')}</p>
+        </div>
+      ) : models.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-gray-300 dark:border-gray-600 p-8 text-center">
+          <Cpu className="mx-auto mb-3 h-10 w-10 text-gray-300 dark:text-gray-600" />
+          <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
+            {t('wizard.localLLM.none')}
+          </p>
+          <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+            {t('wizard.localLLM.noneHint')}
+          </p>
+        </div>
+      ) : (
+        <>
+          {/* Tier hint */}
+          <div className="mb-4 rounded-md bg-gray-50 dark:bg-gray-800/50 px-4 py-2.5 text-center text-xs text-gray-500 dark:text-gray-400">
+            {isFree ? t('wizard.localLLM.freeLimit') : t('wizard.localLLM.proRouting')}
+          </div>
+
+          <div className="space-y-4 max-h-80 overflow-y-auto">
+            {Object.entries(grouped).map(([source, sourceModels]) => (
+              <div key={source}>
+                {/* Source header badge */}
+                <div className="mb-2 flex items-center gap-2">
+                  <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${SOURCE_BADGES[source]?.color || 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'}`}>
+                    {SOURCE_BADGES[source]?.label || source}
+                  </span>
+                  <span className="text-xs text-gray-400">:{sourceModels[0].port}</span>
+                </div>
+
+                <div className="space-y-2">
+                  {sourceModels.map((model) => {
+                    const isSelected = selectedModels.includes(model.id)
+                    return (
+                      <button
+                        key={model.id}
+                        onClick={() => handleToggle(model.id)}
+                        className={`flex w-full items-center gap-3 rounded-lg border-2 px-4 py-3 text-left transition-all ${
+                          isSelected
+                            ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                            : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
+                        }`}
+                      >
+                        <Cpu className={`h-5 w-5 flex-shrink-0 ${isSelected ? 'text-blue-500' : 'text-gray-400'}`} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{model.name}</p>
+                          {model.size && (
+                            <p className="text-xs text-gray-400">{formatSize(model.size)}</p>
+                          )}
+                        </div>
+                        <span className={`text-xs font-medium ${isSelected ? 'text-blue-500' : 'text-gray-400'}`}>
+                          {isSelected ? t('wizard.localLLM.selected') : t('wizard.localLLM.select')}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ── Step 4: Mode Selection ───────────────────────────────────────
 
 function StepMode({
   t,
@@ -393,74 +585,332 @@ function StepMode({
   )
 }
 
-// ── Step 4: Knowledge Base ───────────────────────────────────────
+// ── Step 5: Knowledge Base ───────────────────────────────────────
+
+interface RAGStatus {
+  qdrantOnline: boolean
+  wissenOnline: boolean
+  collections: Array<{ name: string; points_count?: number }>
+  loading: boolean
+}
 
 function StepRAG({
   t,
   ragEnabled,
   onToggle,
+  ragDirectory,
+  onDirectoryChange,
 }: {
   t: (key: string) => string
   ragEnabled: boolean
   onToggle: (enabled: boolean) => void
+  ragDirectory: string | null
+  onDirectoryChange: (dir: string | null) => void
 }) {
+  const tier = useSubscriptionStore((s) => s.tier)
+  const isFree = tier === 'free'
+
+  const [status, setStatus] = useState<RAGStatus>({
+    qdrantOnline: false,
+    wissenOnline: false,
+    collections: [],
+    loading: !isFree, // Free tier skips RAG detection
+  })
+
+  // Auto-detect existing RAG infrastructure on mount (Pro+ only)
+  useEffect(() => {
+    if (isFree) return
+    let cancelled = false
+    async function detect() {
+      const result: RAGStatus = {
+        qdrantOnline: false,
+        wissenOnline: false,
+        collections: [],
+        loading: false,
+      }
+
+      const checks = await Promise.allSettled([
+        window.electronAPI.ragHttp.health(),
+        window.electronAPI.ragWissen.health(),
+        window.electronAPI.ragHttp.listCollections(),
+      ])
+
+      if (cancelled) return
+
+      if (checks[0].status === 'fulfilled' && checks[0].value.success) {
+        result.qdrantOnline = true
+      }
+      if (checks[1].status === 'fulfilled' && checks[1].value.success) {
+        result.wissenOnline = true
+      }
+      if (checks[2].status === 'fulfilled' && checks[2].value.success && checks[2].value.collections) {
+        result.collections = checks[2].value.collections
+      }
+
+      setStatus(result)
+
+      // Auto-enable if RAG is already configured with collections
+      if (result.collections.length > 0 || result.wissenOnline) {
+        onToggle(true)
+      }
+    }
+    detect()
+    return () => { cancelled = true }
+  }, [isFree]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleSelectDirectory = async () => {
+    try {
+      const result = await window.electronAPI.fileAccess.requestDirectory(['read'])
+      if (result.success && result.directory) {
+        onDirectoryChange(result.directory)
+        onToggle(true)
+      }
+    } catch (err) {
+      console.warn('Directory selection failed:', err)
+    }
+  }
+
+  const hasExistingRAG = status.collections.length > 0 || status.wissenOnline
+  const totalDocs = status.collections.reduce((sum, c) => sum + (c.points_count || 0), 0)
+
   return (
     <div>
       <div className="mb-6 text-center">
         <Database className="mx-auto mb-3 h-10 w-10 text-blue-500" />
         <h2 className="text-2xl font-bold">{t('wizard.rag.title')}</h2>
-        <p className="mt-1 text-gray-500 dark:text-gray-400">{t('wizard.rag.subtitle')}</p>
+        <p className="mt-1 text-gray-500 dark:text-gray-400">
+          {isFree ? t('wizard.rag.subtitle.free') : t('wizard.rag.subtitle')}
+        </p>
       </div>
 
       <p className="mb-6 text-center text-sm text-gray-600 dark:text-gray-400">
-        {t('wizard.rag.description')}
+        {isFree ? t('wizard.rag.description.free') : t('wizard.rag.description')}
       </p>
 
-      <div className="space-y-3">
-        <button
-          onClick={() => onToggle(true)}
-          className={`flex w-full items-center gap-4 rounded-lg border-2 p-4 text-left transition-all ${
-            ragEnabled
-              ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-              : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
-          }`}
-        >
-          <Database className={`h-5 w-5 ${ragEnabled ? 'text-blue-500' : 'text-gray-400'}`} />
-          <span className="font-medium">{t('wizard.rag.enable')}</span>
-        </button>
+      {/* ── Free Tier: Simple document context ────────────────────── */}
+      {isFree ? (
+        <div className="space-y-4">
+          {/* Enable — share folders for AI context */}
+          <button
+            onClick={() => onToggle(true)}
+            className={`flex w-full items-center gap-4 rounded-lg border-2 p-4 text-left transition-all ${
+              ragEnabled
+                ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
+            }`}
+          >
+            <FolderOpen className={`h-5 w-5 flex-shrink-0 ${ragEnabled ? 'text-blue-500' : 'text-gray-400'}`} />
+            <div className="flex-1">
+              <span className="font-medium">{t('wizard.rag.enable.free')}</span>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                {t('wizard.rag.enable.free.desc')}
+              </p>
+            </div>
+          </button>
 
-        <button
-          onClick={() => onToggle(false)}
-          className={`flex w-full items-center gap-4 rounded-lg border-2 p-4 text-left transition-all ${
-            !ragEnabled
-              ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-              : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
-          }`}
-        >
-          <ChevronRight className={`h-5 w-5 ${!ragEnabled ? 'text-blue-500' : 'text-gray-400'}`} />
-          <span className="font-medium">{t('wizard.rag.disable')}</span>
-        </button>
-      </div>
+          {/* Directory picker — shown when enabled */}
+          {ragEnabled && (
+            <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+              <p className="text-sm font-medium mb-2">{t('wizard.rag.selectDir.free')}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                {t('wizard.rag.selectDir.free.desc')}
+              </p>
+
+              <button
+                onClick={handleSelectDirectory}
+                className="flex items-center gap-2 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 px-4 py-3 w-full text-sm hover:border-blue-400 hover:bg-blue-50 dark:hover:border-blue-600 dark:hover:bg-blue-900/10 transition-all"
+              >
+                <FolderOpen className="h-5 w-5 text-gray-400" />
+                {ragDirectory ? (
+                  <span className="text-blue-600 dark:text-blue-400 truncate">{ragDirectory}</span>
+                ) : (
+                  <span className="text-gray-500 dark:text-gray-400">{t('wizard.rag.selectDir')}</span>
+                )}
+              </button>
+            </div>
+          )}
+
+          {/* Upgrade hint */}
+          <div className="rounded-lg bg-gradient-to-r from-blue-50 to-purple-50 dark:from-blue-900/10 dark:to-purple-900/10 border border-blue-200 dark:border-blue-800 px-4 py-3">
+            <div className="flex items-center gap-3">
+              <Database className="h-4 w-4 flex-shrink-0 text-blue-500" />
+              <p className="text-xs text-blue-700 dark:text-blue-400">
+                <span className="font-semibold">Pro:</span> {t('wizard.rag.upgradeHint')}
+              </p>
+            </div>
+          </div>
+
+          {/* Skip */}
+          <button
+            onClick={() => { onToggle(false); onDirectoryChange(null) }}
+            className={`flex w-full items-center gap-4 rounded-lg border-2 p-4 text-left transition-all ${
+              !ragEnabled
+                ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
+            }`}
+          >
+            <ChevronRight className={`h-5 w-5 ${!ragEnabled ? 'text-blue-500' : 'text-gray-400'}`} />
+            <span className="font-medium">{t('wizard.rag.disable')}</span>
+          </button>
+        </div>
+      ) : status.loading ? (
+        /* ── Pro+ Tier: Loading ──────────────────────────────────── */
+        <div className="flex flex-col items-center gap-3 py-8">
+          <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+          <p className="text-sm text-gray-500 dark:text-gray-400">{t('wizard.rag.detecting')}</p>
+        </div>
+      ) : (
+        /* ── Pro+ Tier: Full RAG with vector databases ───────────── */
+        <div className="space-y-4">
+          {/* Existing RAG detected banner */}
+          {hasExistingRAG && (
+            <div className="rounded-lg border border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-900/20 p-4">
+              <div className="flex items-center gap-3">
+                <CheckCircle2 className="h-5 w-5 flex-shrink-0 text-green-600 dark:text-green-400" />
+                <div>
+                  <p className="text-sm font-medium text-green-800 dark:text-green-300">
+                    {t('wizard.rag.existingFound')}
+                  </p>
+                  <p className="text-xs text-green-700 dark:text-green-400 mt-0.5">
+                    {status.collections.length > 0 && (
+                      <span>{status.collections.length} {t('wizard.rag.collections')} ({totalDocs} {t('wizard.rag.chunks')})</span>
+                    )}
+                    {status.collections.length > 0 && status.wissenOnline && ' · '}
+                    {status.wissenOnline && (
+                      <span>RAG-Wissen {t('wizard.rag.connected')}</span>
+                    )}
+                  </p>
+                </div>
+              </div>
+
+              {/* Show collections */}
+              {status.collections.length > 0 && (
+                <div className="mt-3 space-y-1">
+                  {status.collections.map((col) => (
+                    <div key={col.name} className="flex items-center justify-between rounded-md bg-green-100 dark:bg-green-900/30 px-3 py-1.5 text-xs">
+                      <span className="font-medium text-green-800 dark:text-green-300">{col.name}</span>
+                      {col.points_count !== undefined && (
+                        <span className="text-green-600 dark:text-green-400">{col.points_count} {t('wizard.rag.chunks')}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Enable option */}
+          <button
+            onClick={() => onToggle(true)}
+            className={`flex w-full items-center gap-4 rounded-lg border-2 p-4 text-left transition-all ${
+              ragEnabled
+                ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
+            }`}
+          >
+            <Database className={`h-5 w-5 flex-shrink-0 ${ragEnabled ? 'text-blue-500' : 'text-gray-400'}`} />
+            <div className="flex-1">
+              <span className="font-medium">{t('wizard.rag.enable')}</span>
+              {hasExistingRAG && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  {t('wizard.rag.enableExisting')}
+                </p>
+              )}
+            </div>
+          </button>
+
+          {/* Directory selection — shown when enabled */}
+          {ragEnabled && (
+            <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-4">
+              <p className="text-sm font-medium mb-2">{t('wizard.rag.addDocs')}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                {t('wizard.rag.addDocsHint')}
+              </p>
+
+              <button
+                onClick={handleSelectDirectory}
+                className="flex items-center gap-2 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 px-4 py-3 w-full text-sm hover:border-blue-400 hover:bg-blue-50 dark:hover:border-blue-600 dark:hover:bg-blue-900/10 transition-all"
+              >
+                <FolderOpen className="h-5 w-5 text-gray-400" />
+                {ragDirectory ? (
+                  <span className="text-blue-600 dark:text-blue-400 truncate">{ragDirectory}</span>
+                ) : (
+                  <span className="text-gray-500 dark:text-gray-400">{t('wizard.rag.selectDir')}</span>
+                )}
+              </button>
+
+              {ragDirectory && (
+                <p className="mt-2 text-xs text-gray-400 dark:text-gray-500">
+                  {t('wizard.rag.indexAfter')}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Server status — only show if neither server is online and no collections */}
+          {!hasExistingRAG && ragEnabled && (
+            <div className="rounded-lg bg-gray-50 dark:bg-gray-800/50 px-4 py-3">
+              <div className="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
+                <HardDrive className="h-4 w-4 flex-shrink-0" />
+                <span>{t('wizard.rag.localHint')}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Skip option */}
+          <button
+            onClick={() => { onToggle(false); onDirectoryChange(null) }}
+            className={`flex w-full items-center gap-4 rounded-lg border-2 p-4 text-left transition-all ${
+              !ragEnabled
+                ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
+            }`}
+          >
+            <ChevronRight className={`h-5 w-5 ${!ragEnabled ? 'text-blue-500' : 'text-gray-400'}`} />
+            <span className="font-medium">{t('wizard.rag.disable')}</span>
+          </button>
+        </div>
+      )}
     </div>
   )
 }
 
-// ── Step 5: Ready ────────────────────────────────────────────────
+// ── Step 6: Ready ────────────────────────────────────────────────
 
 function StepReady({
   t,
   savedKeys,
   selectedMode,
   ragEnabled,
+  selectedModels,
+  ragDirectory,
 }: {
   t: (key: string) => string
   savedKeys: Record<string, boolean>
   selectedMode: string
   ragEnabled: boolean
+  selectedModels: string[]
+  ragDirectory: string | null
 }) {
   const configuredProviders = Object.entries(savedKeys)
     .filter(([_, saved]) => saved)
     .map(([provider]) => provider)
+
+  const localModelNames = selectedModels.map(id => {
+    const colonIdx = id.indexOf(':')
+    return colonIdx > -1 ? id.slice(colonIdx + 1) : id
+  })
+
+  const providerSummary = [
+    ...configuredProviders,
+    ...localModelNames,
+  ]
+
+  const ragValue = ragEnabled
+    ? ragDirectory
+      ? `${t('wizard.ready.enabled')} (${ragDirectory.split('/').pop()})`
+      : t('wizard.ready.enabled')
+    : t('wizard.ready.disabled')
 
   return (
     <div className="text-center">
@@ -474,7 +924,7 @@ function StepReady({
       <div className="mx-auto max-w-sm space-y-3 text-left">
         <SummaryRow
           label={t('wizard.ready.provider')}
-          value={configuredProviders.length > 0 ? configuredProviders.join(', ') : 'Ollama (local)'}
+          value={providerSummary.length > 0 ? providerSummary.join(', ') : 'Ollama (local)'}
         />
         <SummaryRow
           label={t('wizard.ready.mode')}
@@ -482,7 +932,7 @@ function StepReady({
         />
         <SummaryRow
           label={t('wizard.ready.rag')}
-          value={ragEnabled ? t('wizard.ready.enabled') : t('wizard.ready.disabled')}
+          value={ragValue}
         />
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, Check, AlertCircle } from 'lucide-react'
+import { ArrowLeft, Check, AlertCircle, Monitor, Server, Wifi, Info } from 'lucide-react'
 import { useSettingsStore } from '../stores/settings-store'
+import { useTranslation } from '../utils/i18n'
 import { PrivacySettingsTab } from './PrivacySettingsTab'
 import { NetworkAIServersTab } from './NetworkAIServersTab'
 import { FileAccessTab } from './FileAccessTab'
@@ -57,6 +58,7 @@ export function SettingsPage({ onBack }: Props) {
   >({})
 
   const [activeTab, setActiveTab] = useState<SettingsTab>('general')
+  const { t } = useTranslation()
 
   useEffect(() => {
     loadSettings()
@@ -226,6 +228,13 @@ export function SettingsPage({ onBack }: Props) {
                   </div>
                 </div>
               </div>
+
+              {/* Deployment Mode Section */}
+              <DeploymentModeSection
+                t={t}
+                currentMode={settings.deploymentMode || 'standalone'}
+                onModeChange={(mode) => updateSettings({ deploymentMode: mode })}
+              />
             </div>
           ) : activeTab === 'network' ? (
             <NetworkAIServersTab />
@@ -246,6 +255,68 @@ export function SettingsPage({ onBack }: Props) {
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+// ── Deployment Mode Section ─────────────────────────────────────
+
+const DEPLOYMENT_MODES = [
+  { id: 'standalone' as const, icon: Monitor, labelKey: 'settings.deployment.standalone' },
+  { id: 'server' as const, icon: Server, labelKey: 'settings.deployment.server' },
+  { id: 'hybrid' as const, icon: Wifi, labelKey: 'settings.deployment.hybrid' },
+] as const
+
+function DeploymentModeSection({
+  t,
+  currentMode,
+  onModeChange,
+}: {
+  t: (key: string) => string
+  currentMode: string
+  onModeChange: (mode: 'standalone' | 'server' | 'hybrid') => void
+}) {
+  const [changed, setChanged] = useState(false)
+
+  const handleChange = (mode: 'standalone' | 'server' | 'hybrid') => {
+    if (mode !== currentMode) {
+      onModeChange(mode)
+      setChanged(true)
+    }
+  }
+
+  return (
+    <div>
+      <h3 className="text-lg font-semibold mb-1">{t('settings.deployment.title')}</h3>
+      <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+        {t('settings.deployment.description')}
+      </p>
+
+      <div className="space-y-2">
+        {DEPLOYMENT_MODES.map(({ id, icon: Icon, labelKey }) => (
+          <button
+            key={id}
+            onClick={() => handleChange(id)}
+            className={`flex w-full items-center gap-3 rounded-lg border-2 px-4 py-3 text-left text-sm transition-all ${
+              currentMode === id
+                ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'
+            }`}
+          >
+            <Icon className={`h-5 w-5 flex-shrink-0 ${currentMode === id ? 'text-blue-500' : 'text-gray-400'}`} />
+            <span className={currentMode === id ? 'font-medium text-blue-700 dark:text-blue-300' : ''}>
+              {t(labelKey)}
+            </span>
+          </button>
+        ))}
+      </div>
+
+      {changed && (
+        <div className="mt-3 flex items-center gap-2 rounded-md bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          <Info className="h-4 w-4 flex-shrink-0" />
+          {t('settings.deployment.restart')}
+        </div>
+      )}
     </div>
   )
 }

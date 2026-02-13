@@ -5,8 +5,8 @@
  *   Free → Pro → Team → Enterprise
  *
  * Pricing (from STRATEGY.md):
- *   Free: Local models, basic chat, 3 conv/day, basic RAG
- *   Pro (CHF 24/mo): + Cloud APIs, Multimodal, Export, Templates, Comparison, Agents, Auto-Update, Unlimited
+ *   Free: Local models, basic chat, 3 conv/day, document context (chat uploads + shared folders)
+ *   Pro (CHF 24/mo): + Cloud APIs, Multimodal, Export, Templates, Comparison, Agents, Auto-Update, Unlimited, Advanced RAG (vector DBs)
  *   Team (CHF 69/user/mo): + Team Workspaces, Shared RAG, RBAC, Usage Tracking, Audit Logs, SSO (OAuth)
  *   Enterprise (custom): + SSO/SAML/LDAP, On-Premise, Compliance Dashboard, Priority SLA, Custom Integrations
  */
@@ -36,6 +36,7 @@ const FEATURE_MIN_TIER: Record<GatedFeature, SubscriptionTier> = {
   templates_custom: 'pro',
   comparison: 'pro',
   unlimited_conversations: 'pro',
+  advanced_rag: 'pro',
 
   // Team+ features
   team_workspaces: 'team',
