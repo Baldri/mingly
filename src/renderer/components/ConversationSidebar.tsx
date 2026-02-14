@@ -36,8 +36,11 @@ export const ConversationSidebar = memo(function ConversationSidebar() {
 
   return (
     <div className="w-64 border-r border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 flex flex-col">
-      {/* pt-10: push below macOS traffic lights (titleBarStyle: hiddenInset) */}
-      <div className="px-4 pb-4 pt-10 border-b border-gray-300 dark:border-gray-700">
+      {/* pt-10 on macOS: push below traffic lights (titleBarStyle: hiddenInset)
+          pt-4 on Windows/Linux: standard spacing (OS-native title bar handles itself) */}
+      <div className={`px-4 pb-4 border-b border-gray-300 dark:border-gray-700 ${
+        window.electronAPI?.platform === 'darwin' ? 'pt-10' : 'pt-4'
+      }`}>
         <h2 className="text-lg font-semibold mb-3">Conversations</h2>
         <button
           onClick={handleNewChat}

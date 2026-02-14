@@ -26,10 +26,12 @@ vi.mock('../../src/main/utils/encrypted-store', () => ({
 }))
 
 vi.mock('../../src/main/utils/simple-store', () => ({
-  SimpleStore: vi.fn().mockImplementation(function () {
-    this.get = vi.fn()
-    this.set = vi.fn()
-  })
+  SimpleStore: {
+    create: vi.fn(() => ({
+      get: vi.fn(),
+      set: vi.fn()
+    }))
+  }
 }))
 
 vi.mock('fs', () => ({

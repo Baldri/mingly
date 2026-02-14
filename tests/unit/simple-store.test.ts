@@ -25,6 +25,9 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // Reset singleton cache between tests so each test gets a fresh instance
+  SimpleStore._resetForTesting()
+
   // Clean up test files
   try {
     const files = fs.readdirSync(testDir)
@@ -40,40 +43,40 @@ import { SimpleStore } from '../../src/main/utils/simple-store'
 
 describe('SimpleStore', () => {
   it('should create a store with default filename', () => {
-    const store = new SimpleStore()
+    const store = SimpleStore.create()
     expect(store).toBeDefined()
   })
 
   it('should create a store with custom filename', () => {
-    const store = new SimpleStore('test-store.json')
+    const store = SimpleStore.create('test-store.json')
     expect(store).toBeDefined()
   })
 
   it('should set and get values', () => {
-    const store = new SimpleStore('test-get-set.json')
+    const store = SimpleStore.create('test-get-set.json')
     store.set('key1', 'value1')
     expect(store.get('key1')).toBe('value1')
   })
 
   it('should return default value for missing key', () => {
-    const store = new SimpleStore('test-default.json')
+    const store = SimpleStore.create('test-default.json')
     expect(store.get('nonexistent', 'default')).toBe('default')
   })
 
   it('should return undefined for missing key without default', () => {
-    const store = new SimpleStore('test-undef.json')
+    const store = SimpleStore.create('test-undef.json')
     expect(store.get('nonexistent')).toBeUndefined()
   })
 
   it('should check if key exists', () => {
-    const store = new SimpleStore('test-has.json')
+    const store = SimpleStore.create('test-has.json')
     store.set('exists', true)
     expect(store.has('exists')).toBe(true)
     expect(store.has('nope')).toBe(false)
   })
 
   it('should delete a key', () => {
-    const store = new SimpleStore('test-delete.json')
+    const store = SimpleStore.create('test-delete.json')
     store.set('toDelete', 'value')
     expect(store.has('toDelete')).toBe(true)
     store.delete('toDelete')
@@ -81,7 +84,7 @@ describe('SimpleStore', () => {
   })
 
   it('should clear all data', () => {
-    const store = new SimpleStore('test-clear.json')
+    const store = SimpleStore.create('test-clear.json')
     store.set('a', 1)
     store.set('b', 2)
     store.clear()
@@ -91,16 +94,24 @@ describe('SimpleStore', () => {
 
   it('should persist data to disk', () => {
     const filename = 'test-persist.json'
-    const store1 = new SimpleStore(filename)
+    const store1 = SimpleStore.create(filename)
     store1.set('persistent', 'data')
 
-    // Create a new store reading the same file
-    const store2 = new SimpleStore(filename)
+    // Reset cache to force re-read from disk
+    SimpleStore._resetForTesting()
+
+    const store2 = SimpleStore.create(filename)
     expect(store2.get('persistent')).toBe('data')
   })
 
+  it('should return same instance for same filename (singleton)', () => {
+    const store1 = SimpleStore.create('test-singleton.json')
+    const store2 = SimpleStore.create('test-singleton.json')
+    expect(store1).toBe(store2)
+  })
+
   it('should store complex objects', () => {
-    const store = new SimpleStore('test-complex.json')
+    const store = SimpleStore.create('test-complex.json')
     const complex = { nested: { array: [1, 2, 3], bool: true } }
     store.set('complex', complex)
     expect(store.get('complex')).toEqual(complex)

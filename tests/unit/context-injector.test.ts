@@ -14,10 +14,12 @@ vi.mock('electron', () => ({
 
 // Mock SimpleStore — don't persist any data to avoid cross-test contamination
 vi.mock('../../src/main/utils/simple-store', () => ({
-  SimpleStore: vi.fn().mockImplementation(function () {
-    this.get = vi.fn().mockReturnValue(undefined)
-    this.set = vi.fn()
-  })
+  SimpleStore: {
+    create: vi.fn(() => ({
+      get: vi.fn().mockReturnValue(undefined),
+      set: vi.fn()
+    }))
+  }
 }))
 
 // Mock RAG manager

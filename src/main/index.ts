@@ -11,14 +11,19 @@ import { getAutoUpdater } from './updater/auto-updater'
 let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {
+  const isMac = process.platform === 'darwin'
+
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 900,
     minHeight: 600,
     title: 'Mingly',
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 16, y: 16 },
+    // macOS: frameless inset title bar with custom traffic light position
+    // Windows/Linux: standard OS-native frame with title bar
+    ...(isMac
+      ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 16 } }
+      : { titleBarStyle: 'default' }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       nodeIntegration: false,

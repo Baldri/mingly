@@ -81,4 +81,9 @@ export class SimpleStore {
     this.data = {}
     this.save()
   }
+
+  /** @internal — clears singleton cache so each test gets a fresh instance */
+  static _resetForTesting(): void {
+    _instances.clear()
+  }
 }

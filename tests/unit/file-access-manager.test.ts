@@ -26,10 +26,12 @@ const mockStoreData = vi.hoisted(() => {
 })
 
 vi.mock('../../src/main/utils/simple-store', () => ({
-  SimpleStore: vi.fn().mockImplementation(function () {
-    this.get = mockStoreData.get
-    this.set = mockStoreData.set
-  })
+  SimpleStore: {
+    create: vi.fn(() => ({
+      get: mockStoreData.get,
+      set: mockStoreData.set
+    }))
+  }
 }))
 
 vi.mock('fs/promises', () => ({

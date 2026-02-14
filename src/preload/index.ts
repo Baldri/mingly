@@ -552,7 +552,10 @@ const api = {
   serviceDiscovery: {
     discover: (options?: { type?: 'rag' | 'mcp' | 'all' }) =>
       ipcRenderer.invoke(IPC_CHANNELS.SERVICE_DISCOVER, options),
-  }
+  },
+
+  // Platform Info
+  platform: process.platform as 'darwin' | 'win32' | 'linux'
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to
