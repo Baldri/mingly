@@ -50,7 +50,11 @@ const SetupWizard = lazy(() => import('./components/SetupWizard').then(m => ({ d
 const NewConversationModal = lazy(() => import('./components/NewConversationModal').then(m => ({ default: m.NewConversationModal })))
 
 function App() {
-  const [theme, setTheme] = useState<'light' | 'dark'>('dark')
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    // Apply dark class immediately to prevent flash of unstyled content
+    document.documentElement.classList.add('dark')
+    return 'dark'
+  })
   const [showSettings, setShowSettings] = useState(false)
   const [showNewConversation, setShowNewConversation] = useState(false)
   const [showWelcome, setShowWelcome] = useState(true)
@@ -64,9 +68,6 @@ function App() {
     Promise.all([loadSettings(), checkAPIKeys(), loadConversations()])
       .finally(() => setIsLoading(false))
 
-    // Apply theme
-    document.documentElement.classList.toggle('dark', theme === 'dark')
-
     // Listen for new conversation events
     const handleNewConversation = () => setShowNewConversation(true)
     window.addEventListener('open-new-conversation', handleNewConversation)
@@ -75,6 +76,18 @@ function App() {
       window.removeEventListener('open-new-conversation', handleNewConversation)
     }
   }, [])
+
+  // Sync theme from persisted settings when loaded
+  useEffect(() => {
+    if (settings?.theme) {
+      setTheme(settings.theme as 'light' | 'dark')
+    }
+  }, [settings?.theme])
+
+  // Apply theme class to <html> whenever it changes
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark')
+  }, [theme])
 
   useEffect(() => {
     // Hide welcome screen if user has conversations or API keys
@@ -86,7 +99,6 @@ function App() {
   const toggleTheme = () => {
     const newTheme = theme === 'light' ? 'dark' : 'light'
     setTheme(newTheme)
-    document.documentElement.classList.toggle('dark')
   }
 
   const hasAnyAPIKey = Object.values(apiKeysConfigured).some(Boolean)
@@ -177,13 +189,15 @@ function App() {
                 step={3}
                 title="Explore Features"
                 description="Knowledge base, analytics, integrations and more in Settings"
+                action="Open Settings"
+                onAction={() => setShowSettings(true)}
               />
             </div>
           </div>
         </main>
 
         <footer className="border-t border-gray-300 dark:border-gray-700 px-6 py-3 text-center text-sm text-gray-600 dark:text-gray-400">
-          Mingly v0.1.0 | Privacy-First
+          Mingly v0.2.0 | Privacy-First
         </footer>
       </div>
     )
@@ -230,7 +244,7 @@ function App() {
       <TourStartButton />
 
       {showNewConversation && (
-        <Suspense fallback={null}>
+        <Suspense fallback={<LoadingSpinner label="Loading..." />}>
           <NewConversationModal
             isOpen={showNewConversation}
             onClose={() => setShowNewConversation(false)}

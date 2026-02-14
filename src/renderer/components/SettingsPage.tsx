@@ -1,5 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
 import { ArrowLeft, Check, AlertCircle, Monitor, Server, Wifi, Info, Crown, Key } from 'lucide-react'
+import { LoadingSpinner } from './LoadingSpinner'
 import { useSettingsStore } from '../stores/settings-store'
 import { useSubscriptionStore } from '../stores/subscription-store'
 import { useTranslation } from '../utils/i18n'
@@ -98,7 +99,13 @@ export function SettingsPage({ onBack }: Props) {
     }, 5000)
   }
 
-  if (!settings) return null
+  if (!settings) {
+    return (
+      <div className="flex h-screen bg-white dark:bg-gray-900">
+        <LoadingSpinner label="Loading settings..." />
+      </div>
+    )
+  }
 
   return (
     <div className="flex h-screen bg-white dark:bg-gray-900">
@@ -420,7 +427,7 @@ function SubscriptionSection() {
       </div>
 
       {/* Dialogs */}
-      <Suspense fallback={null}>
+      <Suspense fallback={<LoadingSpinner />}>
         {showUpgradeDialog && <UpgradeDialog />}
         {showLicenseDialog && <LicenseKeyDialog />}
       </Suspense>

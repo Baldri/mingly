@@ -1,5 +1,6 @@
 import { lazy, Suspense, useState } from 'react'
 import { Columns2 } from 'lucide-react'
+import { LoadingSpinner } from './LoadingSpinner'
 import { ConversationSidebar } from './ConversationSidebar'
 import { MessageList } from './MessageList'
 import { MessageInput } from './MessageInput'
@@ -35,7 +36,7 @@ export function ChatLayout() {
   const [comparisonMode, setComparisonMode] = useState(false)
 
   return (
-    <div className="flex h-screen overflow-hidden bg-white dark:bg-gray-900">
+    <div className="flex h-full overflow-hidden bg-white dark:bg-gray-900">
       <ConversationSidebar />
 
       <div className="flex-1 flex flex-col">
@@ -110,7 +111,7 @@ export function ChatLayout() {
 
       {/* Sensitive Data Consent Dialog — lazy loaded */}
       {sensitiveDataConsent.isOpen && sensitiveDataConsent.request && (
-        <Suspense fallback={null}>
+        <Suspense fallback={<LoadingSpinner />}>
           <SensitiveDataConsentDialog
             isOpen={sensitiveDataConsent.isOpen}
             onClose={hideSensitiveDataConsent}
@@ -124,7 +125,7 @@ export function ChatLayout() {
 
       {/* Delegation Proposal Dialog — lazy loaded */}
       {activeProposal && (
-        <Suspense fallback={null}>
+        <Suspense fallback={<LoadingSpinner />}>
           <DelegationProposalDialog
             isOpen={!!activeProposal}
             proposal={activeProposal}
@@ -137,7 +138,7 @@ export function ChatLayout() {
       )}
 
       {/* Upgrade & License Dialogs — lazy loaded */}
-      <Suspense fallback={null}>
+      <Suspense fallback={<LoadingSpinner />}>
         <UpgradeDialog />
         <LicenseKeyDialog />
       </Suspense>
