@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-02-14
+
+### Breaking Changes
+- **Supabase completely removed** — No more external service dependency for license validation or downloads
+- **License validation mode** changed from `'online' | 'offline'` to `'signed' | 'legacy'`
+
+### Changed
+- **License activation** now uses HMAC-SHA256 signed keys for offline validation (no server required)
+- **Legacy keys** (unsigned format) accepted with 90-day grace period for migration
+- **Download URLs** now use GitHub Releases exclusively (`github.com/Baldri/mingly/releases`)
+- **Stripe Payment Links** remain as direct checkout URLs (no Supabase intermediary)
+
+### Added
+- `LicenseActivationService.generateKey()` static method for admin key generation
+- Platform-specific build scripts: `dist:mac`, `dist:win`, `dist:linux`, `dist:publish`
+
+### Removed
+- Supabase Edge Function license validation (`validateOnline()`)
+- Supabase Storage download URLs
+- Machine fingerprint (`getInstanceId()`) for license binding
+- Online-first validation flow (was: try online → fallback offline)
+
+### Technical
+- License key format: `MINGLY-{TIER}-{PAYLOAD}-{HMAC_8_CHARS}`
+- HMAC-SHA256 signature over `MINGLY-{TIER}-{PAYLOAD}` for tamper detection
+- 28 license tests (key generation, signed activation, legacy fallback, normalization)
+- 880 total tests passing across 50 test files
+
 ## [0.2.1] - 2025-02-14
 
 ### Fixed

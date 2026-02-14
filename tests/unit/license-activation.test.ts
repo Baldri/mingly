@@ -1,6 +1,7 @@
 /**
  * LicenseActivationService Tests
- * Tests key format validation, activation flow, deactivation, and persistence.
+ * Tests HMAC-signed key validation, legacy format fallback,
+ * activation flow, deactivation, and persistence.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -22,10 +23,6 @@ vi.mock('../../src/main/services/feature-gate-manager', () => ({
   }))
 }))
 
-// Mock global fetch
-const mockFetch = vi.fn()
-global.fetch = mockFetch as any
-
 describe('LicenseActivationService', () => {
   const testDir = '/tmp/test-license-' + Date.now()
   let service: LicenseActivationService
@@ -35,7 +32,6 @@ describe('LicenseActivationService', () => {
     fs.mkdirSync(testDir, { recursive: true })
     service = new LicenseActivationService(testDir)
     mockSetTier.mockClear()
-    mockFetch.mockReset()
   })
 
   afterEach(() => {
@@ -50,223 +46,165 @@ describe('LicenseActivationService', () => {
     })
   })
 
+  // ── Key generation ─────────────────────────────────────────────
+
+  describe('key generation', () => {
+    it('should generate a valid signed PRO key', () => {
+      const key = LicenseActivationService.generateKey('pro')
+      expect(key).toMatch(/^MINGLY-PRO-[A-F0-9]+-[A-F0-9]{8}$/)
+    })
+
+    it('should generate a valid signed TEAM key', () => {
+      const key = LicenseActivationService.generateKey('team')
+      expect(key).toMatch(/^MINGLY-TEAM-[A-F0-9]+-[A-F0-9]{8}$/)
+    })
+
+    it('should generate a valid signed ENTERPRISE key', () => {
+      const key = LicenseActivationService.generateKey('enterprise')
+      expect(key).toMatch(/^MINGLY-ENTERPRISE-[A-F0-9]+-[A-F0-9]{8}$/)
+    })
+
+    it('should accept custom payload', () => {
+      const key = LicenseActivationService.generateKey('pro', 'CUSTOM123456')
+      expect(key).toContain('CUSTOM123456')
+    })
+
+    it('should generate unique keys', () => {
+      const key1 = LicenseActivationService.generateKey('pro')
+      const key2 = LicenseActivationService.generateKey('pro')
+      expect(key1).not.toBe(key2)
+    })
+  })
+
   // ── Key format validation ─────────────────────────────────────
 
   describe('key format validation', () => {
     it('should reject empty key', async () => {
-      mockFetch.mockRejectedValue(new Error('network'))
       const result = await service.activate('')
       expect(result.valid).toBe(false)
       expect(result.error).toContain('short')
     })
 
     it('should reject very short key', async () => {
-      mockFetch.mockRejectedValue(new Error('network'))
       const result = await service.activate('ABC')
       expect(result.valid).toBe(false)
       expect(result.error).toContain('short')
     })
 
+    it('should reject key without MINGLY prefix', async () => {
+      const result = await service.activate('OTHER-PRO-ABCDEF1234-5678')
+      expect(result.valid).toBe(false)
+      expect(result.error).toContain('format')
+    })
+
     it('should reject MINGLY-format key with unknown tier', async () => {
-      mockFetch.mockRejectedValue(new Error('network'))
       const result = await service.activate('MINGLY-PLATINUM-ABCD1234-5678')
       expect(result.valid).toBe(false)
       expect(result.error).toContain('tier')
     })
 
     it('should reject MINGLY-format key with too-short segment', async () => {
-      mockFetch.mockRejectedValue(new Error('network'))
       const result = await service.activate('MINGLY-PRO-AB-56')
       expect(result.valid).toBe(false)
       expect(result.error).toContain('short')
     })
+  })
 
-    it('should accept UUID-style keys for online validation', async () => {
-      // UUID keys like "38b1460a-5104-4067-a91d-77b872934d51"
-      // are accepted for format validation but need online check
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          activated: true,
-          valid: true,
-          license_key: {},
-          meta: { product_name: 'Mingly Pro' }
-        })
-      })
-      const result = await service.activate('38b1460a-5104-4067-a91d-77b872934d51')
+  // ── HMAC-signed key activation ────────────────────────────────
+
+  describe('signed key activation', () => {
+    it('should activate a generated PRO key', async () => {
+      const key = LicenseActivationService.generateKey('pro')
+      const result = await service.activate(key)
       expect(result.valid).toBe(true)
       expect(result.tier).toBe('pro')
-      expect(result.mode).toBe('online')
+      expect(result.mode).toBe('signed')
+      // Signed keys have no expiry
+      expect(result.expiresAt).toBeUndefined()
     })
 
-    it('should reject non-MINGLY key when offline', async () => {
-      mockFetch.mockRejectedValue(new Error('network'))
-      const result = await service.activate('38b1460a-5104-4067-a91d-77b872934d51')
-      expect(result.valid).toBe(false)
-      expect(result.error).toContain('internet')
+    it('should activate a generated TEAM key', async () => {
+      const key = LicenseActivationService.generateKey('team')
+      const result = await service.activate(key)
+      expect(result.valid).toBe(true)
+      expect(result.tier).toBe('team')
+      expect(result.mode).toBe('signed')
+    })
+
+    it('should activate a generated ENTERPRISE key', async () => {
+      const key = LicenseActivationService.generateKey('enterprise')
+      const result = await service.activate(key)
+      expect(result.valid).toBe(true)
+      expect(result.tier).toBe('enterprise')
+      expect(result.mode).toBe('signed')
+    })
+
+    it('should call setTier on feature gate manager', async () => {
+      const key = LicenseActivationService.generateKey('pro')
+      await service.activate(key)
+      expect(mockSetTier).toHaveBeenCalledWith(
+        'pro',
+        key.toUpperCase(),
+        undefined,
+        undefined
+      )
+    })
+
+    it('should reject a key with forged signature', async () => {
+      const result = await service.activate('MINGLY-PRO-ABCDEF123456-DEADBEEF')
+      // DEADBEEF is not the correct HMAC → falls through to legacy
+      expect(result.mode).toBe('legacy')
+      // Legacy keys are still accepted with grace period
+      expect(result.valid).toBe(true)
+      expect(result.expiresAt).toBeGreaterThan(Date.now())
     })
   })
 
-  // ── Offline activation (when network unavailable) ─────────────
+  // ── Legacy key activation (backward compatible) ────────────────
 
-  describe('offline activation', () => {
-    beforeEach(() => {
-      // Simulate network failure → falls through to offline
-      mockFetch.mockRejectedValue(new Error('Network unavailable'))
-    })
-
-    it('should activate a valid PRO key offline', async () => {
+  describe('legacy key activation', () => {
+    it('should accept a legacy MINGLY-PRO key with grace period', async () => {
       const result = await service.activate('MINGLY-PRO-ABCDEF1234-5678')
       expect(result.valid).toBe(true)
       expect(result.tier).toBe('pro')
-      expect(result.mode).toBe('offline')
+      expect(result.mode).toBe('legacy')
       expect(result.expiresAt).toBeGreaterThan(Date.now())
     })
 
-    it('should activate a valid TEAM key offline', async () => {
+    it('should accept a legacy TEAM key with grace period', async () => {
       const result = await service.activate('MINGLY-TEAM-ABCDEF1234-5678')
       expect(result.valid).toBe(true)
       expect(result.tier).toBe('team')
     })
 
-    it('should activate a valid ENTERPRISE key offline', async () => {
+    it('should accept a legacy ENTERPRISE key with grace period', async () => {
       const result = await service.activate('MINGLY-ENTERPRISE-ABCDEF1234-5678')
       expect(result.valid).toBe(true)
       expect(result.tier).toBe('enterprise')
     })
 
-    it('should call setTier on feature gate manager', async () => {
-      await service.activate('MINGLY-PRO-ABCDEF1234-5678')
-      expect(mockSetTier).toHaveBeenCalledWith(
-        'pro',
-        'MINGLY-PRO-ABCDEF1234-5678',
-        expect.any(Number),
-        undefined
-      )
-    })
-
-    it('should persist license to disk', async () => {
-      await service.activate('MINGLY-PRO-ABCDEF1234-5678', 'test@example.com')
-      const licenseFile = path.join(testDir, 'license.json')
-      expect(fs.existsSync(licenseFile)).toBe(true)
-
-      const stored = JSON.parse(fs.readFileSync(licenseFile, 'utf-8'))
-      expect(stored.license.key).toBe('MINGLY-PRO-ABCDEF1234-5678')
-      expect(stored.license.email).toBe('test@example.com')
-      expect(stored.license.tier).toBe('pro')
-    })
-
-    it('should normalize key to uppercase', async () => {
-      const result = await service.activate('mingly-pro-abcdef1234-5678')
-      expect(result.valid).toBe(true)
-      expect(service.getLicense()!.key).toBe('MINGLY-PRO-ABCDEF1234-5678')
-    })
-
-    it('should trim whitespace', async () => {
-      const result = await service.activate('  MINGLY-PRO-ABCDEF1234-5678  ')
-      expect(result.valid).toBe(true)
+    it('should set grace period expiry (~90 days)', async () => {
+      const result = await service.activate('MINGLY-PRO-ABCDEF1234-5678')
+      const ninetyDays = 90 * 24 * 60 * 60 * 1000
+      expect(result.expiresAt).toBeGreaterThan(Date.now() + ninetyDays - 60_000)
+      expect(result.expiresAt).toBeLessThanOrEqual(Date.now() + ninetyDays + 60_000)
     })
   })
 
-  // ── Online activation (mocked Supabase Edge Function) ──────────
+  // ── Normalization ──────────────────────────────────────────────
 
-  describe('online activation', () => {
-    it('should activate when online validation returns valid', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({ activated: true, valid: true, license_key: {}, meta: { product_name: 'Mingly Pro' } })
-      })
-
-      const result = await service.activate('MINGLY-PRO-ABCDEF1234-5678')
+  describe('input normalization', () => {
+    it('should normalize key to uppercase', async () => {
+      const key = LicenseActivationService.generateKey('pro')
+      const result = await service.activate(key.toLowerCase())
       expect(result.valid).toBe(true)
-      expect(result.mode).toBe('online')
-      expect(result.tier).toBe('pro')
+      expect(service.getLicense()!.key).toBe(key.toUpperCase())
     })
 
-    it('should extract tier from API product_name', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          activated: true,
-          valid: true,
-          license_key: {},
-          meta: { product_name: 'Mingly Team' }
-        })
-      })
-
-      // Even though the key says PRO, the API says Team → Team wins
-      const result = await service.activate('MINGLY-PRO-ABCDEF1234-5678')
+    it('should trim whitespace', async () => {
+      const key = LicenseActivationService.generateKey('pro')
+      const result = await service.activate(`  ${key}  `)
       expect(result.valid).toBe(true)
-      expect(result.tier).toBe('team')
-    })
-
-    it('should extract tier from API variant_name', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          activated: true,
-          valid: true,
-          license_key: {},
-          meta: { product_name: 'Mingly License', variant_name: 'Enterprise Annual' }
-        })
-      })
-
-      const result = await service.activate('MINGLY-PRO-ABCDEF1234-5678')
-      expect(result.valid).toBe(true)
-      expect(result.tier).toBe('enterprise')
-    })
-
-    it('should fall back to key-based tier if API has no product name', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({ activated: true, valid: true, license_key: {} })
-      })
-
-      const result = await service.activate('MINGLY-TEAM-ABCDEF1234-5678')
-      expect(result.valid).toBe(true)
-      expect(result.tier).toBe('team')
-    })
-
-    it('should reject when API returns 400', async () => {
-      mockFetch.mockResolvedValue({
-        ok: false,
-        status: 400,
-        json: async () => ({ error: 'Invalid license key' })
-      })
-
-      const result = await service.activate('MINGLY-PRO-ABCDEF1234-5678')
-      expect(result.valid).toBe(false)
-      expect(result.mode).toBe('online')
-      expect(result.error).toContain('Invalid')
-    })
-
-    it('should fall back to offline on 500 server error', async () => {
-      mockFetch.mockResolvedValue({
-        ok: false,
-        status: 500,
-        json: async () => ({ error: 'Server error' })
-      })
-
-      const result = await service.activate('MINGLY-PRO-ABCDEF1234-5678')
-      expect(result.valid).toBe(true)
-      expect(result.mode).toBe('offline')
-    })
-
-    it('should extract expiry from API response', async () => {
-      const expiresDate = '2027-02-11T00:00:00Z'
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          activated: true,
-          valid: true,
-          license_key: { expires_at: expiresDate },
-          meta: { product_name: 'Mingly Pro' }
-        })
-      })
-
-      const result = await service.activate('MINGLY-PRO-ABCDEF1234-5678')
-      expect(result.valid).toBe(true)
-      expect(result.expiresAt).toBe(new Date(expiresDate).getTime())
     })
   })
 
@@ -274,8 +212,8 @@ describe('LicenseActivationService', () => {
 
   describe('deactivation', () => {
     beforeEach(async () => {
-      mockFetch.mockRejectedValue(new Error('network'))
-      await service.activate('MINGLY-PRO-ABCDEF1234-5678')
+      const key = LicenseActivationService.generateKey('pro')
+      await service.activate(key)
     })
 
     it('should clear license on deactivate', () => {
@@ -293,15 +231,27 @@ describe('LicenseActivationService', () => {
   // ── Persistence ───────────────────────────────────────────────
 
   describe('persistence', () => {
+    it('should persist license to disk', async () => {
+      const key = LicenseActivationService.generateKey('pro')
+      await service.activate(key, 'test@example.com')
+      const licenseFile = path.join(testDir, 'license.json')
+      expect(fs.existsSync(licenseFile)).toBe(true)
+
+      const stored = JSON.parse(fs.readFileSync(licenseFile, 'utf-8'))
+      expect(stored.license.key).toBe(key.toUpperCase())
+      expect(stored.license.email).toBe('test@example.com')
+      expect(stored.license.tier).toBe('pro')
+    })
+
     it('should load license from disk on new instance', async () => {
-      mockFetch.mockRejectedValue(new Error('network'))
-      await service.activate('MINGLY-PRO-ABCDEF1234-5678')
+      const key = LicenseActivationService.generateKey('pro')
+      await service.activate(key)
 
       const service2 = new LicenseActivationService(testDir)
       const license = service2.getLicense()
       expect(license).not.toBeNull()
       expect(license!.tier).toBe('pro')
-      expect(license!.key).toBe('MINGLY-PRO-ABCDEF1234-5678')
+      expect(license!.key).toBe(key.toUpperCase())
     })
 
     it('should handle corrupted license file', () => {

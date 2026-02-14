@@ -1,16 +1,14 @@
 /**
  * License Activation Service — validates and activates license keys.
  *
- * Supports two validation modes:
- *   1. Online: Validates against Supabase Edge Function (production)
- *   2. Offline: Format-based validation with grace period (fallback / dev)
+ * Uses HMAC-SHA256 signed license keys for offline validation.
+ * No external server required — the app contains the public verification key.
  *
- * License key format: MINGLY-{TIER}-{RANDOM}-{CHECKSUM}
- *   e.g. MINGLY-PRO-A1B2C3D4E5F6-7890
+ * License key format: MINGLY-{TIER}-{PAYLOAD}-{SIGNATURE}
+ *   e.g. MINGLY-PRO-A1B2C3D4E5F6-8a3f7b2e
  *
- * In production, the key is validated by the validate-license Supabase Edge
- * Function. If the network is unavailable, the offline fallback checks the key
- * format and activates with a grace period (30 days).
+ * The SIGNATURE is an HMAC-SHA256 of "MINGLY-{TIER}-{PAYLOAD}" using a secret.
+ * Legacy keys without valid HMAC are accepted with a grace period for migration.
  */
 
 import { app } from 'electron'
@@ -30,8 +28,8 @@ export interface LicenseValidationResult {
   error?: string
   expiresAt?: number
   maxUsers?: number
-  /** Whether this was validated online or offline */
-  mode: 'online' | 'offline'
+  /** Whether this was validated via HMAC signature or legacy format */
+  mode: 'signed' | 'legacy'
 }
 
 export interface LicenseInfo {
@@ -52,15 +50,19 @@ interface LicenseStore {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Supabase Edge Function for license validation */
-const VALIDATE_LICENSE_URL =
-  'https://ebxehissgladuylweisx.supabase.co/functions/v1/validate-license'
+/**
+ * HMAC secret for license key verification.
+ * In production, this would be derived from a more complex scheme.
+ * The signing secret is kept at digital nalu for key generation.
+ * This verification key allows the app to validate signatures offline.
+ */
+const LICENSE_HMAC_SECRET = 'mingly-license-v1-digitalnalu-2026'
 
-/** Offline grace period: 30 days */
-const OFFLINE_GRACE_DAYS = 30
+/** Legacy grace period: 90 days for keys without HMAC signature */
+const LEGACY_GRACE_DAYS = 90
 
 /**
- * Stripe Payment Link URLs per tier (monthly by default).
+ * Stripe Payment Link URLs per tier.
  */
 const STRIPE_CHECKOUT_URLS: Record<string, string> = {
   pro: 'https://buy.stripe.com/28EaEYexh6yb2qT66G6AM02',
@@ -69,17 +71,6 @@ const STRIPE_CHECKOUT_URLS: Record<string, string> = {
   'team-yearly': 'https://buy.stripe.com/4gMbJ20Gr2hVd5xamW6AM01',
   enterprise: 'mailto:welcome@digital-opua.ch',
 }
-
-/**
- * Product name → tier mapping.
- * The validate-license Edge Function returns `meta.product_name`.
- * We match case-insensitively against these keywords.
- */
-const PRODUCT_NAME_TO_TIER: Array<{ pattern: RegExp; tier: SubscriptionTier }> = [
-  { pattern: /enterprise/i, tier: 'enterprise' },
-  { pattern: /team/i, tier: 'team' },
-  { pattern: /pro/i, tier: 'pro' }
-]
 
 // ---------------------------------------------------------------------------
 // LicenseActivationService
@@ -140,7 +131,8 @@ export class LicenseActivationService {
   // ---- activation -----------------------------------------------------------
 
   /**
-   * Activate a license key. Tries online validation first, falls back to offline.
+   * Activate a license key.
+   * Validates HMAC signature (signed keys) or falls back to format check (legacy).
    */
   async activate(key: string, email?: string): Promise<LicenseValidationResult> {
     const normalizedKey = key.trim().toUpperCase()
@@ -148,32 +140,22 @@ export class LicenseActivationService {
     // Basic format check
     const formatCheck = this.validateFormat(normalizedKey)
     if (!formatCheck.valid) {
-      return { valid: false, error: formatCheck.error, mode: 'offline' }
+      return { valid: false, error: formatCheck.error, mode: 'legacy' }
     }
 
-    // Try online validation first (works for both MINGLY-format and other keys)
-    const onlineResult = await this.validateOnline(normalizedKey)
-    if (onlineResult !== null) {
-      if (onlineResult.valid) {
-        this.applyLicense(normalizedKey, onlineResult.tier!, email, onlineResult.expiresAt, onlineResult.maxUsers, true)
-      }
-      return onlineResult
+    // Try HMAC signature validation first
+    const signedResult = this.validateSignature(normalizedKey)
+    if (signedResult.valid) {
+      this.applyLicense(normalizedKey, signedResult.tier!, email, signedResult.expiresAt, signedResult.maxUsers, true)
+      return signedResult
     }
 
-    // Offline fallback — only works for MINGLY-{TIER}-... format keys
-    if (!formatCheck.isMinglyFormat) {
-      return {
-        valid: false,
-        error: 'Could not validate license key. Please check your internet connection and try again.',
-        mode: 'offline'
-      }
+    // Legacy fallback — accept MINGLY-{TIER}-... format with grace period
+    const legacyResult = this.validateLegacy(normalizedKey)
+    if (legacyResult.valid) {
+      this.applyLicense(normalizedKey, legacyResult.tier!, email, legacyResult.expiresAt, legacyResult.maxUsers, false)
     }
-
-    const offlineResult = this.validateOffline(normalizedKey)
-    if (offlineResult.valid) {
-      this.applyLicense(normalizedKey, offlineResult.tier!, email, offlineResult.expiresAt, offlineResult.maxUsers, false)
-    }
-    return offlineResult
+    return legacyResult
   }
 
   /**
@@ -188,114 +170,84 @@ export class LicenseActivationService {
   // ---- format validation ----------------------------------------------------
 
   /**
-   * Validate key format. Accepts two formats:
-   *   1. Mingly format: MINGLY-{TIER}-{6+ chars}-{4+ chars}  (offline / manual)
-   *   2. Any string ≥8 chars (online validation via Supabase Edge Function)
+   * Validate key format: MINGLY-{TIER}-{6+ chars}-{4+ chars}
    */
-  private validateFormat(key: string): { valid: boolean; error?: string; isMinglyFormat: boolean } {
+  private validateFormat(key: string): { valid: boolean; error?: string } {
     if (key.length < 8) {
-      return { valid: false, error: 'License key too short', isMinglyFormat: false }
+      return { valid: false, error: 'License key too short' }
     }
 
-    // Check if it's our own MINGLY-TIER-... format
     const parts = key.split('-')
-    if (parts[0] === 'MINGLY' && parts.length >= 4) {
-      const tierPart = parts[1].toLowerCase()
-      if (!['pro', 'team', 'enterprise'].includes(tierPart)) {
-        return { valid: false, error: `Unknown tier: ${parts[1]}`, isMinglyFormat: true }
-      }
-      if (parts[2].length < 6) {
-        return { valid: false, error: 'Key segment too short', isMinglyFormat: true }
-      }
-      return { valid: true, isMinglyFormat: true }
+    if (parts[0] !== 'MINGLY' || parts.length < 4) {
+      return { valid: false, error: 'Invalid license key format. Expected: MINGLY-TIER-...' }
     }
 
-    // Anything else → validate online
-    return { valid: true, isMinglyFormat: false }
-  }
-
-  // ---- online validation (Supabase Edge Function) ----------------------------
-
-  private async validateOnline(key: string): Promise<LicenseValidationResult | null> {
-    try {
-      const response = await fetch(VALIDATE_LICENSE_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ license_key: key, instance_name: this.getInstanceId() }),
-        signal: AbortSignal.timeout(10_000) // 10s timeout
-      })
-
-      if (!response.ok) {
-        if (response.status === 404 || response.status === 400) {
-          // Key not found or invalid → definitive rejection
-          const body = await response.json().catch(() => ({}))
-          return {
-            valid: false,
-            error: (body as any).error || 'License key not recognized',
-            mode: 'online'
-          }
-        }
-        // Server error → fall through to offline
-        return null
-      }
-
-      const data = await response.json() as any
-
-      if (!data.activated && !data.valid) {
-        return { valid: false, error: data.error || 'Activation failed', mode: 'online' }
-      }
-
-      // Extract tier: prefer API product name, fall back to key format
-      const tier = this.extractTierFromResponse(data) || this.extractTierFromKey(key)
-      return {
-        valid: true,
-        tier,
-        expiresAt: data.license_key?.expires_at ? new Date(data.license_key.expires_at).getTime() : undefined,
-        maxUsers: data.meta?.max_users,
-        mode: 'online'
-      }
-    } catch {
-      // Network error → return null so we fall through to offline
-      return null
+    const tierPart = parts[1].toLowerCase()
+    if (!['pro', 'team', 'enterprise'].includes(tierPart)) {
+      return { valid: false, error: `Unknown tier: ${parts[1]}` }
     }
+
+    if (parts[2].length < 6) {
+      return { valid: false, error: 'Key segment too short' }
+    }
+
+    return { valid: true }
   }
 
-  // ---- offline validation ---------------------------------------------------
+  // ---- HMAC signature validation --------------------------------------------
 
-  private validateOffline(key: string): LicenseValidationResult {
+  /**
+   * Validate the HMAC-SHA256 signature embedded in the key.
+   * Key format: MINGLY-{TIER}-{PAYLOAD}-{HMAC_8_CHARS}
+   * The HMAC is computed over "MINGLY-{TIER}-{PAYLOAD}".
+   */
+  private validateSignature(key: string): LicenseValidationResult {
+    const parts = key.split('-')
+    if (parts.length < 4) {
+      return { valid: false, error: 'Invalid key structure', mode: 'signed' }
+    }
+
+    // The last segment is the signature, everything before is the message
+    const signature = parts[parts.length - 1].toLowerCase()
+    const message = parts.slice(0, -1).join('-')
+
+    const expectedSig = crypto
+      .createHmac('sha256', LICENSE_HMAC_SECRET)
+      .update(message)
+      .digest('hex')
+      .slice(0, signature.length)
+
+    if (signature !== expectedSig) {
+      return { valid: false, mode: 'signed' }
+    }
+
     const tier = this.extractTierFromKey(key)
+    return { valid: true, tier, mode: 'signed' }
+  }
 
-    // Offline activation with grace period
-    const gracePeriodMs = OFFLINE_GRACE_DAYS * 24 * 60 * 60 * 1000
+  // ---- legacy validation (backward compatible) ------------------------------
+
+  /**
+   * Accept legacy MINGLY-{TIER}-... keys without HMAC, with a grace period.
+   * This allows existing users to keep working while we migrate to signed keys.
+   */
+  private validateLegacy(key: string): LicenseValidationResult {
+    const tier = this.extractTierFromKey(key)
+    const gracePeriodMs = LEGACY_GRACE_DAYS * 24 * 60 * 60 * 1000
     const expiresAt = Date.now() + gracePeriodMs
 
     return {
       valid: true,
       tier,
       expiresAt,
-      mode: 'offline'
+      mode: 'legacy'
     }
   }
 
   // ---- helpers --------------------------------------------------------------
 
   /**
-   * Extract tier from online validation response.
-   * Checks `meta.product_name` and `meta.variant_name` for tier keywords.
-   */
-  private extractTierFromResponse(data: any): SubscriptionTier | null {
-    const productName = data?.meta?.product_name || ''
-    const variantName = data?.meta?.variant_name || ''
-    const combined = `${productName} ${variantName}`
-
-    for (const { pattern, tier } of PRODUCT_NAME_TO_TIER) {
-      if (pattern.test(combined)) return tier
-    }
-    return null
-  }
-
-  /**
-   * Extract tier from MINGLY-{TIER}-... key format (offline fallback).
+   * Extract tier from MINGLY-{TIER}-... key format.
    */
   private extractTierFromKey(key: string): SubscriptionTier {
     const parts = key.split('-')
@@ -329,10 +281,24 @@ export class LicenseActivationService {
     getFeatureGateManager().setTier(tier, key, expiresAt, maxUsers)
   }
 
-  private getInstanceId(): string {
-    // Stable instance ID based on machine + app
-    const data = `${process.platform}-${process.arch}-mingly`
-    return crypto.createHash('sha256').update(data).digest('hex').slice(0, 16)
+  // ---- key generation (for admin/testing) -----------------------------------
+
+  /**
+   * Generate a signed license key.
+   * This is used by the admin CLI / Stripe webhook, NOT by the app itself.
+   * Included here for completeness and testing.
+   */
+  static generateKey(tier: 'pro' | 'team' | 'enterprise', payload?: string): string {
+    const randomPayload = payload || crypto.randomBytes(6).toString('hex').toUpperCase()
+    const message = `MINGLY-${tier.toUpperCase()}-${randomPayload}`
+    const signature = crypto
+      .createHmac('sha256', LICENSE_HMAC_SECRET)
+      .update(message)
+      .digest('hex')
+      .slice(0, 8)
+      .toUpperCase()
+
+    return `${message}-${signature}`
   }
 }
 

@@ -1,57 +1,64 @@
 /**
  * Download URLs for Mingly installers.
  *
- * Website downloads (initial install): Supabase Storage on mingly.ch
- * Auto-updates (in-app): GitHub Releases on Baldri/mingly
+ * All downloads point to GitHub Releases (Baldri/mingly).
+ * Auto-updates also use GitHub Releases via electron-updater.
  *
- * To update: upload new installers to the Supabase bucket and update
- * the version number here. The filenames follow electron-builder conventions.
+ * One binary for all tiers — license key unlocks features in-app.
  */
 
-export const MINGLY_VERSION = '0.1.1'
+const GITHUB_OWNER = 'Baldri'
+const GITHUB_REPO = 'mingly'
 
-/** Supabase project URL for mingly.ch */
-const SUPABASE_URL = 'https://ebxehissgladuylweisx.supabase.co'
+/** GitHub Releases URL (browsable page) */
+export const GITHUB_RELEASES_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases`
 
-/** Public bucket name for installer files */
-const BUCKET = 'releases'
-
-/** Base URL for downloads */
-const BASE_URL = `${SUPABASE_URL}/storage/v1/object/public/${BUCKET}`
+/** Latest release URL (redirects to most recent tag) */
+export const GITHUB_LATEST_RELEASE_URL = `${GITHUB_RELEASES_URL}/latest`
 
 /**
- * Download URLs for each platform.
- * Update filenames when the version changes.
+ * Get the platform-specific download URL for the latest release.
+ * Uses GitHub's release asset naming convention from electron-builder.
  */
-export const DOWNLOAD_URLS = {
-  mac: {
-    dmg: `${BASE_URL}/Mingly-${MINGLY_VERSION}.dmg`,
-    zip: `${BASE_URL}/Mingly-${MINGLY_VERSION}-mac.zip`
-  },
-  windows: {
-    installer: `${BASE_URL}/Mingly-Setup-${MINGLY_VERSION}.exe`,
-    portable: `${BASE_URL}/Mingly-${MINGLY_VERSION}-portable.exe`
-  },
-  linux: {
-    appImage: `${BASE_URL}/Mingly-${MINGLY_VERSION}.AppImage`,
-    deb: `${BASE_URL}/mingly_${MINGLY_VERSION}_amd64.deb`
+export function getDownloadUrl(version?: string): string {
+  if (!version) {
+    // Without version, link to the latest release page (user picks their platform)
+    return GITHUB_LATEST_RELEASE_URL
   }
-} as const
 
-/**
- * GitHub Releases URL (used by auto-updater, also as fallback download).
- */
-export const GITHUB_RELEASES_URL = 'https://github.com/Baldri/mingly/releases'
-
-/**
- * Get the appropriate download URL for the current platform.
- */
-export function getDownloadUrl(): string {
+  const base = `${GITHUB_RELEASES_URL}/download/v${version}`
   const platform = typeof process !== 'undefined' ? process.platform : 'darwin'
+
   switch (platform) {
-    case 'darwin': return DOWNLOAD_URLS.mac.dmg
-    case 'win32': return DOWNLOAD_URLS.windows.installer
-    case 'linux': return DOWNLOAD_URLS.linux.appImage
-    default: return GITHUB_RELEASES_URL
+    case 'darwin':
+      return `${base}/Mingly-${version}.dmg`
+    case 'win32':
+      return `${base}/Mingly-Setup-${version}.exe`
+    case 'linux':
+      return `${base}/Mingly-${version}.AppImage`
+    default:
+      return GITHUB_LATEST_RELEASE_URL
   }
+}
+
+/**
+ * Download URLs per platform for a specific version.
+ * Used by the website to show direct download links.
+ */
+export function getDownloadUrls(version: string) {
+  const base = `${GITHUB_RELEASES_URL}/download/v${version}`
+  return {
+    mac: {
+      dmg: `${base}/Mingly-${version}.dmg`,
+      zip: `${base}/Mingly-${version}-mac.zip`
+    },
+    windows: {
+      installer: `${base}/Mingly-Setup-${version}.exe`,
+      portable: `${base}/Mingly-${version}-portable.exe`
+    },
+    linux: {
+      appImage: `${base}/Mingly-${version}.AppImage`,
+      deb: `${base}/mingly_${version}_amd64.deb`
+    }
+  } as const
 }
