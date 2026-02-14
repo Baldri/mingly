@@ -11,12 +11,16 @@ Mingly gives you unified access to Claude, ChatGPT, Gemini, and local LLMs in a 
 ## Highlights
 
 - **Multi-Provider** — Claude, GPT-4, Gemini, Ollama (local) in one interface
-- **Intelligent Routing** — AI-powered request classification routes to the best model
+- **Model Comparison** — Send the same prompt to up to 3 models in parallel, compare outputs side-by-side
+- **Intelligent Routing** — Gemma 2B auto-routes requests to the best model, or switch to manual
+- **Local LLM Discovery** — Auto-detects Ollama, LM Studio, vLLM, LocalAI and more
+- **Service Discovery** — Finds RAG and MCP servers on local machine, network, and cloud
 - **Hybrid Orchestration** — Local LLM detects cloud needs, delegates with your approval
-- **Knowledge Base** — Index your local documents for context-aware AI responses (RAG + RAG-Wissen)
+- **Knowledge Base** — Index your local documents for context-aware AI responses (RAG with custom server naming)
 - **MCP Tools** — Extend functionality with Model Context Protocol tools + auto-tool-selection
+- **Auto-Updates** — Built-in updater with tier-aware download (Pro+ auto-install, Free manual)
 - **Server Mode** — Share AI access across your network via REST + WebSocket API
-- **Enterprise Ready** — RBAC, audit logging, budget controls, GDPR/DSG compliance
+- **Enterprise Ready** — RBAC, audit logging, budget controls, GDPR/DSG compliance, license activation
 - **Activity Tracking** — Token/cost analytics per provider, daily summaries, budget alerts
 - **Secure** — AES-256-GCM encrypted API keys, input sanitization, CSP, rate limiting, sensitive data detection
 - **DocMind Integration** — MCPO + RAG context injection for document intelligence

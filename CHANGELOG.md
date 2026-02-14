@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2025-02-14
+
+### Added
+- **Model Comparison** — Send the same prompt to 2–3 LLMs in parallel, view responses side-by-side, mark a winner
+- **Service Discovery** — Unified discovery of RAG and MCP servers across local, network, and cloud endpoints
+- **Updater UI** — "Check for Updates" section in Settings with progress bar, tier-aware download/install
+- **License Activation** — Subscription section in Settings (tier badge, license key entry, upgrade) + tier badge in sidebar
+- **Routing Mode Toggle** — Switch between manual model selection and Gemma auto-routing from the chat header
+- **Active Model Indicator** — Shows current provider/model in the chat header with status dot
+- **Local LLM Discovery** — Auto-detects Ollama, LM Studio, vLLM, LocalAI, Text Gen WebUI, llama.cpp in New Conversation modal
+- **Custom RAG Server Name** — Users can customize the display name of their RAG server (replaces hardcoded "RAG-Wissen")
+- **Gemma Auto-Routing Option** — "Gemma Auto-Routing" as a provider in New Conversation modal
+
+### Changed
+- RAG-Wissen defaults to disabled (`ragWissenEnabled: false`) for public release
+- `SimpleStore` now uses singleton factory pattern (`SimpleStore.create()`) to prevent stale-cache overwrites
+
+### Fixed
+- **Setup wizard re-appearing on restart** — Multiple `SimpleStore` instances sharing `config.json` overwrote each other's changes, losing `wizardCompleted` flag
+- **API key warning on first open** — "No API key configured" showed before keys were loaded; now waits for `keysLoaded`
+- **macOS traffic lights overlapping sidebar** — Added top padding to push "Conversations" header below close/minimize/maximize buttons
+- **UPDATE_SETTINGS not returning merged data** — Handler now returns `{ success: true, settings: merged }` for proper UI sync
+
 ## [0.1.1] - 2025-02-13
 
 ### Security

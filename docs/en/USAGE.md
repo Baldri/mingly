@@ -3,16 +3,58 @@
 ## Starting a Chat
 
 1. Click **New Chat** (plus icon in the sidebar)
-2. Select a provider and model
+2. Select a provider and model (cloud providers, local models, or Gemma Auto-Routing)
 3. Type your message and press **Enter**
 
 Responses are streamed in real time.
+
+### Local Model Discovery
+
+When you open the New Chat dialog, Mingly automatically scans for local LLM servers:
+
+- **Ollama** (port 11434)
+- **LM Studio** (port 1234)
+- **vLLM** (port 8000)
+- **LocalAI** (port 8080)
+- **Text Gen WebUI** (port 5000)
+- **llama.cpp** (port 8081)
+
+Discovered models appear under the **Local Models** group.
+
+### Gemma Auto-Routing
+
+Select **Gemma Auto-Routing** as provider to let Gemma 2B classify your request and route it to the best model automatically.
+
+## Model Indicator
+
+The chat header shows which model is active for the current conversation:
+
+```
+● anthropic / claude-3-5-sonnet
+```
+
+## Model Comparison
+
+Compare how different models respond to the same prompt:
+
+1. Click the **Columns** icon (⫼) in the chat header to enter comparison mode
+2. Add 2–3 models (e.g. Claude, GPT-4, Gemini)
+3. Enter a prompt and click **Compare**
+4. View responses side-by-side with latency, token count, and cost
+5. Click **Mark as Winner** on the best response
+
+## Routing Mode
+
+Toggle between manual and auto-routing in the chat header:
+
+- **Manual** (User icon) — You choose the model for each conversation
+- **Auto** (Sparkles icon) — Gemma 2B analyzes each request and picks the best model
 
 ## Switching Providers
 
 You can switch AI providers at any time:
 
-- **In chat**: Click the provider name at the top of the chat window
+- **In chat**: The model indicator shows the current provider/model
 - **New chat**: Choose a different provider when creating a conversation
 - **Default provider**: Set in Settings under *General*
 
@@ -30,6 +72,23 @@ The sidebar lists all conversations chronologically:
 
 Conversations are automatically titled based on their content. You can change the title at any time.
 
+## Service Discovery
+
+Mingly can automatically discover RAG and MCP servers:
+
+1. Go to **Settings > RAG** or **Settings > MCP Servers**
+2. Click **Discover**
+3. Mingly scans local ports, your LAN subnet, and configured cloud endpoints
+4. Discovered services appear with their status (online/offline) and location (local/network/cloud)
+
+### Custom RAG Server Name
+
+By default, external RAG servers are labeled "RAG-Wissen". To customize:
+
+1. Go to **Settings > RAG** and click **Configure** on the server card
+2. Change the **Display Name** field to your preferred name
+3. The name updates throughout the app
+
 ## Using the Knowledge Base
 
 When the knowledge base is enabled:
@@ -42,6 +101,24 @@ When the knowledge base is enabled:
 > "What does our project plan say about Q2 goals?"
 
 Mingly finds relevant sections in your indexed documents and provides a grounded answer.
+
+## Auto-Updates
+
+Mingly checks for updates automatically:
+
+- **Pro+ tier**: Updates download in the background and install when you quit/restart the app. Click "Restart & Install" in Settings for immediate update.
+- **Free tier**: You'll be notified of new versions. Click "Download Manually" to get the latest release from GitHub.
+
+Check manually: **Settings > General > Check for Updates**
+
+## Subscription & License
+
+Manage your subscription in **Settings > General**:
+
+- View your current tier (Free/Pro/Team/Enterprise)
+- Enter a license key to activate a paid plan
+- Upgrade via the "Upgrade" button (links to mingly.ch)
+- The sidebar also shows your current tier with an upgrade shortcut
 
 ## Tracking Costs
 
