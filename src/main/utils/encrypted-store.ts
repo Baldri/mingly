@@ -189,7 +189,11 @@ export class EncryptedStore {
       const legacyKey = this.deriveLegacyKey(userDataPath)
       return this.decryptLegacy(entry as LegacyEncryptedEntry, legacyKey)
     } catch {
-      console.error(`Failed to decrypt key: ${key}`)
+      // Decrypt failed — likely caused by adhoc re-signing after rebuild.
+      // Remove the corrupted entry so the user can re-enter the key cleanly.
+      console.error(`[EncryptedStore] Failed to decrypt key "${key}" — removing corrupted entry. Re-enter the API key in Settings.`)
+      delete this.entries[key]
+      this.saveToDisk()
       return undefined
     }
   }
@@ -205,7 +209,9 @@ export class EncryptedStore {
   }
 
   has(key: string): boolean {
-    return key in this.entries
+    if (!(key in this.entries)) return false
+    // Verify the entry is actually readable (not corrupted by re-signing)
+    return this.get(key) !== undefined
   }
 
   delete(key: string): void {

@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-02-14
+
+### Fixed
+- **Settings page infinite loading** — Settings page now shows with default values if backend settings load fails, preventing the permanent spinner
+- **API key persistence across updates** — Corrupted encrypted entries (caused by adhoc re-signing) are now auto-cleaned, allowing clean re-entry instead of silent failures
+- **CSP blocking inline styles** — Added `'unsafe-inline'` to `style-src` policy, fixing React inline styles and Radix UI positioning that were silently blocked
+- **Missing default settings** — `settings-store.ts` now merges loaded settings with defaults, ensuring all UI fields have values even when the stored config is incomplete
+
 ## [0.3.0] - 2026-02-14
 
 ### Breaking Changes

@@ -101,8 +101,16 @@ export function SettingsPage({ onBack }: Props) {
 
   if (!settings) {
     return (
-      <div className="flex h-screen bg-white dark:bg-gray-900">
-        <LoadingSpinner label="Loading settings..." />
+      <div className="flex h-screen items-center justify-center bg-white dark:bg-gray-900">
+        <div className="text-center space-y-4">
+          <LoadingSpinner label="Loading settings..." />
+          <button
+            onClick={onBack}
+            className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 underline"
+          >
+            Back to Chat
+          </button>
+        </div>
       </div>
     )
   }

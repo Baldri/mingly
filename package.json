@@ -1,6 +1,6 @@
 {
   "name": "mingly",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Mingly - Mingle with all AI minds in one place",
   "main": "dist/main/index.js",
   "author": {

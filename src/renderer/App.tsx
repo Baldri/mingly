@@ -197,7 +197,7 @@ function App() {
         </main>
 
         <footer className="border-t border-gray-300 dark:border-gray-700 px-6 py-3 text-center text-sm text-gray-600 dark:text-gray-400">
-          Mingly v0.3.0 | Privacy-First
+          Mingly v0.3.1 | Privacy-First
         </footer>
       </div>
     )

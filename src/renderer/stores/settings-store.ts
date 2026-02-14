@@ -1,6 +1,17 @@
 import { create } from 'zustand'
 import type { AppSettings, LLMProvider } from '../../shared/types'
 
+/** Fallback defaults — ensures UI always renders even if backend fails */
+const DEFAULT_SETTINGS: AppSettings = {
+  theme: 'dark',
+  defaultProvider: 'anthropic',
+  defaultModel: 'claude-3-5-sonnet-20241022',
+  enableParallelMode: false,
+  enableCostTracking: true,
+  enableAuditLog: true,
+  wizardCompleted: true,
+}
+
 interface SettingsState {
   settings: AppSettings | null
   apiKeysConfigured: Record<string, boolean>
@@ -23,11 +34,17 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ isLoading: true })
     try {
       const result = await window.electronAPI.settings.get()
-      if (result.success) {
-        set({ settings: result.settings })
+      if (result.success && result.settings) {
+        // Merge with defaults so missing fields don't break the UI
+        set({ settings: { ...DEFAULT_SETTINGS, ...result.settings } })
+      } else {
+        console.warn('Settings load returned no data, using defaults')
+        set({ settings: { ...DEFAULT_SETTINGS } })
       }
     } catch (error) {
       console.error('Failed to load settings:', error)
+      // CRITICAL: never leave settings as null — show UI with defaults
+      set({ settings: { ...DEFAULT_SETTINGS } })
     } finally {
       set({ isLoading: false })
     }
