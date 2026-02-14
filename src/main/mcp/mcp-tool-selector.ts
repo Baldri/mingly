@@ -47,7 +47,7 @@ const DEFAULT_CONFIG: MCPAutoToolConfig = {
   blacklistedTools: []
 }
 
-const store = new SimpleStore()
+const store = SimpleStore.create()
 
 // ── Keyword index for tool matching ────────────────────────────
 

@@ -11,7 +11,7 @@ import { getFeatureGateManager } from '../services/feature-gate-manager'
 import { wrapHandler, requirePermission, requireFeature } from './ipc-utils'
 
 export function registerConversationHandlers(): void {
-  const store = new SimpleStore()
+  const store = SimpleStore.create()
 
   // ========================================
   // Conversation Management

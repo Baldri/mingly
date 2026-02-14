@@ -22,7 +22,7 @@ export class FileAccessManager {
   private networkShares: Map<string, NetworkShareConfig> = new Map()
 
   constructor() {
-    this.store = new SimpleStore('file-access.json')
+    this.store = SimpleStore.create('file-access.json')
     this.loadAllowedDirectories()
   }
 

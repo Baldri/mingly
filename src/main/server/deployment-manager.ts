@@ -49,7 +49,7 @@ export class DeploymentManager {
   private serverClient: MinglyServerClient
 
   constructor() {
-    this.store = new SimpleStore('deployment-config.json')
+    this.store = SimpleStore.create('deployment-config.json')
     this.config = this.loadConfig()
     this.serverClient = getMinglyServerClient()
   }

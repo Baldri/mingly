@@ -7,7 +7,7 @@ export class NetworkAIManager {
   private servers: Map<string, NetworkAIServerConfig> = new Map()
 
   constructor() {
-    this.store = new SimpleStore('network-ai-servers.json')
+    this.store = SimpleStore.create('network-ai-servers.json')
     this.loadServers()
   }
 

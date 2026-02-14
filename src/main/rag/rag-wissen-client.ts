@@ -47,7 +47,7 @@ const DEFAULT_CONFIG: RAGWissenConfig = {
   apiMode: 'jsonrpc'
 }
 
-const store = new SimpleStore()
+const store = SimpleStore.create()
 
 export class RAGWissenClient {
   private config: RAGWissenConfig

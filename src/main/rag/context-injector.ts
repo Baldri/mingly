@@ -42,7 +42,7 @@ const DEFAULT_CONFIG: ContextInjectionConfig = {
   ragWissenCollection: 'documents'
 }
 
-const store = new SimpleStore()
+const store = SimpleStore.create()
 
 export class ContextInjector {
   private config: ContextInjectionConfig

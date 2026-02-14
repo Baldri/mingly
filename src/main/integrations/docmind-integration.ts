@@ -74,7 +74,7 @@ const DEFAULT_CONFIG: DocMindConfig = {
   }
 }
 
-const store = new SimpleStore()
+const store = SimpleStore.create()
 
 export class DocMindIntegration {
   private config: DocMindConfig

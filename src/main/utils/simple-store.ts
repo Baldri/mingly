@@ -2,14 +2,41 @@ import { app } from 'electron'
 import fs from 'fs'
 import path from 'path'
 
+/**
+ * Simple JSON key-value store persisted to disk.
+ *
+ * Multiple modules create `new SimpleStore()` for the same file
+ * (default: config.json). Each instance snapshots the file at
+ * construction time, so a later `set()` on instance A overwrites
+ * changes made by instance B — classic stale-cache bug.
+ *
+ * Fix: a per-file singleton cache ensures all callers share the
+ * same in-memory map and never silently overwrite each other.
+ */
+
+const _instances = new Map<string, SimpleStore>()
+
 export class SimpleStore {
   private storePath: string
   private data: Record<string, any> = {}
 
-  constructor(filename: string = 'config.json') {
-    const userDataPath = app.getPath('userData')
-    this.storePath = path.join(userDataPath, filename)
+  /** @internal — use `new SimpleStore(filename)` which returns a singleton per file */
+  private constructor(storePath: string) {
+    this.storePath = storePath
     this.load()
+  }
+
+  /** Singleton factory — returns the same instance for the same filename */
+  static create(filename: string = 'config.json'): SimpleStore {
+    const userDataPath = app.getPath('userData')
+    const storePath = path.join(userDataPath, filename)
+
+    let instance = _instances.get(storePath)
+    if (!instance) {
+      instance = new SimpleStore(storePath)
+      _instances.set(storePath, instance)
+    }
+    return instance
   }
 
   private load(): void {

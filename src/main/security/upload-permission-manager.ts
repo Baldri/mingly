@@ -60,7 +60,7 @@ export class UploadPermissionManager {
   private auditLogs: UploadAuditLog[] = []
 
   constructor() {
-    this.store = new SimpleStore('upload-permissions.json')
+    this.store = SimpleStore.create('upload-permissions.json')
     this.loadPolicies()
   }
 
