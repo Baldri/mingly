@@ -1,5 +1,8 @@
 /**
  * Updater Store — manages auto-update state and actions.
+ *
+ * All methods guard against window.electronAPI being unavailable
+ * (dev mode, HMR reload, or timing issues during app bootstrap).
  */
 
 import { create } from 'zustand'
@@ -43,12 +46,19 @@ const INITIAL_STATUS: UpdateStatus = {
   autoUpdateEnabled: false,
 }
 
+/** Safe accessor — returns the updater bridge or undefined */
+function getUpdaterAPI() {
+  return window.electronAPI?.updater
+}
+
 export const useUpdaterStore = create<UpdaterState>((set) => ({
   status: INITIAL_STATUS,
 
   loadStatus: async () => {
     try {
-      const status = await window.electronAPI.updater.getStatus()
+      const api = getUpdaterAPI()
+      if (!api) return
+      const status = await api.getStatus()
       set({ status })
     } catch {
       // Updater not available (dev mode)
@@ -57,7 +67,9 @@ export const useUpdaterStore = create<UpdaterState>((set) => ({
 
   checkForUpdates: async () => {
     try {
-      const status = await window.electronAPI.updater.check()
+      const api = getUpdaterAPI()
+      if (!api) return
+      const status = await api.check()
       set({ status })
     } catch (err) {
       set((state) => ({
@@ -68,7 +80,9 @@ export const useUpdaterStore = create<UpdaterState>((set) => ({
 
   downloadUpdate: async () => {
     try {
-      const status = await window.electronAPI.updater.download()
+      const api = getUpdaterAPI()
+      if (!api) return
+      const status = await api.download()
       set({ status })
     } catch (err) {
       set((state) => ({
@@ -79,7 +93,9 @@ export const useUpdaterStore = create<UpdaterState>((set) => ({
 
   installUpdate: async () => {
     try {
-      await window.electronAPI.updater.install()
+      const api = getUpdaterAPI()
+      if (!api) return
+      await api.install()
     } catch {
       // Will quit app
     }
@@ -87,14 +103,18 @@ export const useUpdaterStore = create<UpdaterState>((set) => ({
 
   openReleasePage: async () => {
     try {
-      await window.electronAPI.updater.openReleasePage()
+      const api = getUpdaterAPI()
+      if (!api) return
+      await api.openReleasePage()
     } catch {
       // Fallback: nothing
     }
   },
 
   subscribeToStatus: () => {
-    const unsubscribe = window.electronAPI.updater.onStatus((status: UpdateStatus) => {
+    const api = getUpdaterAPI()
+    if (!api) return () => {}
+    const unsubscribe = api.onStatus((status: UpdateStatus) => {
       set({ status })
     })
     return unsubscribe

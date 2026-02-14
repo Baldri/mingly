@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.2] - 2026-02-14
+
+### Fixed
+- **App crash on Settings page** — `updater-store.ts` accessed `window.electronAPI.updater` without null-guard, causing `Cannot read properties of undefined (reading 'updater')` crash when the IPC bridge was not yet available
+
 ## [0.3.1] - 2026-02-14
 
 ### Fixed
