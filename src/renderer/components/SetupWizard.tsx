@@ -609,6 +609,7 @@ function StepRAG({
 }) {
   const tier = useSubscriptionStore((s) => s.tier)
   const isFree = tier === 'free'
+  const ragServerName = useSettingsStore((s) => s.settings?.ragServerName) || 'RAG-Wissen'
 
   const [status, setStatus] = useState<RAGStatus>({
     qdrantOnline: false,
@@ -777,7 +778,7 @@ function StepRAG({
                     )}
                     {status.collections.length > 0 && status.wissenOnline && ' · '}
                     {status.wissenOnline && (
-                      <span>RAG-Wissen {t('wizard.rag.connected')}</span>
+                      <span>{ragServerName} {t('wizard.rag.connected')}</span>
                     )}
                   </p>
                 </div>

@@ -38,7 +38,7 @@ const DEFAULT_CONFIG: ContextInjectionConfig = {
   maxChunks: 3,
   scoreThreshold: 0.65,
   preferLocal: true,
-  ragWissenEnabled: true,
+  ragWissenEnabled: false,
   ragWissenCollection: 'documents'
 }
 

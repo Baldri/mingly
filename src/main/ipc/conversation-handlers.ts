@@ -76,7 +76,8 @@ export function registerConversationHandlers(): void {
   wrapHandler(IPC_CHANNELS.UPDATE_SETTINGS, (settings: Partial<AppSettings>) => {
     requirePermission('settings.general')
     const currentSettings = (store.get('settings') || {}) as AppSettings
-    store.set('settings', { ...currentSettings, ...settings })
-    return { success: true }
+    const merged = { ...currentSettings, ...settings }
+    store.set('settings', merged)
+    return { success: true, settings: merged }
   })
 }

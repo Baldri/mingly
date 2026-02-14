@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, memo } from 'react'
-import { Plus, MessageSquare, Trash2 } from 'lucide-react'
+import { Plus, MessageSquare, Trash2, Crown } from 'lucide-react'
 import { useChatStore } from '../stores/chat-store'
+import { useSubscriptionStore } from '../stores/subscription-store'
 import { ConfirmDialog } from './ConfirmDialog'
 
 export const ConversationSidebar = memo(function ConversationSidebar() {
@@ -35,7 +36,8 @@ export const ConversationSidebar = memo(function ConversationSidebar() {
 
   return (
     <div className="w-64 border-r border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 flex flex-col">
-      <div className="p-4 border-b border-gray-300 dark:border-gray-700">
+      {/* pt-10: push below macOS traffic lights (titleBarStyle: hiddenInset) */}
+      <div className="px-4 pb-4 pt-10 border-b border-gray-300 dark:border-gray-700">
         <h2 className="text-lg font-semibold mb-3">Conversations</h2>
         <button
           onClick={handleNewChat}
@@ -76,6 +78,8 @@ export const ConversationSidebar = memo(function ConversationSidebar() {
         onConfirm={confirmDelete}
         onCancel={() => setPendingDeleteId(null)}
       />
+
+      <SidebarTierBadge />
     </div>
   )
 })
@@ -147,6 +151,39 @@ const ConversationItem = memo(function ConversationItem({
             <Trash2 size={14} />
           </button>
         </div>
+      </div>
+    </div>
+  )
+})
+
+// ── Sidebar Tier Badge ─────────────────────────────────────
+
+const SidebarTierBadge = memo(function SidebarTierBadge() {
+  const tier = useSubscriptionStore((state) => state.tier)
+  const openUpgradeDialog = useSubscriptionStore((state) => state.openUpgradeDialog)
+  const loadTier = useSubscriptionStore((state) => state.loadTier)
+
+  useEffect(() => {
+    loadTier()
+  }, [loadTier])
+
+  const tierLabel = tier.charAt(0).toUpperCase() + tier.slice(1)
+
+  return (
+    <div className="p-3 border-t border-gray-300 dark:border-gray-700">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+          <Crown size={12} className={tier !== 'free' ? 'text-amber-500' : ''} />
+          <span>{tierLabel}</span>
+        </div>
+        {tier === 'free' && (
+          <button
+            onClick={() => openUpgradeDialog()}
+            className="text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 font-medium"
+          >
+            Upgrade
+          </button>
+        )}
       </div>
     </div>
   )

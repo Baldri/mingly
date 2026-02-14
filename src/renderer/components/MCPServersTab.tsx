@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, memo } from 'react'
-import type { MCPServer, MCPTool } from '../../shared/types'
+import type { MCPServer, MCPTool, DiscoveredService } from '../../shared/types'
 
 export const MCPServersTab = memo(function MCPServersTab() {
   const [servers, setServers] = useState<MCPServer[]>([])
@@ -7,6 +7,24 @@ export const MCPServersTab = memo(function MCPServersTab() {
   const [loading, setLoading] = useState(true)
   const [connectingServer, setConnectingServer] = useState<string | null>(null)
   const [expandedServer, setExpandedServer] = useState<string | null>(null)
+
+  // Service Discovery
+  const [discoveredMCP, setDiscoveredMCP] = useState<DiscoveredService[]>([])
+  const [isDiscovering, setIsDiscovering] = useState(false)
+
+  const discoverServers = useCallback(async () => {
+    setIsDiscovering(true)
+    try {
+      const result = await window.electronAPI.serviceDiscovery.discover({ type: 'mcp' })
+      if (result.success && result.services) {
+        setDiscoveredMCP(result.services)
+      }
+    } catch {
+      // Discovery failed
+    } finally {
+      setIsDiscovering(false)
+    }
+  }, [])
 
   // Add server form
   const [showAddForm, setShowAddForm] = useState(false)
@@ -166,7 +184,48 @@ export const MCPServersTab = memo(function MCPServersTab() {
           </svg>
           Refresh
         </button>
+        <button
+          onClick={discoverServers}
+          disabled={isDiscovering}
+          className="flex items-center gap-2 rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800 disabled:opacity-50"
+        >
+          <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          {isDiscovering ? 'Scanning...' : 'Discover'}
+        </button>
       </div>
+
+      {/* Discovered MCP Servers */}
+      {discoveredMCP.length > 0 && (
+        <div className="space-y-2">
+          <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Discovered Servers</h4>
+          {['local', 'network', 'cloud'].map((location) => {
+            const services = discoveredMCP.filter((s) => s.location === location)
+            if (services.length === 0) return null
+            return (
+              <div key={location}>
+                <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-1">
+                  {location === 'local' ? 'Local' : location === 'network' ? 'Network' : 'Cloud'}
+                </p>
+                {services.map((s, i) => (
+                  <div
+                    key={`${s.url}-${i}`}
+                    className="flex items-center justify-between rounded border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm mb-1"
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className={`h-2.5 w-2.5 rounded-full ${s.status === 'online' ? 'bg-green-500' : 'bg-gray-400'}`} />
+                      <span className="font-medium text-gray-900 dark:text-white">{s.name}</span>
+                      {s.provider && <span className="text-xs text-gray-400">{s.provider}</span>}
+                    </div>
+                    <span className="text-xs text-gray-400">{s.url}</span>
+                  </div>
+                ))}
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {/* Add Server Form */}
       {showAddForm && (

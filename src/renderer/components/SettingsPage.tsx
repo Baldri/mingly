@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react'
-import { ArrowLeft, Check, AlertCircle, Monitor, Server, Wifi, Info } from 'lucide-react'
+import { useState, useEffect, lazy, Suspense } from 'react'
+import { ArrowLeft, Check, AlertCircle, Monitor, Server, Wifi, Info, Crown, Key } from 'lucide-react'
 import { useSettingsStore } from '../stores/settings-store'
+import { useSubscriptionStore } from '../stores/subscription-store'
 import { useTranslation } from '../utils/i18n'
 import { PrivacySettingsTab } from './PrivacySettingsTab'
 import { NetworkAIServersTab } from './NetworkAIServersTab'
@@ -10,6 +11,10 @@ import { AnalyticsTab } from './AnalyticsTab'
 import { MCPServersTab } from './MCPServersTab'
 import { IntegrationsTab } from './IntegrationsTab'
 import { BudgetTab } from './BudgetTab'
+import { UpdaterSection } from './UpdaterSection'
+
+const UpgradeDialog = lazy(() => import('./UpgradeDialog'))
+const LicenseKeyDialog = lazy(() => import('./LicenseKeyDialog'))
 
 const PROVIDERS = [
   { id: 'anthropic', name: 'Anthropic (Claude)', placeholder: 'sk-ant-...' },
@@ -133,6 +138,9 @@ export function SettingsPage({ onBack }: Props) {
         <div className="max-w-3xl">
           {activeTab === 'general' ? (
             <div className="space-y-6">
+              {/* Subscription Section */}
+              <SubscriptionSection />
+
               {/* API Keys Section */}
               <div>
                 <h3 className="text-lg font-semibold mb-3">API Keys</h3>
@@ -235,6 +243,9 @@ export function SettingsPage({ onBack }: Props) {
                 currentMode={settings.deploymentMode || 'standalone'}
                 onModeChange={(mode) => updateSettings({ deploymentMode: mode })}
               />
+
+              {/* Updates Section */}
+              <UpdaterSection />
             </div>
           ) : activeTab === 'network' ? (
             <NetworkAIServersTab />
@@ -317,6 +328,102 @@ function DeploymentModeSection({
           {t('settings.deployment.restart')}
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Subscription Section ─────────────────────────────────────
+
+const TIER_COLORS: Record<string, string> = {
+  free: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
+  pro: 'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300',
+  team: 'bg-purple-100 text-purple-700 dark:bg-purple-900/50 dark:text-purple-300',
+  enterprise: 'bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300',
+}
+
+function SubscriptionSection() {
+  const {
+    tier,
+    license,
+    loadTier,
+    openUpgradeDialog,
+    openLicenseDialog,
+    deactivateLicense,
+    showUpgradeDialog,
+    showLicenseDialog,
+    isLoading
+  } = useSubscriptionStore()
+
+  useEffect(() => {
+    loadTier()
+  }, [loadTier])
+
+  const tierLabel = tier.charAt(0).toUpperCase() + tier.slice(1)
+  const colorClass = TIER_COLORS[tier] || TIER_COLORS.free
+
+  return (
+    <div>
+      <h3 className="text-lg font-semibold mb-3">Subscription</h3>
+
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-3">
+        {/* Current tier */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Crown size={18} className="text-amber-500" />
+            <span className="text-sm font-medium">Current Plan</span>
+          </div>
+          <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold ${colorClass}`}>
+            {tierLabel}
+          </span>
+        </div>
+
+        {/* License info */}
+        {license && (
+          <div className="text-xs text-gray-500 dark:text-gray-400 space-y-1">
+            <p>License: {license.key.slice(0, 8)}...{license.key.slice(-4)}</p>
+            {license.expiresAt && (
+              <p>Expires: {new Date(license.expiresAt).toLocaleDateString()}</p>
+            )}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex gap-2 flex-wrap">
+          <button
+            onClick={() => openLicenseDialog()}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+          >
+            <Key size={14} />
+            Enter License Key
+          </button>
+
+          {tier === 'free' && (
+            <button
+              onClick={() => openUpgradeDialog()}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors"
+            >
+              <Crown size={14} />
+              Upgrade
+            </button>
+          )}
+
+          {license && (
+            <button
+              onClick={() => deactivateLicense()}
+              disabled={isLoading}
+              className="px-3 py-1.5 text-sm rounded-lg text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors disabled:opacity-50"
+            >
+              Deactivate
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Dialogs */}
+      <Suspense fallback={null}>
+        {showUpgradeDialog && <UpgradeDialog />}
+        {showLicenseDialog && <LicenseKeyDialog />}
+      </Suspense>
     </div>
   )
 }

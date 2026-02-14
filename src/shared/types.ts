@@ -150,6 +150,10 @@ export interface AppSettings {
   language?: 'de' | 'en'
   /** Whether document context / RAG is enabled (Free: file access only, Pro+: vector DB RAG) */
   ragEnabled?: boolean
+  /** Routing mode: manual (user picks model) or auto (Gemma routes) */
+  routingMode?: 'manual' | 'auto'
+  /** Custom display name for the external RAG server (default: "RAG-Wissen") */
+  ragServerName?: string
 }
 
 // Prompt Template Types
@@ -254,6 +258,17 @@ export interface ComparisonResult {
   latencyMs: number
   isWinner: boolean
   createdAt: number
+}
+
+// Service Discovery Types
+export interface DiscoveredService {
+  type: 'rag' | 'mcp'
+  location: 'local' | 'network' | 'cloud'
+  name: string
+  url: string
+  status: 'online' | 'offline' | 'unknown'
+  provider?: string  // e.g. 'qdrant', 'chromadb', 'docmind', 'pinecone'
+  autoConnected?: boolean
 }
 
 // IPC Channel Names
@@ -494,5 +509,13 @@ export const IPC_CHANNELS = {
   LICENSE_ACTIVATE: 'license:activate',
   LICENSE_DEACTIVATE: 'license:deactivate',
   LICENSE_GET_INFO: 'license:get-info',
-  LICENSE_GET_CHECKOUT_URL: 'license:get-checkout-url'
+  LICENSE_GET_CHECKOUT_URL: 'license:get-checkout-url',
+
+  // Routing Mode
+  ROUTING_GET_MODE: 'routing:get-mode',
+  ROUTING_SET_MODE: 'routing:set-mode',
+
+  // Service Discovery (RAG + MCP auto-detection)
+  SERVICE_DISCOVER: 'service:discover',
+  SERVICE_DISCOVER_STATUS: 'service:discover-status'
 } as const

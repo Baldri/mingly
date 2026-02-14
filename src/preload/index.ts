@@ -546,6 +546,12 @@ const api = {
       ipcRenderer.on('updater:status', listener)
       return () => ipcRenderer.removeListener('updater:status', listener)
     }
+  },
+
+  // Service Discovery
+  serviceDiscovery: {
+    discover: (options?: { type?: 'rag' | 'mcp' | 'all' }) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SERVICE_DISCOVER, options),
   }
 }
 

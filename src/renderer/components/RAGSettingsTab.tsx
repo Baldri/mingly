@@ -1,4 +1,6 @@
 import { useState, useEffect, memo, useCallback } from 'react'
+import type { DiscoveredService } from '../../shared/types'
+import { useSettingsStore } from '../stores/settings-store'
 
 interface RAGContextConfig {
   enabled: boolean
@@ -67,6 +69,9 @@ Toggle.displayName = 'Toggle'
 // ── Main Component ────────────────────────────────────────────────
 
 export const RAGSettingsTab = memo(function RAGSettingsTab() {
+  const settings = useSettingsStore((s) => s.settings)
+  const ragServerName = settings?.ragServerName || 'RAG-Wissen'
+
   // Context injection config
   const [config, setConfig] = useState<RAGContextConfig>({
     enabled: false,
@@ -74,7 +79,7 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
     maxChunks: 3,
     scoreThreshold: 0.65,
     preferLocal: true,
-    ragWissenEnabled: true,
+    ragWissenEnabled: false,
     ragWissenCollection: 'documents'
   })
 
@@ -99,6 +104,24 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null)
+
+  // Service Discovery
+  const [discoveredServices, setDiscoveredServices] = useState<DiscoveredService[]>([])
+  const [isDiscovering, setIsDiscovering] = useState(false)
+
+  const discoverServers = useCallback(async () => {
+    setIsDiscovering(true)
+    try {
+      const result = await window.electronAPI.serviceDiscovery.discover({ type: 'rag' })
+      if (result.success && result.services) {
+        setDiscoveredServices(result.services)
+      }
+    } catch {
+      // Discovery failed
+    } finally {
+      setIsDiscovering(false)
+    }
+  }, [])
 
   // Server config form
   const [showServerConfig, setShowServerConfig] = useState(false)
@@ -211,7 +234,7 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
     try {
       await window.electronAPI.ragContext.updateConfig({ ragWissenEnabled })
     } catch (error) {
-      console.error('Failed to toggle RAG-Wissen:', error)
+      console.error('Failed to toggle RAG server:', error)
     }
   }
 
@@ -310,6 +333,53 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
         </p>
       </div>
 
+      {/* ── Service Discovery ─────────────────────────────── */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Discover RAG Servers</h4>
+          <button
+            onClick={discoverServers}
+            disabled={isDiscovering}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
+          >
+            {isDiscovering ? 'Scanning...' : 'Discover'}
+          </button>
+        </div>
+
+        {discoveredServices.length > 0 && (
+          <div className="space-y-2">
+            {['local', 'network', 'cloud'].map((location) => {
+              const services = discoveredServices.filter((s) => s.location === location)
+              if (services.length === 0) return null
+              return (
+                <div key={location}>
+                  <p className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-1">
+                    {location === 'local' ? 'Local' : location === 'network' ? 'Network' : 'Cloud'}
+                  </p>
+                  {services.map((s, i) => (
+                    <div
+                      key={`${s.url}-${i}`}
+                      className="flex items-center justify-between rounded border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm mb-1"
+                    >
+                      <div className="flex items-center gap-2">
+                        <StatusDot status={s.status === 'online'} />
+                        <div>
+                          <span className="font-medium text-gray-900 dark:text-white">{s.name}</span>
+                          {s.provider && (
+                            <span className="ml-1.5 text-xs text-gray-400">{s.provider}</span>
+                          )}
+                        </div>
+                      </div>
+                      <span className="text-xs text-gray-400">{s.url}</span>
+                    </div>
+                  ))}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
       {/* ── Server Status Overview ─────────────────────────────── */}
       <div className="space-y-3">
         <h4 className="text-sm font-semibold text-gray-900 dark:text-white">Server Status</h4>
@@ -344,7 +414,7 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
               <StatusDot status={wissenOnline} />
               <div>
                 <p className="text-sm font-medium text-gray-900 dark:text-white">
-                  RAG-Wissen Server
+                  {ragServerName} Server
                   {wissenConfig.apiMode === 'rest' && (
                     <span className="ml-2 inline-flex items-center rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-700 dark:bg-purple-900/20 dark:text-purple-400">
                       DocMind
@@ -410,9 +480,29 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
       {showServerConfig && (
         <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-4 dark:border-blue-900 dark:bg-blue-900/10">
           <h4 className="mb-4 text-sm font-semibold text-gray-900 dark:text-white">
-            RAG-Wissen Server Configuration
+            {ragServerName} Server Configuration
           </h4>
           <div className="space-y-4">
+            {/* Display Name */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Display Name
+              </label>
+              <input
+                type="text"
+                defaultValue={ragServerName}
+                onBlur={(e) => {
+                  const name = e.target.value.trim()
+                  useSettingsStore.getState().updateSettings({ ragServerName: name || undefined })
+                }}
+                placeholder="RAG-Wissen"
+                className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+              />
+              <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                Customize how your RAG server is displayed throughout the app
+              </p>
+            </div>
+
             <div className="grid grid-cols-3 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -538,10 +628,10 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
         <div className="flex items-center justify-between">
           <div>
             <p className="text-sm font-medium text-gray-900 dark:text-white">
-              Include RAG-Wissen in Context
+              Include {ragServerName} in Context
             </p>
             <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-              Use RAG-Wissen / DocMind as an additional knowledge source in the fallback chain
+              Use {ragServerName} / DocMind as an additional knowledge source in the fallback chain
             </p>
           </div>
           <Toggle value={config.ragWissenEnabled} onChange={handleToggleWissen} />
@@ -625,7 +715,7 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
               Prefer Local RAG
             </p>
             <p className="text-xs text-gray-400 dark:text-gray-500">
-              Try local Qdrant first, fall back to RAG-Wissen / external server
+              Try local Qdrant first, fall back to {ragServerName} / external server
             </p>
           </div>
           <Toggle
@@ -760,7 +850,7 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
             </p>
             <ul className="mt-2 space-y-1 text-sm text-blue-800 dark:text-blue-400">
               <li>1. <strong>Local Qdrant</strong> — Fast, runs in-process</li>
-              <li>2. <strong>RAG-Wissen / DocMind</strong> — Semantic search with hybrid retrieval</li>
+              <li>2. <strong>{ragServerName} / DocMind</strong> — Semantic search with hybrid retrieval</li>
               <li>3. <strong>External HTTP RAG</strong> — Custom Python server</li>
             </ul>
             <p className="mt-2 text-xs text-blue-700 dark:text-blue-500">

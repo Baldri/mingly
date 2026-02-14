@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { X } from 'lucide-react'
+import { X, Cpu, Sparkles } from 'lucide-react'
 import { useChatStore } from '../stores/chat-store'
 import { useSettingsStore } from '../stores/settings-store'
 
@@ -8,13 +8,13 @@ interface Props {
   onClose: () => void
 }
 
-const PROVIDERS = [
-  { id: 'anthropic', name: 'Claude (Anthropic)' },
-  { id: 'openai', name: 'ChatGPT (OpenAI)' },
-  { id: 'google', name: 'Gemini (Google)' }
+const CLOUD_PROVIDERS = [
+  { id: 'anthropic', name: 'Claude (Anthropic)', group: 'cloud' },
+  { id: 'openai', name: 'ChatGPT (OpenAI)', group: 'cloud' },
+  { id: 'google', name: 'Gemini (Google)', group: 'cloud' }
 ]
 
-const MODELS: Record<string, { id: string; name: string }[]> = {
+const CLOUD_MODELS: Record<string, { id: string; name: string }[]> = {
   anthropic: [
     { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet' },
     { id: 'claude-3-opus-20240229', name: 'Claude 3 Opus' },
@@ -32,14 +32,47 @@ const MODELS: Record<string, { id: string; name: string }[]> = {
   ]
 }
 
+interface LocalModel {
+  id: string
+  name: string
+  source: string
+  port: number
+  size?: number
+}
+
 export function NewConversationModal({ isOpen, onClose }: Props) {
   const { createConversation } = useChatStore()
-  const { settings, apiKeysConfigured } = useSettingsStore()
+  const { settings, apiKeysConfigured, checkAPIKeys } = useSettingsStore()
 
   const [title, setTitle] = useState('')
   const [provider, setProvider] = useState('anthropic')
   const [model, setModel] = useState('claude-3-5-sonnet-20241022')
+  const [localModels, setLocalModels] = useState<LocalModel[]>([])
+  const [discovering, setDiscovering] = useState(false)
+  const [keysLoaded, setKeysLoaded] = useState(false)
 
+  // Load API keys on mount to fix the "no key" warning on first open
+  useEffect(() => {
+    if (isOpen && !keysLoaded) {
+      checkAPIKeys().then(() => setKeysLoaded(true))
+    }
+  }, [isOpen, keysLoaded, checkAPIKeys])
+
+  // Discover local models when modal opens
+  useEffect(() => {
+    if (!isOpen) return
+    setDiscovering(true)
+    window.electronAPI.localLLM.discover()
+      .then((result: { success: boolean; models?: LocalModel[] }) => {
+        if (result.success && result.models) {
+          setLocalModels(result.models)
+        }
+      })
+      .catch(() => {})
+      .finally(() => setDiscovering(false))
+  }, [isOpen])
+
+  // Apply defaults from settings
   useEffect(() => {
     if (settings) {
       setProvider(settings.defaultProvider)
@@ -47,17 +80,23 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
     }
   }, [settings])
 
+  // Update model when provider changes
   useEffect(() => {
-    // Update model when provider changes
-    const firstModel = MODELS[provider]?.[0]?.id
-    if (firstModel) {
-      setModel(firstModel)
+    if (provider === 'auto') {
+      setModel('gemma-router')
+      return
     }
-  }, [provider])
+    if (provider === 'local') {
+      const first = localModels[0]
+      if (first) setModel(first.id)
+      return
+    }
+    const firstCloud = CLOUD_MODELS[provider]?.[0]?.id
+    if (firstCloud) setModel(firstCloud)
+  }, [provider, localModels])
 
   const handleCreate = async () => {
     if (!title.trim()) return
-
     await createConversation(title.trim(), provider, model)
     setTitle('')
     onClose()
@@ -72,7 +111,31 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
 
   if (!isOpen) return null
 
-  const hasAPIKey = apiKeysConfigured[provider]
+  // For cloud providers, check API key. Auto/local don't need one.
+  const needsApiKey = provider !== 'auto' && provider !== 'local'
+  const hasAPIKey = !needsApiKey || apiKeysConfigured[provider]
+
+  // Build provider list: auto-routing + cloud + local
+  const allProviders = [
+    { id: 'auto', name: 'Gemma Auto-Routing', group: 'auto' as const },
+    ...CLOUD_PROVIDERS,
+    ...(localModels.length > 0
+      ? [{ id: 'local', name: `Local Models (${localModels.length})`, group: 'local' as const }]
+      : [])
+  ]
+
+  // Build model list for current provider
+  let availableModels: { id: string; name: string }[] = []
+  if (provider === 'auto') {
+    availableModels = [{ id: 'gemma-router', name: 'Automatic (Gemma decides)' }]
+  } else if (provider === 'local') {
+    availableModels = localModels.map((m) => ({
+      id: m.id,
+      name: `${m.name} (${m.source})`
+    }))
+  } else {
+    availableModels = CLOUD_MODELS[provider] || []
+  }
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -110,12 +173,21 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
               onChange={(e) => setProvider(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              {PROVIDERS.map((p) => (
+              {allProviders.map((p) => (
                 <option key={p.id} value={p.id}>
+                  {p.group === 'auto' ? '\u2728 ' : p.group === 'local' ? '\uD83D\uDDA5 ' : ''}
                   {p.name}
                 </option>
               ))}
             </select>
+
+            {/* Discovering indicator */}
+            {discovering && (
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 flex items-center gap-1">
+                <Cpu size={12} className="animate-pulse" />
+                Scanning for local models...
+              </p>
+            )}
           </div>
 
           <div>
@@ -125,7 +197,7 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
               onChange={(e) => setModel(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              {MODELS[provider]?.map((m) => (
+              {availableModels.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.name}
                 </option>
@@ -133,10 +205,24 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
             </select>
           </div>
 
-          {!hasAPIKey && (
+          {/* Provider hints */}
+          {provider === 'auto' && (
+            <div className="p-3 bg-purple-50 dark:bg-purple-900/20 text-purple-800 dark:text-purple-200 rounded-lg text-sm flex items-start gap-2">
+              <Sparkles size={16} className="flex-shrink-0 mt-0.5" />
+              <span>Gemma analyzes each message and routes it to the best available model automatically.</span>
+            </div>
+          )}
+
+          {provider === 'local' && (
+            <div className="p-3 bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-200 rounded-lg text-sm flex items-start gap-2">
+              <Cpu size={16} className="flex-shrink-0 mt-0.5" />
+              <span>Running locally — no data leaves your machine.</span>
+            </div>
+          )}
+
+          {needsApiKey && keysLoaded && !apiKeysConfigured[provider] && (
             <div className="p-3 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-900 dark:text-yellow-200 rounded-lg text-sm">
-              ⚠️ No API key configured for {provider}. Please add one in
-              Settings.
+              No API key configured for {provider}. Please add one in Settings.
             </div>
           )}
 

@@ -1,5 +1,5 @@
 /**
- * IPC Handlers — Network AI, File Access, Security & Privacy
+ * IPC Handlers — Network AI, File Access, Security & Privacy, Service Discovery
  */
 
 import { IPC_CHANNELS } from '../../shared/types'
@@ -9,6 +9,7 @@ import { getFileAccessManager } from '../file-access/file-access-manager'
 import { getSensitiveDataDetector } from '../security/sensitive-data-detector'
 import { getUploadPermissionManager } from '../security/upload-permission-manager'
 import { validateFilePath } from '../security/input-validator'
+import { getServiceDiscovery } from '../discovery/service-discovery'
 import { wrapHandler, requirePermission } from './ipc-utils'
 import type { NetworkAIServerConfig } from '../../shared/network-ai-types'
 import type { FileAccessRequest, FileAccessPermission } from '../../shared/file-access-types'
@@ -234,5 +235,19 @@ export function registerInfrastructureHandlers(): void {
         riskLevel: p.riskLevel
       }))
     }
+  })
+
+  // ========================================
+  // Service Discovery (RAG + MCP)
+  // ========================================
+
+  const serviceDiscovery = getServiceDiscovery()
+
+  wrapHandler(IPC_CHANNELS.SERVICE_DISCOVER, async (options?: { type?: 'rag' | 'mcp' | 'all' }) => {
+    const services = await serviceDiscovery.discover({
+      type: options?.type || 'all',
+      timeout: 3000
+    })
+    return { success: true, services }
   })
 }
