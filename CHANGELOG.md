@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.1] - 2025-02-14
+
+### Fixed
+- **Black screen on dialog open** — Double `h-screen` in ChatLayout caused nested 100vh overflow; content was pushed offscreen
+- **Dark mode flash on app start** — Theme class now applied synchronously in `useState` initializer instead of async `useEffect`
+- **Settings page blank screen** — `SettingsPage` returned `null` while settings were loading; now shows a loading spinner
+- **Silent dialog load failures** — All `Suspense fallback={null}` replaced with visible `<LoadingSpinner />` so lazy-loaded dialogs show feedback
+- **"Explore Features" had no action** — Setup step 3 on the welcome screen now has an "Open Settings" button
+- **Cross-platform window config** — `titleBarStyle: 'hiddenInset'` and `trafficLightPosition` now macOS-only; Windows/Linux use default title bar
+- **Sidebar padding on Windows/Linux** — Conditional top padding (traffic-light offset only on macOS)
+- **SimpleStore test mocks** — All test files updated to use `SimpleStore.create()` singleton factory pattern
+
+### Changed
+- Preload bridge now exposes `platform` (`darwin` | `win32` | `linux`) for platform-aware UI rendering
+- `SimpleStore` has `_resetForTesting()` static method for test isolation
+
 ## [0.2.0] - 2025-02-14
 
 ### Added
