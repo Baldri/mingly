@@ -53,7 +53,7 @@ interface LicenseStore {
 /**
  * HMAC secret for license key verification.
  * In production, this would be derived from a more complex scheme.
- * The signing secret is kept at digital nalu for key generation.
+ * The signing secret is kept at digital opua for key generation.
  * This verification key allows the app to validate signatures offline.
  */
 const LICENSE_HMAC_SECRET = 'mingly-license-v1-digitalnalu-2026'

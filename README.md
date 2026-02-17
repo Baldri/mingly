@@ -121,4 +121,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
-**Mingly** is built by [digital nalu GmbH](https://mingly.ch), Walchwil, Switzerland. Star the repo if you find it useful!
+**Mingly** is built by [digital opua GmbH](https://mingly.ch), Walchwil, Switzerland. Star the repo if you find it useful!
