@@ -36,6 +36,7 @@ export const NetworkAIServersTab = memo(function NetworkAIServersTab() {
   const [testingServer, setTestingServer] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<{ serverId: string; success: boolean; message: string } | null>(null)
   const [pendingRemoveId, setPendingRemoveId] = useState<string | null>(null)
+  const [discoveryResult, setDiscoveryResult] = useState<{ count: number; message: string } | null>(null)
 
   // Add server form state
   const [showAddForm, setShowAddForm] = useState(false)
@@ -72,14 +73,24 @@ export const NetworkAIServersTab = memo(function NetworkAIServersTab() {
   const handleDiscoverServers = async () => {
     try {
       setDiscovering(true)
+      setDiscoveryResult(null)
+
+      // Discover network AI servers (also scans localhost)
       const result = await window.electronAPI.networkAI.discover('192.168.1')
-      if (result.success) {
-        console.log('Discovered servers:', result.servers)
-        // Refresh server list
-        await loadServers()
+      const foundCount = result.success ? (result.servers?.length ?? 0) : 0
+
+      // Refresh server list to show auto-registered servers
+      await loadServers()
+
+      // Show feedback to the user
+      if (foundCount > 0) {
+        setDiscoveryResult({ count: foundCount, message: `Found ${foundCount} server${foundCount > 1 ? 's' : ''} and added to your list.` })
+      } else {
+        setDiscoveryResult({ count: 0, message: 'No AI servers found on localhost or network. Make sure Ollama, LM Studio, or other services are running.' })
       }
     } catch (error) {
       console.error('Failed to discover servers:', error)
+      setDiscoveryResult({ count: 0, message: 'Discovery failed. Check your network connection.' })
     } finally {
       setDiscovering(false)
     }
@@ -212,6 +223,34 @@ export const NetworkAIServersTab = memo(function NetworkAIServersTab() {
           )}
         </button>
       </div>
+
+      {/* Discovery Result Feedback */}
+      {discoveryResult && (
+        <div
+          className={`flex items-center gap-2 rounded-lg border px-4 py-3 text-sm ${
+            discoveryResult.count > 0
+              ? 'border-green-200 bg-green-50 text-green-800 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300'
+              : 'border-yellow-200 bg-yellow-50 text-yellow-800 dark:border-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-300'
+          }`}
+        >
+          {discoveryResult.count > 0 ? (
+            <svg className="h-5 w-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          ) : (
+            <svg className="h-5 w-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.072 16.5c-.77.833.192 2.5 1.732 2.5z" />
+            </svg>
+          )}
+          <span>{discoveryResult.message}</span>
+          <button
+            onClick={() => setDiscoveryResult(null)}
+            className="ml-auto text-current opacity-60 hover:opacity-100"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Add Server Form */}
       {showAddForm && (

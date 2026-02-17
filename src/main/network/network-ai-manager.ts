@@ -152,19 +152,19 @@ export class NetworkAIManager {
    * Scans common ports for AI servers
    */
   async discoverServers(networkRange: string = '192.168.1'): Promise<NetworkDiscoveryResult[]> {
-    console.log(`📡 Scanning network ${networkRange}.0/24 for AI servers...`)
+    console.log(`📡 Scanning localhost + network ${networkRange}.0/24 for AI servers...`)
 
     const commonPorts = [
-      { port: 11434, type: 'ollama' as NetworkAIType },
-      { port: 8000, type: 'vllm' as NetworkAIType },
-      { port: 5000, type: 'text-generation-webui' as NetworkAIType },
-      { port: 8080, type: 'llamacpp' as NetworkAIType },
-      { port: 1234, type: 'openai-compatible' as NetworkAIType } // LM Studio
+      { port: 11434, type: 'ollama' as NetworkAIType, label: 'Ollama' },
+      { port: 8000, type: 'vllm' as NetworkAIType, label: 'vLLM' },
+      { port: 5000, type: 'text-generation-webui' as NetworkAIType, label: 'Text Gen WebUI' },
+      { port: 8080, type: 'llamacpp' as NetworkAIType, label: 'llama.cpp / LocalAI' },
+      { port: 1234, type: 'openai-compatible' as NetworkAIType, label: 'LM Studio' }
     ]
 
     const discovered: NetworkDiscoveryResult[] = []
 
-    // Scan localhost first
+    // Scan localhost first (Ollama, LM Studio, vLLM etc.)
     for (const { port, type } of commonPorts) {
       const result = await this.scanHost('localhost', port, type)
       if (result) discovered.push(result)
@@ -172,6 +172,40 @@ export class NetworkAIManager {
 
     // Note: Full network scanning can be slow and may be blocked by firewalls
     // In production, only scan if explicitly requested by user
+
+    // Auto-register discovered servers (skip duplicates)
+    for (const result of discovered) {
+      const serverId = `${result.host}:${result.port}`
+      if (!this.servers.has(serverId)) {
+        const label = commonPorts.find(p => p.port === result.port)?.label || result.type
+        const modelCount = result.models?.length ?? 0
+        const name = result.host === 'localhost' || result.host === '127.0.0.1'
+          ? `${label} (local)`
+          : `${label} (${result.host})`
+
+        this.addServer({
+          name,
+          type: result.type,
+          protocol: 'http',
+          host: result.host,
+          port: result.port,
+          apiKeyRequired: false,
+          isLocal: result.host === 'localhost' || result.host === '127.0.0.1',
+          isLAN: isLocalNetwork(result.host),
+          tlsVerify: false,
+          allowSelfSigned: true,
+          status: 'online',
+          lastConnected: Date.now()
+        })
+        console.log(`📡 Auto-registered: ${name} (${modelCount} models)`)
+      } else {
+        // Update existing server status to online
+        const existing = this.servers.get(serverId)!
+        existing.status = 'online'
+        existing.lastConnected = Date.now()
+        this.saveServers()
+      }
+    }
 
     console.log(`📡 Discovery complete: found ${discovered.length} servers`)
     return discovered
@@ -191,19 +225,29 @@ export class NetworkAIManager {
         try {
           const response = await fetch(`${baseUrl}${endpoint}`, {
             method: 'GET',
-            signal: AbortSignal.timeout(2000)
+            signal: AbortSignal.timeout(3000)
           })
 
           if (response.ok) {
             const responseTime = Date.now() - startTime
-            const data = await response.json() as any
+            let data: Record<string, unknown> = {}
+            try {
+              data = await response.json() as Record<string, unknown>
+            } catch {
+              // Non-JSON response — server exists but no parsable model list
+            }
+
+            // Extract models from response:
+            // Ollama uses { models: [{ name }] }
+            // OpenAI-compatible (LM Studio, vLLM) uses { data: [{ id }] }
+            const models = this.extractModels(data)
 
             return {
               host,
               port,
               type: expectedType,
-              version: data.version,
-              models: data.models?.map((m: any) => m.name || m.id) || [],
+              version: (data.version as string) ?? undefined,
+              models,
               responseTime
             }
           }
@@ -216,6 +260,23 @@ export class NetworkAIManager {
     } catch {
       return null
     }
+  }
+
+  /**
+   * Extract model names from various API response formats.
+   * Ollama: { models: [{ name }] }
+   * OpenAI-compatible (LM Studio, vLLM): { data: [{ id }] }
+   */
+  private extractModels(data: Record<string, unknown>): string[] {
+    // Ollama format
+    if (Array.isArray(data.models)) {
+      return data.models.map((m: Record<string, unknown>) => (m.name || m.id || '') as string).filter(Boolean)
+    }
+    // OpenAI-compatible format (LM Studio, vLLM, LocalAI)
+    if (Array.isArray(data.data)) {
+      return data.data.map((m: Record<string, unknown>) => (m.id || m.name || '') as string).filter(Boolean)
+    }
+    return []
   }
 
   /**

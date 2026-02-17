@@ -586,7 +586,7 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
       )}
 
       {/* DocMind Quick-Init (if not yet initialized) */}
-      {window.electronAPI.docmind && !docMindStatus?.mcp?.connected && !docMindStatus?.rest?.reachable && (
+      {window.electronAPI?.docmind && !docMindStatus?.mcp?.connected && !docMindStatus?.rest?.reachable && (
         <div className="rounded-lg border border-purple-200 bg-purple-50/50 p-4 dark:border-purple-900 dark:bg-purple-900/10">
           <div className="flex items-center justify-between">
             <div>

@@ -75,3 +75,11 @@
     font-feature-settings: 'rlig' 1, 'calt' 1;
   }
 }
+
+/* macOS: Allow header to be used as window drag handle */
+.app-drag-region {
+  -webkit-app-region: drag;
+}
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}

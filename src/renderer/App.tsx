@@ -56,10 +56,12 @@ function App() {
     return 'dark'
   })
   const [showSettings, setShowSettings] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<string | undefined>(undefined)
   const [showNewConversation, setShowNewConversation] = useState(false)
   const [showWelcome, setShowWelcome] = useState(true)
   const [isLoading, setIsLoading] = useState(true)
 
+  const isMac = window.electronAPI?.platform === 'darwin'
   const { settings, loadSettings, checkAPIKeys, apiKeysConfigured } = useSettingsStore()
   const { loadConversations, conversations } = useChatStore()
 
@@ -101,6 +103,11 @@ function App() {
     setTheme(newTheme)
   }
 
+  const openSettings = (tab?: string) => {
+    setSettingsTab(tab)
+    setShowSettings(true)
+  }
+
   const hasAnyAPIKey = Object.values(apiKeysConfigured).some(Boolean)
 
   // Show loading spinner during initial bootstrap
@@ -126,7 +133,7 @@ function App() {
   if (showSettings) {
     return (
       <Suspense fallback={<LoadingSpinner label="Loading settings..." />}>
-        <SettingsPage onBack={() => setShowSettings(false)} />
+        <SettingsPage onBack={() => setShowSettings(false)} initialTab={settingsTab as any} />
       </Suspense>
     )
   }
@@ -134,11 +141,11 @@ function App() {
   if (showWelcome && !hasAnyAPIKey) {
     return (
       <div className="flex h-screen flex-col bg-white dark:bg-gray-900">
-        {/* Header */}
-        <header className="flex items-center justify-between border-b border-gray-300 dark:border-gray-700 px-6 py-4">
+        {/* Header — extra left padding on macOS to avoid traffic lights */}
+        <header className={`flex items-center justify-between border-b border-gray-300 dark:border-gray-700 pr-6 py-4 app-drag-region ${isMac ? 'pl-20' : 'pl-6'}`}>
           <h1 className="text-xl font-semibold">Mingly</h1>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 app-no-drag">
             <button
               onClick={toggleTheme}
               aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
@@ -152,7 +159,7 @@ function App() {
             </button>
 
             <button
-              onClick={() => setShowSettings(true)}
+              onClick={() => openSettings()}
               aria-label="Open settings"
               className="rounded-lg p-2 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
             >
@@ -176,8 +183,8 @@ function App() {
                 step={1}
                 title="Configure API Keys"
                 description="Add your Claude, ChatGPT, or Gemini API keys to get started"
-                action="Open Settings"
-                onAction={() => setShowSettings(true)}
+                action="Open API Keys"
+                onAction={() => openSettings('general')}
               />
               <SetupStep
                 step={2}
@@ -188,9 +195,9 @@ function App() {
               <SetupStep
                 step={3}
                 title="Explore Features"
-                description="Knowledge base, analytics, integrations and more in Settings"
-                action="Open Settings"
-                onAction={() => setShowSettings(true)}
+                description="Knowledge base, network AI, integrations and more"
+                action="Explore"
+                onAction={() => openSettings('integrations')}
               />
             </div>
           </div>
@@ -206,11 +213,11 @@ function App() {
   return (
     <>
       <div className="flex h-screen flex-col">
-        {/* Header */}
-        <header className="flex items-center justify-between border-b border-gray-300 dark:border-gray-700 px-6 py-3 bg-white dark:bg-gray-900">
+        {/* Header — extra left padding on macOS to avoid traffic lights */}
+        <header className={`flex items-center justify-between border-b border-gray-300 dark:border-gray-700 pr-6 py-3 bg-white dark:bg-gray-900 app-drag-region ${isMac ? 'pl-20' : 'pl-6'}`}>
           <h1 className="text-lg font-semibold">Mingly</h1>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 app-no-drag">
             <button
               onClick={toggleTheme}
               aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
@@ -224,7 +231,7 @@ function App() {
             </button>
 
             <button
-              onClick={() => setShowSettings(true)}
+              onClick={() => openSettings()}
               aria-label="Open settings"
               className="rounded-lg p-2 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
             >

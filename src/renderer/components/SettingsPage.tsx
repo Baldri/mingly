@@ -39,9 +39,10 @@ const TABS: Array<{ id: SettingsTab; label: string; icon: string }> = [
 
 interface Props {
   onBack: () => void
+  initialTab?: SettingsTab
 }
 
-export function SettingsPage({ onBack }: Props) {
+export function SettingsPage({ onBack, initialTab }: Props) {
   const {
     settings,
     apiKeysConfigured,
@@ -63,7 +64,7 @@ export function SettingsPage({ onBack }: Props) {
     Record<string, boolean | null>
   >({})
 
-  const [activeTab, setActiveTab] = useState<SettingsTab>('general')
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab || 'general')
   const { t } = useTranslation()
 
   useEffect(() => {
@@ -117,9 +118,11 @@ export function SettingsPage({ onBack }: Props) {
 
   return (
     <div className="flex h-screen bg-white dark:bg-gray-900">
-      {/* Left Sidebar */}
+      {/* Left Sidebar — extra top padding on macOS to clear traffic lights */}
       <div className="w-56 border-r border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 flex flex-col">
-        <div className="p-4 border-b border-gray-300 dark:border-gray-700">
+        <div className={`p-4 border-b border-gray-300 dark:border-gray-700 ${
+          window.electronAPI?.platform === 'darwin' ? 'pt-10' : ''
+        }`}>
           <button
             onClick={onBack}
             className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
