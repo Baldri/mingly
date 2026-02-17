@@ -46,6 +46,9 @@ const FEATURE_MIN_TIER: Record<GatedFeature, SubscriptionTier> = {
   audit_logs: 'team',
   sso_oauth: 'team',
 
+  // Pro+ agentic features
+  agentic_mode: 'pro',
+
   // Enterprise features
   sso_saml_ldap: 'enterprise',
   on_premise: 'enterprise',

@@ -548,6 +548,42 @@ const api = {
     }
   },
 
+  // Agent (Agentic Mode)
+  agent: {
+    execute: (
+      task: string,
+      provider: string,
+      model: string,
+      conversationId?: string,
+      conversationHistory?: any[],
+      systemPrompt?: string
+    ) =>
+      ipcRenderer.invoke(
+        IPC_CHANNELS.AGENT_EXECUTE,
+        task,
+        provider,
+        model,
+        conversationId,
+        conversationHistory,
+        systemPrompt
+      ),
+
+    cancel: (runId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.AGENT_CANCEL, runId),
+
+    getConfig: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.AGENT_GET_CONFIG),
+
+    updateConfig: (updates: any) =>
+      ipcRenderer.invoke(IPC_CHANNELS.AGENT_UPDATE_CONFIG, updates),
+
+    onStep: (callback: (event: any) => void) => {
+      const listener = (_event: any, agentEvent: any) => callback(agentEvent)
+      ipcRenderer.on(IPC_CHANNELS.AGENT_STEP, listener)
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.AGENT_STEP, listener)
+    }
+  },
+
   // Service Discovery
   serviceDiscovery: {
     discover: (options?: { type?: 'rag' | 'mcp' | 'all' }) =>

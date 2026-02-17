@@ -3,11 +3,29 @@ import { OpenAIClient } from './openai-client'
 import { GoogleClient } from './google-client'
 import { OllamaClient } from './ollama-client'
 import { GenericOpenAIClient } from './generic-openai-client'
-import type { Message } from '../../shared/types'
+import type { Message, ToolDefinition, AgentToolCall } from '../../shared/types'
 import type { StreamChunk } from './anthropic-client'
 import type { ProviderConfig } from '../../shared/provider-types'
 
 export type LLMProvider = 'anthropic' | 'openai' | 'google' | 'ollama' | string
+
+/**
+ * Response from a tool-use capable LLM call.
+ * The LLM may respond with text, tool calls, or both.
+ * `stopReason` indicates whether the model wants to call tools or is done.
+ */
+export interface ToolUseResponse {
+  /** Text content from the LLM (may be empty if only tool calls) */
+  text: string
+  /** Tool calls requested by the LLM */
+  toolCalls: AgentToolCall[]
+  /** Whether the model finished generating */
+  done: boolean
+  /** Why the model stopped: 'stop' = final answer, 'tool_use' = wants to call tools */
+  stopReason: 'stop' | 'tool_use'
+  /** Token usage for this turn (if available from the API) */
+  tokens?: { input: number; output: number }
+}
 
 export interface LLMClient {
   setApiKey(apiKey: string): void
@@ -23,6 +41,21 @@ export interface LLMClient {
     temperature: number
   ): Promise<string>
   getModels(): string[]
+
+  /**
+   * Send a message with tool definitions. Non-streaming.
+   * The LLM may respond with tool_calls that the caller must execute.
+   * Only implemented by providers that support native tool-use (Anthropic, OpenAI).
+   */
+  sendMessageWithTools?(
+    messages: Message[],
+    model: string,
+    tools: ToolDefinition[],
+    temperature?: number
+  ): Promise<ToolUseResponse>
+
+  /** Whether this client supports native tool-use via sendMessageWithTools() */
+  supportsToolUse?(): boolean
 }
 
 export class LLMClientManager {
@@ -187,6 +220,33 @@ export class LLMClientManager {
   ): Promise<string> {
     const client = this.getClient(provider)
     return await client.sendMessageNonStreaming(messages, model, temperature)
+  }
+
+  /**
+   * Send a message with tool definitions (non-streaming).
+   * Throws if the provider doesn't support tool-use.
+   */
+  async sendMessageWithTools(
+    provider: string,
+    messages: Message[],
+    model: string,
+    tools: ToolDefinition[],
+    temperature: number = 1.0
+  ): Promise<ToolUseResponse> {
+    const client = this.getClient(provider)
+    if (!client.sendMessageWithTools) {
+      throw new Error(`Provider "${provider}" does not support tool-use. Use Anthropic or OpenAI.`)
+    }
+    return await client.sendMessageWithTools(messages, model, tools, temperature)
+  }
+
+  /**
+   * Check if a provider supports native tool-use.
+   */
+  providerSupportsToolUse(provider: string): boolean {
+    const client = this.clients.get(provider)
+    if (!client) return false
+    return client.supportsToolUse?.() ?? false
   }
 
   getModels(provider: LLMProvider): string[] {

@@ -1,7 +1,9 @@
 import { useRef, useState, useCallback, useMemo, memo, lazy, Suspense } from 'react'
-import { Copy, User, Bot, ChevronDown, ChevronUp } from 'lucide-react'
+import { Copy, User, Bot, ChevronDown, ChevronUp, Wrench } from 'lucide-react'
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso'
 import { useChatStore } from '../stores/chat-store'
+import { useAgentStore } from '../stores/agent-store'
+import { AgentStepIndicator } from './AgentStepIndicator'
 import type { Message } from '../../shared/types'
 
 /** Lazy-loaded Markdown renderer — keeps react-markdown + prism out of the initial bundle */
@@ -37,11 +39,17 @@ export const MessageList = memo(function MessageList() {
     )
   }
 
+  // Agent state for step indicator
+  const agentIsRunning = useAgentStore((state) => state.isRunning)
+  const agentSteps = useAgentStore((state) => state.currentSteps)
+  const agentRun = useAgentStore((state) => state.currentRun)
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Live region for screen readers — announces streaming status */}
       <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {isStreaming ? 'Assistant is typing a response...' : ''}
+        {agentIsRunning ? 'Agent is executing tools...' : ''}
       </div>
       <Virtuoso
         ref={virtuosoRef}
@@ -57,6 +65,18 @@ export const MessageList = memo(function MessageList() {
             />
           </div>
         )}
+        components={{
+          Footer: () =>
+            (agentIsRunning || agentSteps.length > 0) ? (
+              <div className="px-4 py-2">
+                <AgentStepIndicator
+                  steps={agentSteps}
+                  run={agentRun}
+                  isRunning={agentIsRunning}
+                />
+              </div>
+            ) : null
+        }}
       />
     </div>
   )
@@ -106,6 +126,21 @@ const MessageBubble = memo(function MessageBubble({ message, isStreaming }: Mess
                   title={att.filename}
                 />
               ))}
+          </div>
+        )}
+
+        {/* Tool calls badge (assistant messages with tool use) */}
+        {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
+          <div className="flex flex-wrap gap-1 mb-1.5">
+            {message.toolCalls.map((tc) => (
+              <span
+                key={tc.id}
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
+              >
+                <Wrench size={10} />
+                {tc.name}
+              </span>
+            ))}
           </div>
         )}
 

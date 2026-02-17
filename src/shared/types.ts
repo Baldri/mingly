@@ -46,7 +46,7 @@ export type MessageAttachment = ImageAttachment
 export interface Message {
   id: string
   conversationId?: string
-  role: 'user' | 'assistant' | 'system'
+  role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
   attachments?: MessageAttachment[]
   provider?: LLMProvider
@@ -58,6 +58,10 @@ export interface Message {
   latencyMs?: number
   ragSources?: Array<{ filename: string; score: number }>
   tokensUsed?: number // deprecated, use tokens
+  /** Tool call ID — set when role is 'tool' (tool result message) */
+  toolCallId?: string
+  /** Tool calls made by the assistant — set when the LLM requested tool execution */
+  toolCalls?: AgentToolCall[]
 }
 
 export interface Conversation {
@@ -115,6 +119,95 @@ export interface MCPToolResult {
   toolName: string
   result: any
   error?: string
+}
+
+// ── Agent Types ──────────────────────────────────────────────────
+
+/**
+ * Tool definition in the format expected by LLM provider APIs.
+ * This is the "lingua franca" between MCP tools and LLM tool_use.
+ */
+export interface ToolDefinition {
+  name: string
+  description: string
+  inputSchema: {
+    type: 'object'
+    properties: Record<string, unknown>
+    required?: string[]
+  }
+}
+
+/**
+ * A tool call requested by the LLM during an agent step.
+ */
+export interface AgentToolCall {
+  id: string
+  name: string
+  arguments: Record<string, unknown>
+}
+
+/**
+ * Result of executing a tool call.
+ */
+export interface AgentToolResult {
+  toolCallId: string
+  content: string
+  isError: boolean
+}
+
+/**
+ * One step in an agent execution run.
+ */
+export interface AgentStep {
+  stepNumber: number
+  /** LLM's reasoning text (before/between tool calls) */
+  thinking: string
+  /** Tool calls the LLM requested in this step */
+  toolCalls: AgentToolCall[]
+  /** Results from executing the tool calls */
+  toolResults: AgentToolResult[]
+  /** Whether this step produced a final text response */
+  isFinal: boolean
+  /** Final response text (only set when isFinal=true) */
+  response?: string
+  /** Token usage for this step */
+  tokens?: { input: number; output: number }
+}
+
+/**
+ * Represents a complete agent execution run.
+ */
+export interface AgentRun {
+  id: string
+  conversationId: string
+  /** The original user message that triggered the agent */
+  task: string
+  steps: AgentStep[]
+  /** Whether the run completed successfully */
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'max_steps_reached'
+  /** Total tokens used across all steps */
+  totalTokens: { input: number; output: number }
+  /** Total cost in USD across all steps */
+  totalCost: number
+  /** Duration in ms */
+  durationMs: number
+  /** Error message if status=failed */
+  error?: string
+  createdAt: number
+}
+
+/**
+ * Configuration limits for agent execution.
+ */
+export interface AgentConfig {
+  /** Maximum number of agent steps before stopping (safety rail) */
+  maxSteps: number
+  /** Maximum total tokens per run (safety rail) */
+  maxTokensPerRun: number
+  /** Timeout per individual tool execution in ms */
+  toolTimeoutMs: number
+  /** Overall timeout for the entire agent run in ms */
+  runTimeoutMs: number
 }
 
 // Context Types
@@ -203,6 +296,7 @@ export type GatedFeature =
   | 'export'                // Pro+: Conversation export
   | 'auto_update'           // Pro+: Auto-updater
   | 'agents'                // Pro+: Orchestrator / delegation
+  | 'agentic_mode'          // Pro+: LLM-driven tool-use agent with ReAct loop
   | 'templates_custom'      // Pro+: Custom templates (Free gets built-in only)
   | 'comparison'            // Pro+: Side-by-side model comparison
   | 'unlimited_conversations' // Pro+: Unlimited conversations per day
@@ -517,5 +611,12 @@ export const IPC_CHANNELS = {
 
   // Service Discovery (RAG + MCP auto-detection)
   SERVICE_DISCOVER: 'service:discover',
-  SERVICE_DISCOVER_STATUS: 'service:discover-status'
+  SERVICE_DISCOVER_STATUS: 'service:discover-status',
+
+  // Agent Execution
+  AGENT_EXECUTE: 'agent:execute',
+  AGENT_STEP: 'agent:step',
+  AGENT_CANCEL: 'agent:cancel',
+  AGENT_GET_CONFIG: 'agent:get-config',
+  AGENT_UPDATE_CONFIG: 'agent:update-config'
 } as const

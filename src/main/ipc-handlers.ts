@@ -28,6 +28,7 @@ import { registerContentHandlers } from './ipc/content-handlers'
 import { registerRBACHandlers } from './ipc/rbac-handlers'
 import { registerMCPHandlers } from './ipc/mcp-handlers'
 import { registerRAGHandlers } from './ipc/rag-handlers'
+import { registerAgentHandlers } from './ipc/agent-handlers'
 
 // ============================================================
 // Helpers (only needed for SEND_MESSAGE orchestration)
@@ -60,6 +61,7 @@ export async function registerIPCHandlers(): Promise<void> {
   registerMCPHandlers()
   registerRBACHandlers()
   registerBusinessHandlers()
+  registerAgentHandlers()
   await registerContentHandlers()
 
   // ========================================
