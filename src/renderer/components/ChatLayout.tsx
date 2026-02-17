@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from 'react'
-import { Columns2 } from 'lucide-react'
+import { Columns2, GitFork, Zap } from 'lucide-react'
 import { LoadingSpinner } from './LoadingSpinner'
 import { ConversationSidebar } from './ConversationSidebar'
 import { MessageList } from './MessageList'
@@ -11,6 +11,11 @@ import { useChatStore } from '../stores/chat-store'
 import { useOrchestratorStore } from '../stores/orchestrator-store'
 
 const ComparisonView = lazy(() => import('./ComparisonView').then(m => ({ default: m.ComparisonView })))
+const AgentComparisonView = lazy(() => import('./AgentComparisonView').then(m => ({ default: m.AgentComparisonView })))
+const SubagentView = lazy(() => import('./SubagentView').then(m => ({ default: m.SubagentView })))
+
+/** Active view mode — mutually exclusive */
+type ViewMode = 'chat' | 'comparison' | 'agent_comparison' | 'subagent'
 
 /** Lazy-loaded dialogs — only fetched when triggered */
 const SensitiveDataConsentDialog = lazy(() => import('./SensitiveDataConsentDialog').then(m => ({ default: m.SensitiveDataConsentDialog })))
@@ -33,7 +38,11 @@ export function ChatLayout() {
   const denyProposal = useOrchestratorStore((state) => state.denyProposal)
   const dismissProposal = useOrchestratorStore((state) => state.dismissProposal)
 
-  const [comparisonMode, setComparisonMode] = useState(false)
+  const [viewMode, setViewMode] = useState<ViewMode>('chat')
+
+  const toggleMode = (mode: ViewMode) => {
+    setViewMode((current) => (current === mode ? 'chat' : mode))
+  }
 
   return (
     <div className="flex h-full overflow-hidden bg-white dark:bg-gray-900">
@@ -61,7 +70,7 @@ export function ChatLayout() {
           )}
         </div>
 
-        {/* Chat Header — model info + routing toggle + comparison toggle */}
+        {/* Chat Header — model info + routing toggle + mode toggles */}
         <div className="flex items-center justify-between px-4 py-1.5 border-b border-gray-200 dark:border-gray-700">
           {/* Active model indicator */}
           <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
@@ -79,25 +88,58 @@ export function ChatLayout() {
 
           {/* Controls */}
           <div className="flex items-center gap-1">
+            {/* Text Comparison */}
             <button
-              onClick={() => setComparisonMode(!comparisonMode)}
-              title={comparisonMode ? 'Exit comparison mode' : 'Compare models side-by-side'}
+              onClick={() => toggleMode('comparison')}
+              title={viewMode === 'comparison' ? 'Textvergleich beenden' : 'Textvergleich (ohne Tools)'}
               className={`p-1.5 rounded-md transition-colors ${
-                comparisonMode
+                viewMode === 'comparison'
                   ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'
                   : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300'
               }`}
             >
               <Columns2 size={16} />
             </button>
+            {/* Agent Comparison */}
+            <button
+              onClick={() => toggleMode('agent_comparison')}
+              title={viewMode === 'agent_comparison' ? 'Agent-Vergleich beenden' : 'Agent-Vergleich (mit Tools)'}
+              className={`p-1.5 rounded-md transition-colors ${
+                viewMode === 'agent_comparison'
+                  ? 'bg-indigo-100 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400'
+                  : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300'
+              }`}
+            >
+              <Zap size={16} />
+            </button>
+            {/* Subagent Mode */}
+            <button
+              onClick={() => toggleMode('subagent')}
+              title={viewMode === 'subagent' ? 'Subagent-Modus beenden' : 'Parallele Subagents'}
+              className={`p-1.5 rounded-md transition-colors ${
+                viewMode === 'subagent'
+                  ? 'bg-violet-100 text-violet-600 dark:bg-violet-900/30 dark:text-violet-400'
+                  : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300'
+              }`}
+            >
+              <GitFork size={16} />
+            </button>
             <RoutingModeToggle />
           </div>
         </div>
 
-        {/* Main content — either comparison view or normal chat */}
-        {comparisonMode ? (
+        {/* Main content — mode-dependent view */}
+        {viewMode === 'comparison' ? (
           <Suspense fallback={<div className="flex-1 flex items-center justify-center text-gray-400">Loading comparison...</div>}>
-            <ComparisonView onClose={() => setComparisonMode(false)} />
+            <ComparisonView onClose={() => setViewMode('chat')} />
+          </Suspense>
+        ) : viewMode === 'agent_comparison' ? (
+          <Suspense fallback={<div className="flex-1 flex items-center justify-center text-gray-400">Loading agent comparison...</div>}>
+            <AgentComparisonView onClose={() => setViewMode('chat')} />
+          </Suspense>
+        ) : viewMode === 'subagent' ? (
+          <Suspense fallback={<div className="flex-1 flex items-center justify-center text-gray-400">Loading subagent mode...</div>}>
+            <SubagentView onClose={() => setViewMode('chat')} />
           </Suspense>
         ) : (
           <>

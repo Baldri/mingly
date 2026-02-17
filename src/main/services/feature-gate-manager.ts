@@ -48,6 +48,8 @@ const FEATURE_MIN_TIER: Record<GatedFeature, SubscriptionTier> = {
 
   // Pro+ agentic features
   agentic_mode: 'pro',
+  agent_comparison: 'pro',
+  subagent_mode: 'pro',
 
   // Enterprise features
   sso_saml_ldap: 'enterprise',

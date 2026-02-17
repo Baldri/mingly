@@ -1,6 +1,7 @@
-import type { Message } from '../../shared/types'
-import type { LLMClient } from './client-manager'
+import type { Message, ToolDefinition } from '../../shared/types'
+import type { LLMClient, ToolUseResponse } from './client-manager'
 import type { StreamChunk } from './anthropic-client'
+import { fetchWithTools } from './openai-tool-use-helper'
 
 /**
  * Generic OpenAI-compatible client
@@ -194,5 +195,36 @@ export class GenericOpenAIClient implements LLMClient {
       console.error('Failed to fetch models:', error)
       return []
     }
+  }
+
+  /**
+   * Send a message with tool definitions via OpenAI-compatible endpoint.
+   * Works with LM Studio, LocalAI, OpenRouter, etc.
+   */
+  async sendMessageWithTools(
+    messages: Message[],
+    model: string,
+    tools: ToolDefinition[],
+    temperature: number = 1.0
+  ): Promise<ToolUseResponse> {
+    const authHeaders: Record<string, string> = {}
+    if (this.apiKey) {
+      authHeaders['Authorization'] = `Bearer ${this.apiKey}`
+    }
+
+    return fetchWithTools(
+      this.baseURL,
+      model,
+      messages,
+      tools,
+      temperature,
+      authHeaders,
+      'GenericOpenAI'
+    )
+  }
+
+  /** OpenAI-compatible endpoints support tool-use */
+  supportsToolUse(): boolean {
+    return true
   }
 }

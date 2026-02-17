@@ -1,6 +1,7 @@
-import type { Message } from '../../shared/types'
-import type { LLMClient } from './client-manager'
+import type { Message, ToolDefinition } from '../../shared/types'
+import type { LLMClient, ToolUseResponse } from './client-manager'
 import type { StreamChunk } from './anthropic-client'
+import { fetchWithTools } from './openai-tool-use-helper'
 
 export class OllamaClient implements LLMClient {
   private baseURL = 'http://localhost:11434'
@@ -214,5 +215,32 @@ export class OllamaClient implements LLMClient {
         }
       }
     }
+  }
+
+  /**
+   * Send a message with tool definitions via Ollama's OpenAI-compatible endpoint.
+   * Uses /v1/chat/completions which supports the OpenAI tool_calls format.
+   */
+  async sendMessageWithTools(
+    messages: Message[],
+    model: string,
+    tools: ToolDefinition[],
+    temperature: number = 1.0
+  ): Promise<ToolUseResponse> {
+    // Use OpenAI-compatible endpoint (no API key needed for local Ollama)
+    return fetchWithTools(
+      `${this.baseURL}/v1`,
+      model,
+      messages,
+      tools,
+      temperature,
+      {}, // No Authorization header needed
+      'Ollama'
+    )
+  }
+
+  /** Ollama supports tool-use via OpenAI-compatible endpoint */
+  supportsToolUse(): boolean {
+    return true
   }
 }

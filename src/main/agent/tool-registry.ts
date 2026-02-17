@@ -326,4 +326,74 @@ function registerDefaultBuiltIns(registry: ToolRegistry): void {
       return String(args.text ?? '')
     }
   )
+
+  // decompose_task — structural tool for subagent orchestration.
+  // Forces the master LLM to output a structured JSON decomposition.
+  registry.registerBuiltIn(
+    {
+      name: 'decompose_task',
+      description:
+        'Decompose a complex task into 1-3 independent subtasks that can be executed in parallel. ' +
+        'Each subtask should be self-contained and produce a clear result. ' +
+        'Use this when a task can be split into parallel workstreams.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          summary: {
+            type: 'string',
+            description: 'Brief summary of the overall task and decomposition strategy'
+          },
+          subtasks: {
+            type: 'array',
+            description: 'Array of 1-3 independent subtasks',
+            items: {
+              type: 'object',
+              properties: {
+                title: { type: 'string', description: 'Short title for the subtask' },
+                description: {
+                  type: 'string',
+                  description: 'Detailed description of what this subtask should accomplish'
+                }
+              },
+              required: ['title', 'description']
+            }
+          }
+        },
+        required: ['summary', 'subtasks']
+      }
+    },
+    async (args) => {
+      const subtasks = args.subtasks as Array<{ title: string; description: string }> | undefined
+
+      if (!subtasks || !Array.isArray(subtasks) || subtasks.length === 0) {
+        return JSON.stringify({ error: 'At least 1 subtask is required' })
+      }
+
+      if (subtasks.length > 3) {
+        return JSON.stringify({
+          error: 'Maximum 3 subtasks allowed. Please consolidate into fewer subtasks.',
+          received: subtasks.length
+        })
+      }
+
+      // Validate each subtask has title and description
+      for (let i = 0; i < subtasks.length; i++) {
+        if (!subtasks[i].title || !subtasks[i].description) {
+          return JSON.stringify({
+            error: `Subtask ${i + 1} is missing title or description`
+          })
+        }
+      }
+
+      // Return the validated decomposition
+      return JSON.stringify({
+        summary: String(args.summary ?? ''),
+        subtasks: subtasks.slice(0, 3).map((st, idx) => ({
+          title: st.title,
+          description: st.description,
+          order: idx + 1
+        }))
+      })
+    }
+  )
 }

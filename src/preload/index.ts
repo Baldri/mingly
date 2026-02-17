@@ -584,6 +584,82 @@ const api = {
     }
   },
 
+  // Agent Comparison (Parallel Model Comparison with tool-use)
+  agentComparison: {
+    start: (
+      prompt: string,
+      slots: Array<{ provider: string; model: string; label?: string }>,
+      systemPrompt?: string,
+      conversationHistory?: any[]
+    ) =>
+      ipcRenderer.invoke(
+        IPC_CHANNELS.AGENT_COMPARISON_START,
+        prompt,
+        slots,
+        systemPrompt,
+        conversationHistory
+      ),
+
+    cancel: (sessionId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.AGENT_COMPARISON_CANCEL, sessionId),
+
+    onStep: (callback: (slotIndex: number, event: any) => void) => {
+      const listener = (_event: any, slotIndex: number, agentEvent: any) =>
+        callback(slotIndex, agentEvent)
+      ipcRenderer.on(IPC_CHANNELS.AGENT_COMPARISON_STEP, listener)
+      return () =>
+        ipcRenderer.removeListener(IPC_CHANNELS.AGENT_COMPARISON_STEP, listener)
+    }
+  },
+
+  // Subagent Orchestration (Master → N Subtasks → Merge)
+  subagent: {
+    decompose: (
+      task: string,
+      masterSlot: { provider: string; model: string; label?: string },
+      conversationHistory?: any[],
+      systemPrompt?: string
+    ) =>
+      ipcRenderer.invoke(
+        IPC_CHANNELS.SUBAGENT_DECOMPOSE,
+        task,
+        masterSlot,
+        conversationHistory,
+        systemPrompt
+      ),
+
+    start: (
+      sessionId: string,
+      tasks: Array<{
+        id: string
+        title: string
+        description: string
+        slot: { provider: string; model: string; label?: string }
+        order: number
+      }>,
+      originalTask: string
+    ) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SUBAGENT_START, sessionId, tasks, originalTask),
+
+    cancel: (sessionId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.SUBAGENT_CANCEL, sessionId),
+
+    onStep: (callback: (taskId: string, event: any) => void) => {
+      const listener = (_event: any, taskId: string, agentEvent: any) =>
+        callback(taskId, agentEvent)
+      ipcRenderer.on(IPC_CHANNELS.SUBAGENT_STEP, listener)
+      return () =>
+        ipcRenderer.removeListener(IPC_CHANNELS.SUBAGENT_STEP, listener)
+    },
+
+    onStatus: (callback: (status: any) => void) => {
+      const listener = (_event: any, status: any) => callback(status)
+      ipcRenderer.on(IPC_CHANNELS.SUBAGENT_STATUS, listener)
+      return () =>
+        ipcRenderer.removeListener(IPC_CHANNELS.SUBAGENT_STATUS, listener)
+    }
+  },
+
   // Service Discovery
   serviceDiscovery: {
     discover: (options?: { type?: 'rag' | 'mcp' | 'all' }) =>

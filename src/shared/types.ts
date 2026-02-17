@@ -210,6 +210,81 @@ export interface AgentConfig {
   runTimeoutMs: number
 }
 
+// ── Parallel Intelligence Types ──────────────────────────────────
+
+/** Configuration for a single model slot in agent comparison or subagent run */
+export interface AgentModelSlot {
+  provider: string
+  model: string
+  /** User-friendly label, e.g. "Local (Llama3)" or "Cloud (Claude)" */
+  label?: string
+}
+
+/** Result of a single agent comparison run (one model) */
+export interface AgentComparisonResult {
+  slot: AgentModelSlot
+  run: AgentRun
+  error?: string
+}
+
+/** Full agent comparison session — N models in parallel with tool-use */
+export interface AgentComparisonSession {
+  id: string
+  prompt: string
+  slots: AgentModelSlot[]
+  results: AgentComparisonResult[]
+  status: 'running' | 'completed' | 'partial' | 'failed'
+  createdAt: number
+  durationMs: number
+}
+
+/** A subtask decomposed by the master agent */
+export interface SubagentTask {
+  id: string
+  title: string
+  description: string
+  /** Assigned model slot (can be overridden by user before execution) */
+  slot: AgentModelSlot
+  /** Display order (all run in parallel) */
+  order: number
+}
+
+/** Master decomposition result from decompose_task tool */
+export interface TaskDecomposition {
+  masterSummary: string
+  subtasks: SubagentTask[]
+}
+
+/** Result from a single subagent run */
+export interface SubagentResult {
+  taskId: string
+  run: AgentRun
+  error?: string
+}
+
+/** Full subagent orchestration session */
+export interface SubagentSession {
+  id: string
+  masterTask: string
+  masterSlot: AgentModelSlot
+  decomposition: TaskDecomposition | null
+  subtaskResults: SubagentResult[]
+  /** Master's final synthesized answer */
+  synthesis: string | null
+  status:
+    | 'decomposing'
+    | 'awaiting_config'
+    | 'running_subtasks'
+    | 'synthesizing'
+    | 'completed'
+    | 'partial'
+    | 'failed'
+    | 'cancelled'
+  totalTokens: { input: number; output: number }
+  durationMs: number
+  createdAt: number
+}
+
 // Context Types
 export type ContextItemType = 'file' | 'url' | 'note' | 'mcp_result'
 
@@ -297,6 +372,8 @@ export type GatedFeature =
   | 'auto_update'           // Pro+: Auto-updater
   | 'agents'                // Pro+: Orchestrator / delegation
   | 'agentic_mode'          // Pro+: LLM-driven tool-use agent with ReAct loop
+  | 'agent_comparison'      // Pro+: Parallel agent comparison with tool-use
+  | 'subagent_mode'         // Pro+: Subagent orchestration (master → subtasks)
   | 'templates_custom'      // Pro+: Custom templates (Free gets built-in only)
   | 'comparison'            // Pro+: Side-by-side model comparison
   | 'unlimited_conversations' // Pro+: Unlimited conversations per day
@@ -618,5 +695,17 @@ export const IPC_CHANNELS = {
   AGENT_STEP: 'agent:step',
   AGENT_CANCEL: 'agent:cancel',
   AGENT_GET_CONFIG: 'agent:get-config',
-  AGENT_UPDATE_CONFIG: 'agent:update-config'
+  AGENT_UPDATE_CONFIG: 'agent:update-config',
+
+  // Agent Comparison (Parallel Model Comparison with tool-use)
+  AGENT_COMPARISON_START: 'agent-comparison:start',
+  AGENT_COMPARISON_CANCEL: 'agent-comparison:cancel',
+  AGENT_COMPARISON_STEP: 'agent-comparison:step',
+
+  // Subagent Orchestration (Master → N Subtasks → N ReAct → Merge)
+  SUBAGENT_DECOMPOSE: 'subagent:decompose',
+  SUBAGENT_START: 'subagent:start',
+  SUBAGENT_CANCEL: 'subagent:cancel',
+  SUBAGENT_STEP: 'subagent:step',
+  SUBAGENT_STATUS: 'subagent:status'
 } as const
