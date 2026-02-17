@@ -2,6 +2,72 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-02-17
+
+### Added — Agentic Mode (Phase 1)
+- **ReAct Agent Loop** — Full Reason → Act → Observe cycle with automatic tool selection and multi-step chains
+- **chatWithTools()** — Tool-use Conversations for Anthropic + OpenAI Providers, inklusive Message-History und System-Prompt
+- **ToolRegistry** — Zentrales Tool-Management: Built-in Tools (`web_search`, `read_file`, `write_file`, `execute_command`) + MCP Tools werden automatisch registriert
+- **AgentExecutor** — Konfigurierbarer Agent Runner mit `maxSteps` (5), `maxTokensPerRun` (50k), `toolTimeoutMs` (15s), `runTimeoutMs` (120s)
+- **AgentStepIndicator** — Live-UI zeigt Thinking → Tool Calls → Tool Results pro Schritt mit klappbaren Details
+- **Feature Gate** — `agentic_mode` auf Pro+ Tier begrenzt
+
+### Added — Parallel Intelligence (Phase 2)
+
+#### Ollama + Generic OpenAI Tool-Use
+- **Shared `openai-tool-use-helper.ts`** — Gemeinsamer Helper für Function Calling via `/v1/chat/completions` (OpenAI-kompatibles Format)
+- **Ollama Tool-Use** — Lokale Modelle mit Function-Calling-Support (llama3.1, qwen2.5, mistral) bekommen vollen Tool-Zugriff
+- **Generic OpenAI Tool-Use** — LM Studio, LocalAI, OpenRouter und andere kompatible Backends werden unterstützt
+- Message-Konversion, Tool-Call-Parsing und Token-Tracking analog zu OpenAI-Client
+
+#### Agent Comparison (Paralleler Modell-Vergleich mit Tools)
+- **AgentComparisonService** — N AgentExecutor-Instanzen (max 3) parallel mit `Promise.allSettled` + 100ms Stagger für same-Provider
+- **Isolierte Instanzen** — Jeder Slot bekommt eigenen AgentExecutor mit eigenem ReAct-Loop und isoliertem State (kein Singleton-Sharing)
+- **AgentComparisonView** — N Spalten mit Provider-farbigen Badges, Live-AgentStepIndicator, Token/Dauer-Tracking pro Slot
+- **Ollama-Warnung** — UI warnt bei >1 Ollama-Slot wegen GPU-Last
+- **Agent-Comparison-Store** — Zustand Store mit `perSlotSteps[]` für O(1) Event-Routing und `slotIndex`-Bounds-Check
+
+#### Parallele Subagents (Master → N Subtasks → Synthese)
+- **SubagentOrchestrator** — 3-Phasen-Lifecycle:
+  1. `decompose()` — Master-LLM nutzt `decompose_task` Built-in Tool zur strukturierten Aufgabenzerlegung (1-3 Subtasks)
+  2. `executeSubtasks()` — N parallele AgentExecutor-Instanzen mit vollem Tool-Zugriff (MCP + Built-ins, OHNE decompose_task)
+  3. `synthesize()` — Master-LLM synthetisiert Subtask-Ergebnisse zu finaler Antwort
+- **SubagentConfigDialog** — Modal für Provider/Model-Konfiguration pro Subtask, Quick-Actions "Alle lokal" / "Alle Cloud"
+- **SubagentView** — 4-Phasen-UI mit PhaseIndicator-Dots: Input → Decompose → Execute (parallele Spalten) → Synthese
+- **decompose_task Tool** — Built-in Tool mit JSON-Schema, erzwingt strukturierte Ausgabe statt Freitext
+- **Subagent-Store** — Zustand Store mit `perTaskSteps: Record<string, AgentStep[]>` für paralleles Event-Tracking
+
+### Added — IPC + Preload
+- 6 neue IPC Channels: `AGENT_COMPARISON_START`, `AGENT_COMPARISON_CANCEL`, `AGENT_COMPARISON_STEP`, `SUBAGENT_DECOMPOSE`, `SUBAGENT_START`, `SUBAGENT_CANCEL`, `SUBAGENT_STEP`, `SUBAGENT_STATUS`
+- Preload Bridge: `agentComparison` Block (start/cancel/onStep) und `subagent` Block (decompose/start/cancel/onStep/onStatus)
+
+### Added — UI
+- **ChatLayout ViewMode** — `'chat' | 'comparison' | 'agent_comparison' | 'subagent'` als union type statt einzelner Booleans, mutual exclusivity garantiert
+- 3 neue Toolbar-Buttons: `Columns2` (Textvergleich), `Zap` (Agent Comparison), `GitFork` (Subagent)
+- Lazy-Loading für alle neuen Views via `React.lazy()` + `Suspense`
+
+### Security
+- **IPC Input-Validierung** — Alle Subagent/Comparison-Handler validieren task, masterSlot, slots[], tasks[] vor Ausführung (Electron Security Boundary)
+- **AbortControllers verbunden** — Pro Task/Slot wird ein eigener AbortController erstellt; `cancelSession()` aborted jetzt wirklich. Stagger-Delay ist ebenfalls abortable via `AbortSignal.addEventListener`
+- **Synthese-Fehler nicht maskiert** — Status `'partial'` statt `'completed'` wenn Subtask-Ergebnisse vorliegen aber Synthese fehlschlägt
+- **Session-Concurrency-Limit** — Max 2 gleichzeitige Sessions pro Service (SubagentOrchestrator + AgentComparisonService)
+- **Prompt-Injection-Mitigation** — Subtask-Title auf 200 Zeichen, Description auf 2000 Zeichen begrenzt
+- **JSON.parse Safety** — Orchestrator wrapped JSON.parse in try/catch mit hilfreicher Fehlermeldung für lokale Modelle
+- **IPC Event-Listener Cleanup** — Stores speichern Unsubscribe-Funktionen und rufen sie bei HMR-Reload auf (Memory-Leak-Fix)
+- **Tool-Call Argument Safety** — Tool-Calls mit unparsbaren Arguments werden übersprungen statt mit leerem Objekt ausgeführt
+- **SlotIndex Bounds-Check** — Comparison-Store validiert 0 ≤ slotIndex ≤ 2
+
+### Changed
+- **Feature Gates** — `agent_comparison: 'pro'` und `subagent_mode: 'pro'` zu FEATURE_MIN_TIER hinzugefügt
+- **ChatLayout** — `comparisonMode: boolean` ersetzt durch `viewMode: ViewMode` Union-Type
+
+### Technical
+- Neue Dateien: 11 (6 source + 3 tests + 2 stores)
+- Geänderte Dateien: 8 (types, ollama-client, generic-openai-client, tool-registry, agent-handlers, feature-gate-manager, preload, ChatLayout)
+- 956 Tests in 56 Files — alle bestanden
+- TypeScript strict mode clean (beide Configs)
+- Security Audit: 23 Findings identifiziert (7 CRITICAL, 9 HIGH, 7 MEDIUM), alle CRITICAL + HIGH gefixt
+
 ## [0.3.2] - 2026-02-14
 
 ### Fixed
