@@ -351,12 +351,14 @@ export class SubagentOrchestrator {
       throw new Error('Cancelled')
     }
 
-    // Create isolated executor
+    // Create isolated executor with progress recitation + error preservation
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 50000,
       toolTimeoutMs: 15000,
-      runTimeoutMs: 120000
+      runTimeoutMs: 120000,
+      enableProgressRecitation: true,
+      enableErrorPreservation: true
     })
 
     // Forward events with taskId

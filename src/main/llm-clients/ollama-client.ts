@@ -2,6 +2,18 @@ import type { Message, ToolDefinition } from '../../shared/types'
 import type { LLMClient, ToolUseResponse } from './client-manager'
 import type { StreamChunk } from './anthropic-client'
 import { fetchWithTools } from './openai-tool-use-helper'
+import { getOllamaLoadBalancer } from '../network/ollama-load-balancer'
+
+// ── Response types for Ollama API ─────────────────────────────
+
+interface OllamaChatResponse {
+  message?: { content?: string }
+  done?: boolean
+}
+
+interface OllamaTagsResponse {
+  models?: Array<{ name: string; size: number; modified: string }>
+}
 
 export class OllamaClient implements LLMClient {
   private baseURL = 'http://localhost:11434'
@@ -10,10 +22,31 @@ export class OllamaClient implements LLMClient {
     // Ollama doesn't need API key, but keep interface compatible
   }
 
+  /**
+   * Set the base URL for this client (used by LocalAIBridge for network servers).
+   */
+  setBaseURL(url: string): void {
+    this.baseURL = url
+  }
+
+  /**
+   * Get the effective base URL, consulting the load balancer when multi-backend is available.
+   * Falls back to the configured baseURL if no load-balanced backends are healthy.
+   */
+  private getEffectiveBaseURL(): string {
+    const balancer = getOllamaLoadBalancer()
+    if (balancer.isBalancingAvailable()) {
+      const url = balancer.getNextUrl()
+      if (url) return url
+    }
+    return this.baseURL
+  }
+
   async validateApiKey(): Promise<boolean> {
     try {
-      // Check if Ollama is running
-      const response = await fetch(`${this.baseURL}/api/version`, {
+      // Check if Ollama is running (use effective URL for load-balanced setups)
+      const effectiveUrl = this.getEffectiveBaseURL()
+      const response = await fetch(`${effectiveUrl}/api/version`, {
         method: 'GET'
       })
       return response.ok
@@ -42,7 +75,8 @@ export class OllamaClient implements LLMClient {
           : {})
       }))
 
-      const response = await fetch(`${this.baseURL}/api/chat`, {
+      const effectiveUrl = this.getEffectiveBaseURL()
+      const response = await fetch(`${effectiveUrl}/api/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -122,7 +156,8 @@ export class OllamaClient implements LLMClient {
         : {})
     }))
 
-    const response = await fetch(`${this.baseURL}/api/chat`, {
+    const effectiveUrl = this.getEffectiveBaseURL()
+    const response = await fetch(`${effectiveUrl}/api/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -141,8 +176,8 @@ export class OllamaClient implements LLMClient {
       throw new Error(`Ollama API error: ${response.statusText}`)
     }
 
-    const data = (await response.json()) as any
-    return data.message?.content || ''
+    const data = (await response.json()) as OllamaChatResponse
+    return data.message?.content ?? ''
   }
 
   getModels(): string[] {
@@ -163,14 +198,16 @@ export class OllamaClient implements LLMClient {
     Array<{ name: string; size: number; modified: string }>
   > {
     try {
-      const response = await fetch(`${this.baseURL}/api/tags`)
+      const effectiveUrl = this.getEffectiveBaseURL()
+      const response = await fetch(`${effectiveUrl}/api/tags`)
 
       if (!response.ok) {
         throw new Error('Failed to fetch Ollama models')
       }
 
-      const data = (await response.json()) as any
-      return data.models || []
+      const data = (await response.json()) as OllamaTagsResponse
+      if (!Array.isArray(data?.models)) return []
+      return data.models
     } catch (error) {
       console.error('Failed to get Ollama models:', error)
       return []
@@ -179,7 +216,8 @@ export class OllamaClient implements LLMClient {
 
   // Ollama-specific: Pull a model
   async pullModel(modelName: string): Promise<void> {
-    const response = await fetch(`${this.baseURL}/api/pull`, {
+    const effectiveUrl = this.getEffectiveBaseURL()
+    const response = await fetch(`${effectiveUrl}/api/pull`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -228,8 +266,9 @@ export class OllamaClient implements LLMClient {
     temperature: number = 1.0
   ): Promise<ToolUseResponse> {
     // Use OpenAI-compatible endpoint (no API key needed for local Ollama)
+    const effectiveUrl = this.getEffectiveBaseURL()
     return fetchWithTools(
-      `${this.baseURL}/v1`,
+      `${effectiveUrl}/v1`,
       model,
       messages,
       tools,

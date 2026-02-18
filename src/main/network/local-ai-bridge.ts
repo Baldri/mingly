@@ -14,6 +14,7 @@ import { getNetworkAIManager, NetworkAIManager } from './network-ai-manager'
 import { getClientManager, LLMClientManager } from '../llm-clients/client-manager'
 import { GenericOpenAIClient } from '../llm-clients/generic-openai-client'
 import { OllamaClient } from '../llm-clients/ollama-client'
+import { getOllamaLoadBalancer } from './ollama-load-balancer'
 import { buildAPIUrl } from '../../shared/network-ai-types'
 import type { NetworkAIServerConfig } from '../../shared/network-ai-types'
 
@@ -55,6 +56,14 @@ export class LocalAIBridge {
 
     console.log(`🔗 Local AI Bridge: registered ${this.registeredProviders.size} provider(s)`)
 
+    // Start load balancer health checks if we have Ollama backends
+    const loadBalancer = getOllamaLoadBalancer()
+    if (loadBalancer.getBackends().length > 0) {
+      loadBalancer.startHealthChecks()
+      const stats = loadBalancer.getStats()
+      console.log(`⚖️ Load Balancer: ${stats.totalBackends} Ollama backend(s), ${stats.healthyBackends} healthy`)
+    }
+
     // Start periodic refresh (every 60 seconds)
     this.refreshInterval = setInterval(() => this.refreshAll(), 60_000)
   }
@@ -80,6 +89,9 @@ export class LocalAIBridge {
         supportsStreaming: true,
         models: []
       })
+
+      // Register with load balancer for multi-backend routing
+      getOllamaLoadBalancer().addBackend(server)
     } else {
       // All other types use OpenAI-compatible client
       const apiBase = server.type === 'vllm' || server.type === 'openai-compatible'
@@ -129,6 +141,10 @@ export class LocalAIBridge {
   unregisterServer(serverId: string): void {
     const providerId = `network:${serverId}`
     this.registeredProviders.delete(providerId)
+
+    // Remove from load balancer pool
+    getOllamaLoadBalancer().removeBackend(serverId)
+
     // Note: LLMClientManager doesn't have a removeProvider method,
     // but the provider will be unavailable since it has no API key
   }
@@ -171,6 +187,11 @@ export class LocalAIBridge {
         if (result.success) {
           // Refresh models
           provider.models = await this.networkManager.getModels(server.id)
+
+          // Ensure Ollama backends are in the load balancer pool
+          if (server.type === 'ollama') {
+            getOllamaLoadBalancer().addBackend(server)
+          }
         }
 
         provider.lastRefreshed = Date.now()
@@ -223,6 +244,9 @@ export class LocalAIBridge {
       clearInterval(this.refreshInterval)
       this.refreshInterval = null
     }
+
+    // Stop load balancer health checks and clear backends
+    getOllamaLoadBalancer().shutdown()
   }
 }
 

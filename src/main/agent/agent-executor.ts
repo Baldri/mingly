@@ -18,6 +18,7 @@
 
 import { nanoid } from 'nanoid'
 import { getToolRegistry, type ToolRegistry } from './tool-registry'
+import { getAgentContextManager } from './agent-context-manager'
 import { getClientManager } from '../llm-clients/client-manager'
 import type { ToolUseResponse } from '../llm-clients/client-manager'
 import type {
@@ -36,7 +37,9 @@ const DEFAULT_AGENT_CONFIG: AgentConfig = {
   maxSteps: 5,
   maxTokensPerRun: 50000,
   toolTimeoutMs: 15000,
-  runTimeoutMs: 120000
+  runTimeoutMs: 120000,
+  enableProgressRecitation: true,
+  enableErrorPreservation: true
 }
 
 // ── Event types for step tracking ──────────────────────────────
@@ -229,7 +232,11 @@ export class AgentExecutor {
         }
 
         // Execute tool calls
-        const toolResults = await toolRegistry.executeToolCalls(llmResponse.toolCalls)
+        const rawToolResults = await toolRegistry.executeToolCalls(llmResponse.toolCalls)
+
+        // Task 4: File-based context — externalize large tool results to temp files
+        const contextManager = getAgentContextManager()
+        const toolResults = rawToolResults.map((r) => contextManager.compactToolResult(runId, r))
         step.toolResults = toolResults
 
         run.steps.push(step)
@@ -248,8 +255,22 @@ export class AgentExecutor {
           messages.push({
             id: nanoid(),
             role: 'tool',
-            content: result.content,
+            content: this.config.enableErrorPreservation
+              ? result.content  // Keep full error content (Task 2: Error Preservation)
+              : result.isError
+                ? `Error: ${result.content.substring(0, 500)}`
+                : result.content,
             toolCallId: result.toolCallId
+          })
+        }
+
+        // Task 1: Progress Recitation — inject step summary to keep agent on track
+        if (this.config.enableProgressRecitation && run.steps.length >= 2) {
+          const recitation = this.buildProgressRecitation(run, this.config.maxSteps)
+          messages.push({
+            id: nanoid(),
+            role: 'user',
+            content: recitation
           })
         }
 
@@ -272,6 +293,13 @@ export class AgentExecutor {
       this.activeRuns.delete(runId)
       run.durationMs = Date.now() - startTime
 
+      // Task 4: Clean up externalized temp files after run completion
+      try {
+        getAgentContextManager().cleanup(runId)
+      } catch {
+        // Ignore cleanup errors
+      }
+
       this.emit({ type: 'run_complete', runId, run })
     }
 
@@ -282,7 +310,11 @@ export class AgentExecutor {
 
   /**
    * Build the initial message array for the agent run.
-   * Includes system prompt, conversation history, and the task.
+   *
+   * KV-Cache optimization: the message structure is designed so that the
+   * stable prefix (system prompt) is always first and never changes between
+   * turns. Tool definitions are sorted alphabetically by ToolRegistry.
+   * Only new messages are appended — the prefix stays cacheable.
    */
   private buildInitialMessages(
     history: Message[],
@@ -291,16 +323,17 @@ export class AgentExecutor {
   ): Message[] {
     const messages: Message[] = []
 
-    // System prompt (if provided)
+    // Stable prefix: system prompt always first (cacheable across turns)
     if (systemPrompt) {
       messages.push({
-        id: nanoid(),
+        id: 'sys-prompt', // Stable ID for cache consistency
         role: 'system',
         content: systemPrompt
       })
     }
 
     // Conversation history (filter out system messages to avoid duplicates)
+    // Append-only: never reorder existing messages
     for (const msg of history) {
       if (msg.role !== 'system') {
         messages.push({ ...msg })
@@ -323,6 +356,39 @@ export class AgentExecutor {
   private isTokenBudgetExhausted(run: AgentRun): boolean {
     const totalUsed = run.totalTokens.input + run.totalTokens.output
     return totalUsed >= this.config.maxTokensPerRun
+  }
+
+  /**
+   * Build a compact progress recitation for the agent.
+   * Injected as a user message after tool results to keep the agent
+   * focused on what was done and what remains (prevents Lost-in-the-Middle).
+   *
+   * Format:
+   *   [Progress: Step 2/5]
+   *   ✅ Step 1: search_docs → found 3 results
+   *   ✅ Step 2: read_file → read 200 lines
+   *   ⏳ Steps remaining: 3
+   */
+  private buildProgressRecitation(run: AgentRun, maxSteps: number): string {
+    const completedSteps = run.steps.map((step) => {
+      const toolNames = step.toolCalls.map((tc) => tc.name).join(', ')
+      const hasError = step.toolResults.some((r) => r.isError)
+      const icon = hasError ? '⚠️' : '✅'
+      const summary = toolNames
+        ? `${toolNames}${hasError ? ' (error)' : ''}`
+        : 'reasoning'
+      return `${icon} Step ${step.stepNumber}: ${summary}`
+    })
+
+    const remaining = maxSteps - run.steps.length
+    const lines = [
+      `[Progress: Step ${run.steps.length}/${maxSteps}]`,
+      ...completedSteps,
+      `⏳ Steps remaining: ${remaining}`,
+      'Continue working on the original task. Do not repeat completed steps.'
+    ]
+
+    return lines.join('\n')
   }
 }
 

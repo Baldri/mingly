@@ -157,9 +157,13 @@ export class AnthropicClient {
       throw new Error('Anthropic client not initialized. API key missing.')
     }
 
+    // Extract system prompt (always first if present) for separate handling
+    const systemMsg = messages.find((m) => m.role === 'system')
+    const nonSystemMessages = messages.filter((m) => m.role !== 'system')
+
     // Convert app messages to Anthropic format
     // Anthropic tool-use conversations may include tool_result messages
-    const anthropicMessages = messages.map((msg) => {
+    const anthropicMessages = nonSystemMessages.map((msg) => {
       // Tool result messages use a special format
       if (msg.role === 'tool') {
         return {
@@ -224,6 +228,7 @@ export class AnthropicClient {
     })
 
     // Convert ToolDefinition[] to Anthropic tool format
+    // Tools are already sorted alphabetically by ToolRegistry for cache consistency
     const anthropicTools = tools.map((tool) => ({
       name: tool.name,
       description: tool.description,
@@ -231,10 +236,14 @@ export class AnthropicClient {
     }))
 
     try {
+      // KV-Cache optimization: use Anthropic's system parameter (separate from messages)
+      // and stable tool ordering to maximize prompt prefix cache hits.
+      // The system prompt + tool definitions form the cacheable prefix.
       const response = await this.client.messages.create({
         model,
         max_tokens: 4096,
         temperature,
+        ...(systemMsg ? { system: systemMsg.content } : {}),
         messages: anthropicMessages as Anthropic.MessageParam[],
         tools: anthropicTools
       })

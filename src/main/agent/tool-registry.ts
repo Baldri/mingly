@@ -118,6 +118,11 @@ export class ToolRegistry {
       tools.push(this.mcpToolToDefinition(mcpTool))
     }
 
+    // KV-Cache optimization: sort tools alphabetically for deterministic ordering.
+    // This ensures the tool definitions portion of the prompt is identical across
+    // turns, maximizing prefix cache hits (90% cost reduction on Anthropic).
+    tools.sort((a, b) => a.name.localeCompare(b.name))
+
     return tools
   }
 
@@ -155,15 +160,19 @@ export class ToolRegistry {
    */
   async executeTool(toolCall: AgentToolCall): Promise<AgentToolResult> {
     try {
-      const result = await Promise.race([
-        this.executeToolInner(toolCall),
-        this.timeoutPromise(toolCall.id)
-      ])
+      const result = await this.executeWithTimeout(toolCall)
       return result
     } catch (error) {
+      const err = error as Error
+      // Error Preservation: include tool name and args for LLM learning
+      // Note: Stack traces logged locally only — not sent to cloud LLMs (prevents path leakage)
+      const argsPreview = JSON.stringify(toolCall.arguments).substring(0, 300)
+      if (err.stack) {
+        console.debug(`[ToolRegistry] Tool "${toolCall.name}" error stack:`, err.stack)
+      }
       return {
         toolCallId: toolCall.id,
-        content: `Error executing tool "${toolCall.name}": ${(error as Error).message}`,
+        content: `Error executing tool "${toolCall.name}" with args ${argsPreview}: [${err.name ?? 'Error'}] ${err.message}`,
         isError: true
       }
     }
@@ -182,9 +191,11 @@ export class ToolRegistry {
       if (result.status === 'fulfilled') {
         return result.value
       }
+      const err = result.reason as Error | undefined
+      const argsPreview = JSON.stringify(toolCalls[index].arguments).substring(0, 300)
       return {
         toolCallId: toolCalls[index].id,
-        content: `Tool execution failed: ${result.reason?.message ?? 'Unknown error'}`,
+        content: `Tool "${toolCalls[index].name}" failed (args: ${argsPreview}): [${err?.name ?? 'Error'}] ${err?.message ?? 'Unknown error'}`,
         isError: true
       }
     })
@@ -215,9 +226,11 @@ export class ToolRegistry {
       )
 
       if (mcpResult.error) {
+        // Error Preservation: include server + tool + args context for LLM learning
+        const argsPreview = JSON.stringify(toolCall.arguments).substring(0, 300)
         return {
           toolCallId: toolCall.id,
-          content: `MCP tool error: ${mcpResult.error}`,
+          content: `MCP tool error in "${toolCall.name}" (server: ${mapping.serverId}, args: ${argsPreview}): ${mcpResult.error}`,
           isError: true
         }
       }
@@ -268,15 +281,26 @@ export class ToolRegistry {
   }
 
   /**
-   * Create a timeout promise for tool execution.
+   * Execute a tool with a properly clearable timeout.
+   * Prevents timer resource leaks when the tool completes before the timeout.
    */
-  private timeoutPromise(toolCallId: string): Promise<AgentToolResult> {
-    return new Promise((_, reject) =>
-      setTimeout(
+  private executeWithTimeout(toolCall: AgentToolCall): Promise<AgentToolResult> {
+    return new Promise<AgentToolResult>((resolve, reject) => {
+      const timer = setTimeout(
         () => reject(new Error(`Tool execution timed out after ${this.config.toolTimeoutMs}ms`)),
         this.config.toolTimeoutMs
       )
-    )
+
+      this.executeToolInner(toolCall)
+        .then((result) => {
+          clearTimeout(timer)
+          resolve(result)
+        })
+        .catch((err) => {
+          clearTimeout(timer)
+          reject(err)
+        })
+    })
   }
 
   /**

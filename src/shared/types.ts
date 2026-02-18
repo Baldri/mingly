@@ -208,6 +208,10 @@ export interface AgentConfig {
   toolTimeoutMs: number
   /** Overall timeout for the entire agent run in ms */
   runTimeoutMs: number
+  /** Enable progress recitation: inject step summary into next turn (Manus-inspired) */
+  enableProgressRecitation?: boolean
+  /** Enable error preservation: keep full error + stacktrace in context */
+  enableErrorPreservation?: boolean
 }
 
 // ── Parallel Intelligence Types ──────────────────────────────────
