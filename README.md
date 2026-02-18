@@ -24,12 +24,20 @@ Mingly gives you unified access to Claude, ChatGPT, Gemini, and local LLMs in a 
 - **Intelligent Routing** — Gemma 2B auto-routes requests to the best model, or switch to manual
 - **Local LLM Discovery** — Auto-detects Ollama, LM Studio, vLLM, LocalAI and more
 
+### Context Engineering (v0.5.0)
+- **Progress Recitation** — Agents stay on track with injected step summaries (prevents Lost-in-the-Middle)
+- **Error Learning** — Full error context preserved so agents learn from and avoid repeated mistakes
+- **KV-Cache Optimization** — Deterministic tool ordering + stable prompt structure for 90% cost reduction on Anthropic
+- **File-based Memory** — Large results externalized to temp files, keeping the context window lean
+- **Multi-Ollama Load Balancing** — Distribute workload across multiple Ollama instances on your local network
+
 ### Infrastructure
 - **Service Discovery** — Finds RAG and MCP servers on local machine, network, and cloud
 - **Hybrid Orchestration** — Local LLM detects cloud needs, delegates with your approval
 - **Knowledge Base** — Index your local documents for context-aware AI responses (RAG with custom server naming)
 - **Auto-Updates** — Built-in updater with tier-aware download (Pro+ auto-install, Free manual)
 - **Server Mode** — Share AI access across your network via REST + WebSocket API
+- **Multi-Backend Routing** — Load balance across multiple Ollama instances with health checks and automatic failover
 - **DocMind Integration** — MCPO + RAG context injection for document intelligence
 - **Integrations** — Slack, Notion, Obsidian + custom workflows
 

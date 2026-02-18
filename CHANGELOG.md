@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-02-18
+
+### Added — Context Engineering (Phase 3, Manus-inspired)
+- **Task Progress Recitation** — Nach jedem Tool-Schritt wird ein kompakter Fortschritts-Summary injiziert (`[Progress: Step N/M]` mit erledigten/fehlerhaften/verbleibenden Schritten). Verhindert das "Lost-in-the-Middle"-Problem bei langen Agent-Runs.
+- **Error Preservation** — Volle Fehlerinformationen (Toolname, Argumente, Fehlermeldung) bleiben im Kontext erhalten, damit das LLM aus Fehlern lernt und sie nicht wiederholt.
+- **KV-Cache-optimierte Prompt-Architektur** — Deterministische alphabetische Tool-Sortierung, stabile System-Prompt-ID (`'sys-prompt'`), Anthropic `system`-Parameter-Separation fuer maximale Cache-Hits (bis 90% Kostenreduktion).
+- **File-basierter Kontext** — Grosse Tool-Ergebnisse (>2000 Zeichen) werden in Temp-Dateien externalisiert, im Kontext durch kompakte Referenz + Preview ersetzt. Automatische Bereinigung nach Run-Abschluss.
+
+### Added — Multi-Ollama Load Balancing
+- **OllamaLoadBalancer** — Round-Robin + Health-basiertes Routing ueber mehrere Ollama-Instanzen im lokalen Netzwerk
+- **Least-Loaded Routing** — Bevorzugt Backends mit weniger aktiven Requests und niedrigerer Latenz (Exponential Moving Average)
+- **Health Checks** — Alle 30 Sekunden, automatisches Failover nach 3 aufeinanderfolgenden Fehlern
+- **Transparente Integration** — OllamaClient nutzt automatisch den Balancer wenn 2+ Backends verfuegbar sind, mit Fallback auf konfigurierte URL
+- **LocalAIBridge Integration** — Server werden bei Registrierung automatisch zum Balancer-Pool hinzugefuegt, inklusive Lifecycle-Management
+
+### Security
+- **URL-Injection-Schutz** — `validateBackendUrl()` validiert Protocol, Host (Regex + URL-Konstruktor) und Port-Range bevor URLs gebaut werden
+- **Path-Traversal-Schutz** — AgentContextManager verwendet `string[]` statt Komma-getrennter Strings, plus `path.resolve()` Containment-Check
+- **Info-Disclosure-Fix** — Stack Traces werden nur lokal geloggt, nicht an Cloud-LLMs gesendet (verhindert Dateisystem-Pfad-Leakage)
+- **Timer-Leak-Fix** — `clearTimeout()` wird bei Tool-Erfolg und -Fehler aufgerufen (verhindert akkumulierende Timer in langen Agent-Runs)
+- **Type Safety** — `any`-Casts in OllamaClient durch typisierte Interfaces ersetzt (`OllamaChatResponse`, `OllamaTagsResponse`)
+
+### Technical
+- Neue Dateien: 4 (agent-context-manager.ts, ollama-load-balancer.ts, 2 Test-Dateien)
+- Geaenderte Dateien: 7 (agent-executor, tool-registry, subagent-orchestrator, anthropic-client, ollama-client, local-ai-bridge, types)
+- 1005 Tests in 58 Files — alle bestanden
+- TypeScript strict mode clean
+
 ## [0.4.0] - 2026-02-17
 
 ### Added — Agentic Mode (Phase 1)
