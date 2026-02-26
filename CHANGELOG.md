@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.1] - 2026-02-26
+
+### Fixed
+- **App-Start Crash behoben** — `nanoid` v5 (ESM-only) verursachte `ERR_REQUIRE_ESM` im Electron Main Process. Downgrade auf `nanoid` v3.x (CJS-kompatibel) behebt den Fehler.
+
 ## [0.5.0] - 2026-02-18
 
 ### Added — Context Engineering (Phase 3, Manus-inspired)
