@@ -1,6 +1,6 @@
 appId: com.mingly.app
 productName: Mingly
-copyright: Copyright © 2026 Mingly Contributors
+copyright: Copyright 2026 digital opua GmbH
 
 directories:
   output: release
@@ -12,11 +12,15 @@ mac:
     - zip
   icon: build/icon.icns
   darkModeSupport: true
-  # Enable these when code signing is configured:
-  # hardenedRuntime: true
-  # entitlements: build/entitlements.mac.plist
-  # entitlementsInherit: build/entitlements.mac.plist
+  identity: "digital opua GmbH (A336Z3X5AA)"
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
   gatekeeperAssess: false
+
+# Notarization: requires APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD,
+# and APPLE_TEAM_ID env vars. Skipped when not set.
+# afterSign: scripts/notarize.js  # Disabled — notarize manually after build
 
 win:
   target:
