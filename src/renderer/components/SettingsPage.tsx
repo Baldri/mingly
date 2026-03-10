@@ -12,6 +12,8 @@ import { AnalyticsTab } from './AnalyticsTab'
 import { MCPServersTab } from './MCPServersTab'
 import { IntegrationsTab } from './IntegrationsTab'
 import { BudgetTab } from './BudgetTab'
+import { OrchestratorSettingsTab } from './OrchestratorSettingsTab'
+import { TemplatesTab } from './TemplatesTab'
 import { UpdaterSection } from './UpdaterSection'
 
 const UpgradeDialog = lazy(() => import('./UpgradeDialog'))
@@ -23,7 +25,7 @@ const PROVIDERS = [
   { id: 'google', name: 'Google (Gemini)', placeholder: 'AIza...' }
 ]
 
-type SettingsTab = 'general' | 'network' | 'files' | 'privacy' | 'rag' | 'analytics' | 'mcp' | 'integrations' | 'budget'
+type SettingsTab = 'general' | 'network' | 'files' | 'privacy' | 'rag' | 'analytics' | 'mcp' | 'integrations' | 'budget' | 'orchestrator' | 'templates'
 
 const TABS: Array<{ id: SettingsTab; label: string; icon: string }> = [
   { id: 'general', label: 'General', icon: '\u2699\uFE0F' },
@@ -33,6 +35,8 @@ const TABS: Array<{ id: SettingsTab; label: string; icon: string }> = [
   { id: 'mcp', label: 'MCP Tools', icon: '\uD83D\uDD27' },
   { id: 'analytics', label: 'Analytics', icon: '\uD83D\uDCCA' },
   { id: 'integrations', label: 'Integrations', icon: '\uD83D\uDD17' },
+  { id: 'templates', label: 'Templates', icon: '\uD83D\uDCDD' },
+  { id: 'orchestrator', label: 'Orchestrator', icon: '\uD83E\uDD16' },
   { id: 'budget', label: 'Budget', icon: '\uD83D\uDCB0' },
   { id: 'privacy', label: 'Privacy', icon: '\uD83D\uDD12' }
 ]
@@ -277,6 +281,10 @@ export function SettingsPage({ onBack, initialTab }: Props) {
             <AnalyticsTab />
           ) : activeTab === 'integrations' ? (
             <IntegrationsTab />
+          ) : activeTab === 'templates' ? (
+            <TemplatesTab />
+          ) : activeTab === 'orchestrator' ? (
+            <OrchestratorSettingsTab />
           ) : activeTab === 'budget' ? (
             <BudgetTab />
           ) : (

@@ -74,8 +74,8 @@ const api = {
 
   // Conversations
   conversations: {
-    create: (title: string, provider: string, model: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.CREATE_CONVERSATION, title, provider, model),
+    create: (title: string, provider: string, model: string, templateId?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CREATE_CONVERSATION, title, provider, model, templateId),
 
     get: (conversationId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.GET_CONVERSATION, conversationId),

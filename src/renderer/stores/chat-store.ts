@@ -33,7 +33,8 @@ interface ChatState {
   createConversation: (
     title: string,
     provider: string,
-    model: string
+    model: string,
+    templateId?: string
   ) => Promise<void>
   selectConversation: (id: string) => Promise<void>
   sendMessage: (content: string, attachments?: MessageAttachment[]) => Promise<void>
@@ -82,12 +83,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  createConversation: async (title: string, provider: string, model: string) => {
+  createConversation: async (title: string, provider: string, model: string, templateId?: string) => {
     try {
       const result = await window.electronAPI.conversations.create(
         title,
         provider,
-        model
+        model,
+        templateId
       )
       if (result.success && result.conversation) {
         set((state) => ({

@@ -17,7 +17,7 @@ export function registerConversationHandlers(): void {
   // Conversation Management
   // ========================================
 
-  wrapHandler(IPC_CHANNELS.CREATE_CONVERSATION, (title: string, provider: string, model: string) => {
+  wrapHandler(IPC_CHANNELS.CREATE_CONVERSATION, (title: string, provider: string, model: string, templateId?: string) => {
     // Enforce daily conversation limit for Free tier
     const gate = getFeatureGateManager()
     const convLimit = gate.checkConversationLimit()
@@ -31,7 +31,7 @@ export function registerConversationHandlers(): void {
       requireFeature('cloud_apis')
     }
 
-    const conversation = ConversationModel.create(title, provider, model)
+    const conversation = ConversationModel.create(title, provider, model, templateId)
     return { success: true, conversation }
   })
 

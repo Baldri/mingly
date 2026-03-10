@@ -15,6 +15,9 @@ import { getBudgetManager } from './tracking/budget-manager'
 import { getTrackingEngine } from './tracking/tracking-engine'
 import { getInputSanitizer } from './security/input-sanitizer'
 import { getFeatureGateManager } from './services/feature-gate-manager'
+import { getSessionManager } from './services/session-state'
+import { PromptTemplateModel } from './database/models/prompt-template'
+import { resolveTemplate } from './prompts/template-engine'
 import type { UploadPermissionRequest } from './security/upload-permission-manager'
 import crypto from 'crypto'
 
@@ -201,20 +204,21 @@ export async function registerIPCHandlers(): Promise<void> {
         const actualMessage = commandHandler.extractMessage(userMessage, commandResult)
         const mode = commandHandler.getMode(commandResult)
 
-        // 3. Budget enforcement — check BEFORE expensive RAG/MCP operations
+        // 3. Budget enforcement (MANDATORY) — check BEFORE expensive RAG/MCP operations
         const budgetMgr = getBudgetManager()
         const budgetCheck = budgetMgr.checkBudget(provider)
         if (!budgetCheck.allowed) {
           if (budgetCheck.fallbackProvider) {
-            console.log(`💰 Budget exceeded for ${provider}, falling back to ${budgetCheck.fallbackProvider}`)
+            // Silent fallback — switch provider and log the decision
+            const originalProvider = provider
             provider = budgetCheck.fallbackProvider
+            console.log(
+              `[Budget] Provider switched: ${originalProvider} -> ${provider}. Reason: ${budgetCheck.reason}`
+            )
           } else {
-            event.sender.send('message:error', budgetCheck.reason || 'Monthly budget exceeded for this provider.')
-            return {
-              success: false,
-              error: budgetCheck.reason || 'Monthly budget exceeded for this provider.',
-              budgetExceeded: true
-            }
+            // No fallback available — block the request
+            const budgetError = budgetCheck.reason || 'Monthly budget exceeded for this provider.'
+            throw new Error(budgetError)
           }
         }
 
@@ -222,6 +226,26 @@ export async function registerIPCHandlers(): Promise<void> {
         let systemPrompt = await systemPromptManager.buildSystemPrompt({
           customMode: mode
         })
+
+        // 4a. Apply prompt template if conversation has one
+        try {
+          const conversation = ConversationModel.findById(conversationId)
+          if (conversation?.templateId) {
+            const template = PromptTemplateModel.findById(conversation.templateId)
+            if (template) {
+              let templatePrompt = template.systemPrompt
+              if (template.variables && template.variables.length > 0) {
+                const { result } = resolveTemplate(templatePrompt, template.variables, {})
+                templatePrompt = result
+              }
+              systemPrompt = `${systemPrompt}\n\n${templatePrompt}`
+              PromptTemplateModel.incrementUsage(template.id)
+              console.log(`📝 Template applied: "${template.name}" (${template.category})`)
+            }
+          }
+        } catch (templateError) {
+          console.warn('Template application failed (non-blocking):', templateError)
+        }
 
         // 4b. Auto-inject RAG context if enabled
         let ragSources: Array<{ filename: string; score: number }> = []
@@ -330,6 +354,15 @@ export async function registerIPCHandlers(): Promise<void> {
           console.warn('Tracking failed (non-blocking):', trackErr)
         }
 
+        // 9. Persist session state (provider-specific continuity)
+        try {
+          const sessionMgr = getSessionManager()
+          sessionMgr.getOrCreate(conversationId, provider, model)
+          sessionMgr.addUsage(conversationId, provider, inputTokens, outputTokens, totalCost)
+        } catch (sessionErr) {
+          console.warn('Session state persistence failed (non-blocking):', sessionErr)
+        }
+
         event.sender.send('message:complete')
 
         return {
@@ -365,6 +398,11 @@ export async function registerIPCHandlers(): Promise<void> {
             errorMessage: (error as Error).message
           })
         } catch (_) { /* ignore tracking errors */ }
+
+        // Record error on session state
+        try {
+          getSessionManager().setError(conversationId, provider, (error as Error).message)
+        } catch (_) { /* ignore session state errors */ }
 
         event.sender.send('message:error', (error as Error).message)
         return { success: false, error: (error as Error).message }

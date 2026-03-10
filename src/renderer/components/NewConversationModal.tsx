@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { X, Cpu, Sparkles } from 'lucide-react'
 import { useChatStore } from '../stores/chat-store'
 import { useSettingsStore } from '../stores/settings-store'
+import { useTemplateStore } from '../stores/template-store'
 
 interface Props {
   isOpen: boolean
@@ -43,10 +44,12 @@ interface LocalModel {
 export function NewConversationModal({ isOpen, onClose }: Props) {
   const { createConversation } = useChatStore()
   const { settings, apiKeysConfigured, checkAPIKeys } = useSettingsStore()
+  const { templates, loadTemplates } = useTemplateStore()
 
   const [title, setTitle] = useState('')
   const [provider, setProvider] = useState('anthropic')
   const [model, setModel] = useState('claude-3-5-sonnet-20241022')
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('')
   const [localModels, setLocalModels] = useState<LocalModel[]>([])
   const [discovering, setDiscovering] = useState(false)
   const [keysLoaded, setKeysLoaded] = useState(false)
@@ -57,6 +60,11 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
       checkAPIKeys().then(() => setKeysLoaded(true))
     }
   }, [isOpen, keysLoaded, checkAPIKeys])
+
+  // Load templates when modal opens
+  useEffect(() => {
+    if (isOpen) loadTemplates()
+  }, [isOpen, loadTemplates])
 
   // Discover local models when modal opens
   useEffect(() => {
@@ -97,8 +105,9 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
 
   const handleCreate = async () => {
     if (!title.trim()) return
-    await createConversation(title.trim(), provider, model)
+    await createConversation(title.trim(), provider, model, selectedTemplateId || undefined)
     setTitle('')
+    setSelectedTemplateId('')
     onClose()
   }
 
@@ -204,6 +213,47 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
               ))}
             </select>
           </div>
+
+          {/* Template Selector */}
+          {templates.length > 0 && (
+            <div>
+              <label className="block text-sm font-medium mb-1">Template (optional)</label>
+              <select
+                value={selectedTemplateId}
+                onChange={(e) => setSelectedTemplateId(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">No template</option>
+                {/* Favorites first */}
+                {templates.filter((t) => t.isFavorite).length > 0 && (
+                  <optgroup label="Favorites">
+                    {templates
+                      .filter((t) => t.isFavorite)
+                      .map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} ({t.category})
+                        </option>
+                      ))}
+                  </optgroup>
+                )}
+                <optgroup label="All Templates">
+                  {templates
+                    .filter((t) => !t.isFavorite)
+                    .map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name} ({t.category})
+                      </option>
+                    ))}
+                </optgroup>
+              </select>
+              {selectedTemplateId && (
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {templates.find((t) => t.id === selectedTemplateId)?.description ||
+                    'Template system prompt will be applied to this conversation'}
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Provider hints */}
           {provider === 'auto' && (

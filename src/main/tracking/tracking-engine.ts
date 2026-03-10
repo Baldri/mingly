@@ -6,31 +6,14 @@
 
 import { randomUUID } from 'crypto'
 import { dbRun, dbAll, dbGet } from '../database/index'
-
-// ── Cost tables (USD per 1M tokens) ────────────────────────────
-
-const COST_TABLE: Record<string, { input: number; output: number }> = {
-  // Anthropic
-  'claude-3-5-sonnet-20241022': { input: 3, output: 15 },
-  'claude-3-opus-20240229': { input: 15, output: 75 },
-  'claude-3-sonnet-20240229': { input: 3, output: 15 },
-  'claude-3-haiku-20240307': { input: 0.25, output: 1.25 },
-  // OpenAI
-  'gpt-4-turbo-preview': { input: 10, output: 30 },
-  'gpt-4': { input: 30, output: 60 },
-  'gpt-4-32k': { input: 60, output: 120 },
-  'gpt-3.5-turbo': { input: 0.5, output: 1.5 },
-  'gpt-3.5-turbo-16k': { input: 3, output: 4 },
-  // Google
-  'gemini-pro': { input: 0.5, output: 1.5 },
-  'gemini-1.5-flash': { input: 0.075, output: 0.3 },
-  'gemini-ultra': { input: 7, output: 21 }
-}
+import { calculateCost as sharedCalculateCost } from './cost-calculator'
 
 // Rough estimate: ~4 chars per token for English text
 const CHARS_PER_TOKEN = 4
 
 // ── Types ──────────────────────────────────────────────────────
+
+export type BillingType = 'api' | 'subscription' | 'free'
 
 export interface TrackingEvent {
   id: string
@@ -48,6 +31,7 @@ export interface TrackingEvent {
   ragSourceCount: number
   success: boolean
   errorMessage: string | null
+  billingType: BillingType
   createdAt: number
 }
 
@@ -71,6 +55,17 @@ export interface DailyUsage {
   cost: number
 }
 
+export interface ConversationCost {
+  conversationId: string
+  totalInputTokens: number
+  totalOutputTokens: number
+  totalTokens: number
+  totalCost: number
+  messageCount: number
+  firstMessage: number
+  lastMessage: number
+}
+
 // ── Tracking Engine ────────────────────────────────────────────
 
 export class TrackingEngine {
@@ -85,24 +80,23 @@ export class TrackingEngine {
 
   /**
    * Calculate cost for a given model and token counts.
+   * Delegates to the shared cost-calculator loaded from llm-cost-table.json.
    */
   calculateCost(
     model: string,
     inputTokens: number,
     outputTokens: number
   ): { inputCost: number; outputCost: number; totalCost: number } {
-    const rates = COST_TABLE[model]
-    if (!rates) {
-      return { inputCost: 0, outputCost: 0, totalCost: 0 }
-    }
+    return sharedCalculateCost(model, inputTokens, outputTokens)
+  }
 
-    const inputCost = (inputTokens / 1_000_000) * rates.input
-    const outputCost = (outputTokens / 1_000_000) * rates.output
-    return {
-      inputCost,
-      outputCost,
-      totalCost: inputCost + outputCost
-    }
+  /**
+   * Determine billing type automatically based on provider.
+   * Local providers (ollama, local) are free; all others use API billing.
+   */
+  private determineBillingType(provider: string): BillingType {
+    const freeProviders = ['ollama', 'local']
+    return freeProviders.includes(provider) ? 'free' : 'api'
   }
 
   /**
@@ -121,6 +115,7 @@ export class TrackingEngine {
     errorMessage?: string
     inputTokens?: number
     outputTokens?: number
+    billingType?: BillingType
   }): TrackingEvent {
     const inputTokens = params.inputTokens ?? this.estimateTokens(params.inputText)
     const outputTokens = params.outputTokens ?? this.estimateTokens(params.outputText)
@@ -132,6 +127,8 @@ export class TrackingEngine {
       outputTokens
     )
 
+    const billingType = params.billingType ?? this.determineBillingType(params.provider)
+
     const id = `trk_${Date.now()}_${randomUUID().slice(0, 8)}`
     const now = Date.now()
 
@@ -139,8 +136,8 @@ export class TrackingEngine {
       `INSERT INTO tracking_events
         (id, conversation_id, provider, model, input_tokens, output_tokens, total_tokens,
          input_cost, output_cost, total_cost, latency_ms, rag_used, rag_source_count,
-         success, error_message, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         success, error_message, billing_type, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         params.conversationId,
@@ -157,6 +154,7 @@ export class TrackingEngine {
         params.ragSourceCount,
         params.success ? 1 : 0,
         params.errorMessage ?? null,
+        billingType,
         now
       ]
     )
@@ -177,6 +175,7 @@ export class TrackingEngine {
       ragSourceCount: params.ragSourceCount,
       success: params.success,
       errorMessage: params.errorMessage ?? null,
+      billingType,
       createdAt: now
     }
   }
@@ -315,6 +314,29 @@ export class TrackingEngine {
   }
 
   /**
+   * Get aggregated cost data for a specific conversation from the conversation_costs view.
+   */
+  getConversationCosts(conversationId: string): ConversationCost | null {
+    const row = dbGet(
+      `SELECT * FROM conversation_costs WHERE conversation_id = ?`,
+      [conversationId]
+    )
+
+    if (!row) return null
+
+    return {
+      conversationId: row.conversation_id as string,
+      totalInputTokens: (row.total_input_tokens as number) || 0,
+      totalOutputTokens: (row.total_output_tokens as number) || 0,
+      totalTokens: (row.total_tokens as number) || 0,
+      totalCost: (row.total_cost as number) || 0,
+      messageCount: (row.message_count as number) || 0,
+      firstMessage: (row.first_message as number) || 0,
+      lastMessage: (row.last_message as number) || 0
+    }
+  }
+
+  /**
    * Get recent events (for debugging or detailed view).
    */
   getRecentEvents(limit: number = 50): TrackingEvent[] {
@@ -339,6 +361,7 @@ export class TrackingEngine {
       ragSourceCount: row.rag_source_count as number,
       success: (row.success as number) === 1,
       errorMessage: row.error_message as string | null,
+      billingType: (row.billing_type as BillingType) || 'api',
       createdAt: row.created_at as number
     }))
   }

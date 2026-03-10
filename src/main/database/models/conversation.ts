@@ -6,6 +6,7 @@ export interface Conversation {
   title: string
   provider: string
   model: string
+  templateId?: string
   createdAt: number
   updatedAt: number
 }
@@ -14,23 +15,24 @@ export class ConversationModel {
   static create(
     title: string,
     provider: string,
-    model: string
+    model: string,
+    templateId?: string
   ): Conversation {
     const id = generateId()
     const now = Date.now()
 
     dbRun(
-      `INSERT INTO conversations (id, title, provider, model, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [id, title, provider, model, now, now]
+      `INSERT INTO conversations (id, title, provider, model, template_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, title, provider, model, templateId || null, now, now]
     )
 
-    return { id, title, provider, model, createdAt: now, updatedAt: now }
+    return { id, title, provider, model, templateId: templateId || undefined, createdAt: now, updatedAt: now }
   }
 
   static findById(id: string): Conversation | null {
     const row = dbGet(
-      `SELECT id, title, provider, model, created_at, updated_at
+      `SELECT id, title, provider, model, template_id, created_at, updated_at
        FROM conversations WHERE id = ?`,
       [id]
     )
@@ -42,6 +44,7 @@ export class ConversationModel {
       title: row.title as string,
       provider: row.provider as string,
       model: row.model as string,
+      templateId: (row.template_id as string) || undefined,
       createdAt: row.created_at as number,
       updatedAt: row.updated_at as number
     }
@@ -49,7 +52,7 @@ export class ConversationModel {
 
   static findAll(): Conversation[] {
     const rows = dbAll(
-      `SELECT id, title, provider, model, created_at, updated_at
+      `SELECT id, title, provider, model, template_id, created_at, updated_at
        FROM conversations ORDER BY updated_at DESC`
     )
 
@@ -58,6 +61,7 @@ export class ConversationModel {
       title: row.title as string,
       provider: row.provider as string,
       model: row.model as string,
+      templateId: (row.template_id as string) || undefined,
       createdAt: row.created_at as number,
       updatedAt: row.updated_at as number
     }))

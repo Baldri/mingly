@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { Message, ToolDefinition, AgentToolCall } from '../../shared/types'
 import type { ToolUseResponse } from './client-manager'
+import type { ProviderHealthCheck, HealthCheckItem } from './health-check-types'
 
 export interface StreamChunk {
   content: string
@@ -285,6 +286,98 @@ export class AnthropicClient {
   /** Anthropic supports native tool-use */
   supportsToolUse(): boolean {
     return true
+  }
+
+  /**
+   * Run a structured health check against the Anthropic API.
+   * Checks API key presence, connectivity, and model availability.
+   */
+  async healthCheck(): Promise<ProviderHealthCheck> {
+    const start = Date.now()
+    const checks: HealthCheckItem[] = []
+    let overallStatus: 'pass' | 'warn' | 'fail' = 'pass'
+
+    // 1. Check if API key is configured
+    if (!this.client) {
+      checks.push({
+        code: 'api_key_missing',
+        level: 'error',
+        message: 'API key is not configured'
+      })
+      return {
+        provider: 'anthropic',
+        status: 'fail',
+        checks,
+        testedAt: new Date().toISOString(),
+        latencyMs: Date.now() - start
+      }
+    }
+
+    checks.push({
+      code: 'api_key_set',
+      level: 'info',
+      message: 'API key is configured'
+    })
+
+    // 2. Test API connectivity with a minimal request
+    try {
+      await this.client.messages.create({
+        model: 'claude-3-haiku-20240307',
+        max_tokens: 5,
+        messages: [{ role: 'user', content: 'ping' }]
+      })
+      checks.push({
+        code: 'api_reachable',
+        level: 'info',
+        message: 'Anthropic API is reachable and responding'
+      })
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error)
+
+      // Distinguish auth errors from connectivity errors
+      if (errorMsg.includes('401') || errorMsg.includes('authentication') || errorMsg.includes('invalid')) {
+        checks.push({
+          code: 'api_auth_failed',
+          level: 'error',
+          message: 'API key is invalid or expired',
+          detail: errorMsg
+        })
+        overallStatus = 'fail'
+      } else if (errorMsg.includes('429') || errorMsg.includes('rate')) {
+        checks.push({
+          code: 'api_rate_limited',
+          level: 'warn',
+          message: 'API is rate-limited but reachable',
+          detail: errorMsg
+        })
+        overallStatus = 'warn'
+      } else {
+        checks.push({
+          code: 'api_unreachable',
+          level: 'error',
+          message: 'Failed to connect to Anthropic API',
+          detail: errorMsg
+        })
+        overallStatus = 'fail'
+      }
+    }
+
+    // 3. Report available models
+    const models = this.getModels()
+    checks.push({
+      code: 'models_available',
+      level: 'info',
+      message: `${models.length} models configured`,
+      detail: models.join(', ')
+    })
+
+    return {
+      provider: 'anthropic',
+      status: overallStatus,
+      checks,
+      testedAt: new Date().toISOString(),
+      latencyMs: Date.now() - start
+    }
   }
 
   // Get available models

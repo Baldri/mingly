@@ -6,6 +6,7 @@ import { GenericOpenAIClient } from './generic-openai-client'
 import type { Message, ToolDefinition, AgentToolCall } from '../../shared/types'
 import type { StreamChunk } from './anthropic-client'
 import type { ProviderConfig } from '../../shared/provider-types'
+import type { ProviderHealthCheck } from './health-check-types'
 
 export type LLMProvider = 'anthropic' | 'openai' | 'google' | 'ollama' | string
 
@@ -56,6 +57,9 @@ export interface LLMClient {
 
   /** Whether this client supports native tool-use via sendMessageWithTools() */
   supportsToolUse?(): boolean
+
+  /** Run a provider-specific health check returning structured status info */
+  healthCheck?(): Promise<ProviderHealthCheck>
 }
 
 export class LLMClientManager {
@@ -247,6 +251,53 @@ export class LLMClientManager {
     const client = this.clients.get(provider)
     if (!client) return false
     return client.supportsToolUse?.() ?? false
+  }
+
+  /**
+   * Run health checks on all registered providers.
+   * Skips the 'local' alias (which duplicates 'ollama').
+   * Providers that implement healthCheck() use their own logic;
+   * others fall back to validateApiKey().
+   */
+  async healthCheckAll(): Promise<ProviderHealthCheck[]> {
+    const results: ProviderHealthCheck[] = []
+    for (const [provider, client] of this.clients) {
+      if (provider === 'local') continue // Skip alias
+      if (client.healthCheck) {
+        try {
+          results.push(await client.healthCheck())
+        } catch (error) {
+          results.push({
+            provider,
+            status: 'fail',
+            checks: [{
+              code: 'health_check_error',
+              level: 'error',
+              message: 'Health check threw an exception',
+              detail: error instanceof Error ? error.message : String(error)
+            }],
+            testedAt: new Date().toISOString(),
+            latencyMs: 0
+          })
+        }
+      } else {
+        // Fallback: use validateApiKey
+        const start = Date.now()
+        const valid = await this.validateApiKey(provider).catch(() => false)
+        results.push({
+          provider,
+          status: valid ? 'pass' : 'fail',
+          checks: [{
+            code: valid ? 'api_reachable' : 'api_unreachable',
+            level: valid ? 'info' : 'error',
+            message: valid ? 'API is reachable' : 'API is not reachable'
+          }],
+          testedAt: new Date().toISOString(),
+          latencyMs: Date.now() - start
+        })
+      }
+    }
+    return results
   }
 
   getModels(provider: LLMProvider): string[] {

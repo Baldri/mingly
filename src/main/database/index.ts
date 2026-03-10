@@ -251,6 +251,30 @@ function runMigrations(database: SqlJsDatabase): void {
     migration5(database)
     setSchemaVersion(database, 5)
   }
+
+  if (version < 6) {
+    log.info('Running migration 6: Add billing_type column and conversation_costs view')
+    migration6(database)
+    setSchemaVersion(database, 6)
+  }
+
+  if (version < 7) {
+    log.info('Running migration 7: Create conversation_sessions table')
+    migration7(database)
+    setSchemaVersion(database, 7)
+  }
+
+  if (version < 8) {
+    log.info('Running migration 8: Create activity_log table')
+    migration8(database)
+    setSchemaVersion(database, 8)
+  }
+
+  if (version < 9) {
+    log.info('Running migration 9: Add template_id to conversations')
+    migration9(database)
+    setSchemaVersion(database, 9)
+  }
 }
 
 function migration1(database: SqlJsDatabase): void {
@@ -427,4 +451,99 @@ function migration5(database: SqlJsDatabase): void {
   `)
 
   log.info('Migration 5 completed: comparison tables created')
+}
+
+function migration6(database: SqlJsDatabase): void {
+  // Add billing_type column to tracking_events (api | subscription | free)
+  database.run(`
+    ALTER TABLE tracking_events ADD COLUMN billing_type TEXT NOT NULL DEFAULT 'api'
+  `)
+
+  // Create a convenience view that aggregates costs per conversation
+  database.run(`
+    CREATE VIEW IF NOT EXISTS conversation_costs AS
+    SELECT
+      conversation_id,
+      SUM(input_tokens) as total_input_tokens,
+      SUM(output_tokens) as total_output_tokens,
+      SUM(total_tokens) as total_tokens,
+      SUM(total_cost) as total_cost,
+      COUNT(*) as message_count,
+      MIN(created_at) as first_message,
+      MAX(created_at) as last_message
+    FROM tracking_events
+    GROUP BY conversation_id
+  `)
+
+  log.info('Migration 6 completed: billing_type column and conversation_costs view created')
+}
+
+function migration7(database: SqlJsDatabase): void {
+  // Session state persistence for provider-specific data (thread IDs, etc.)
+  database.run(`
+    CREATE TABLE IF NOT EXISTS conversation_sessions (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      session_params TEXT,
+      session_display_id TEXT,
+      total_input_tokens INTEGER DEFAULT 0,
+      total_output_tokens INTEGER DEFAULT 0,
+      total_cost REAL DEFAULT 0,
+      last_error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(conversation_id, provider)
+    )
+  `)
+
+  database.run(`
+    CREATE INDEX IF NOT EXISTS idx_convsess_conversation
+    ON conversation_sessions(conversation_id)
+  `)
+
+  log.info('Migration 7 completed: conversation_sessions table created')
+}
+
+function migration8(database: SqlJsDatabase): void {
+  // Activity log for audit trail (Phase 4.1 — shared interface)
+  database.run(`
+    CREATE TABLE IF NOT EXISTS activity_log (
+      id TEXT PRIMARY KEY,
+      actor_type TEXT NOT NULL,
+      actor_id TEXT NOT NULL DEFAULT 'local',
+      action TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      details TEXT,
+      created_at TEXT NOT NULL
+    )
+  `)
+
+  database.run(`
+    CREATE INDEX IF NOT EXISTS idx_activity_log_action
+    ON activity_log(action)
+  `)
+
+  database.run(`
+    CREATE INDEX IF NOT EXISTS idx_activity_log_entity
+    ON activity_log(entity_type, entity_id)
+  `)
+
+  database.run(`
+    CREATE INDEX IF NOT EXISTS idx_activity_log_created
+    ON activity_log(created_at)
+  `)
+
+  log.info('Migration 8 completed: activity_log table created')
+}
+
+function migration9(database: SqlJsDatabase): void {
+  // Add template_id to conversations for prompt template association
+  database.run(`
+    ALTER TABLE conversations ADD COLUMN template_id TEXT
+  `)
+
+  log.info('Migration 9 completed: template_id column added to conversations')
 }

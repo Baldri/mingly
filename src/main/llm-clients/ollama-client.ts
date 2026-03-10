@@ -1,6 +1,7 @@
 import type { Message, ToolDefinition } from '../../shared/types'
 import type { LLMClient, ToolUseResponse } from './client-manager'
 import type { StreamChunk } from './anthropic-client'
+import type { ProviderHealthCheck, HealthCheckItem } from './health-check-types'
 import { fetchWithTools } from './openai-tool-use-helper'
 import { getOllamaLoadBalancer } from '../network/ollama-load-balancer'
 
@@ -281,5 +282,101 @@ export class OllamaClient implements LLMClient {
   /** Ollama supports tool-use via OpenAI-compatible endpoint */
   supportsToolUse(): boolean {
     return true
+  }
+
+  /**
+   * Run a structured health check against the Ollama server.
+   * Checks server version endpoint and loaded models via /api/tags.
+   */
+  async healthCheck(): Promise<ProviderHealthCheck> {
+    const start = Date.now()
+    const checks: HealthCheckItem[] = []
+    let overallStatus: 'pass' | 'warn' | 'fail' = 'pass'
+    const effectiveUrl = this.getEffectiveBaseURL()
+
+    // 1. Check /api/version — is the server running?
+    try {
+      const versionRes = await fetch(`${effectiveUrl}/api/version`, { method: 'GET' })
+      if (versionRes.ok) {
+        const versionData = (await versionRes.json()) as { version?: string }
+        checks.push({
+          code: 'server_running',
+          level: 'info',
+          message: 'Ollama server is running',
+          detail: versionData.version ? `Version ${versionData.version}` : null
+        })
+      } else {
+        checks.push({
+          code: 'server_error',
+          level: 'error',
+          message: `Ollama server returned HTTP ${versionRes.status}`,
+          detail: versionRes.statusText
+        })
+        overallStatus = 'fail'
+      }
+    } catch (error) {
+      checks.push({
+        code: 'server_unreachable',
+        level: 'error',
+        message: 'Cannot connect to Ollama server',
+        detail: error instanceof Error ? error.message : String(error)
+      })
+      return {
+        provider: 'ollama',
+        status: 'fail',
+        checks,
+        testedAt: new Date().toISOString(),
+        latencyMs: Date.now() - start
+      }
+    }
+
+    // 2. Check /api/tags — which models are loaded?
+    try {
+      const tagsRes = await fetch(`${effectiveUrl}/api/tags`, { method: 'GET' })
+      if (tagsRes.ok) {
+        const tagsData = (await tagsRes.json()) as OllamaTagsResponse
+        const models = tagsData.models ?? []
+        if (models.length > 0) {
+          checks.push({
+            code: 'models_loaded',
+            level: 'info',
+            message: `${models.length} model(s) available`,
+            detail: models.map((m) => m.name).join(', ')
+          })
+        } else {
+          checks.push({
+            code: 'no_models',
+            level: 'warn',
+            message: 'No models installed — pull a model first',
+            detail: 'Run: ollama pull <model-name>'
+          })
+          if (overallStatus === 'pass') overallStatus = 'warn'
+        }
+      } else {
+        checks.push({
+          code: 'tags_error',
+          level: 'warn',
+          message: 'Failed to list models',
+          detail: `HTTP ${tagsRes.status}`
+        })
+        if (overallStatus === 'pass') overallStatus = 'warn'
+      }
+    } catch (error) {
+      checks.push({
+        code: 'tags_error',
+        level: 'warn',
+        message: 'Failed to query models endpoint',
+        detail: error instanceof Error ? error.message : String(error)
+      })
+      if (overallStatus === 'pass') overallStatus = 'warn'
+    }
+
+    return {
+      provider: 'ollama',
+      status: overallStatus,
+      checks,
+      testedAt: new Date().toISOString(),
+      latencyMs: Date.now() - start
+    }
   }
 }

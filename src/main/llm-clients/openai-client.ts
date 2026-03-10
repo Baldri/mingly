@@ -2,6 +2,7 @@ import OpenAI from 'openai'
 import type { Message, ToolDefinition, AgentToolCall } from '../../shared/types'
 import type { StreamChunk } from './anthropic-client'
 import type { ToolUseResponse } from './client-manager'
+import type { ProviderHealthCheck, HealthCheckItem } from './health-check-types'
 
 export class OpenAIClient {
   private client: OpenAI | null = null
@@ -284,6 +285,94 @@ export class OpenAIClient {
   /** OpenAI supports native tool-use (function calling) */
   supportsToolUse(): boolean {
     return true
+  }
+
+  /**
+   * Run a structured health check against the OpenAI API.
+   * Checks API key presence, connectivity via models.list(), and model availability.
+   */
+  async healthCheck(): Promise<ProviderHealthCheck> {
+    const start = Date.now()
+    const checks: HealthCheckItem[] = []
+    let overallStatus: 'pass' | 'warn' | 'fail' = 'pass'
+
+    // 1. Check if API key is configured
+    if (!this.client || !this.apiKey || this.apiKey.trim().length === 0) {
+      checks.push({
+        code: 'api_key_missing',
+        level: 'error',
+        message: 'API key is not configured'
+      })
+      return {
+        provider: 'openai',
+        status: 'fail',
+        checks,
+        testedAt: new Date().toISOString(),
+        latencyMs: Date.now() - start
+      }
+    }
+
+    checks.push({
+      code: 'api_key_set',
+      level: 'info',
+      message: 'API key is configured'
+    })
+
+    // 2. Test API connectivity by listing models
+    try {
+      const modelList = await this.client.models.list()
+      const modelIds: string[] = []
+      for await (const model of modelList) {
+        modelIds.push(model.id)
+      }
+      checks.push({
+        code: 'api_reachable',
+        level: 'info',
+        message: 'OpenAI API is reachable and responding'
+      })
+      checks.push({
+        code: 'models_available',
+        level: 'info',
+        message: `${modelIds.length} models available from API`,
+        detail: modelIds.slice(0, 10).join(', ') + (modelIds.length > 10 ? '...' : '')
+      })
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error)
+
+      if (errorMsg.includes('401') || errorMsg.includes('Incorrect API key')) {
+        checks.push({
+          code: 'api_auth_failed',
+          level: 'error',
+          message: 'API key is invalid or expired',
+          detail: errorMsg
+        })
+        overallStatus = 'fail'
+      } else if (errorMsg.includes('429') || errorMsg.includes('rate')) {
+        checks.push({
+          code: 'api_rate_limited',
+          level: 'warn',
+          message: 'API is rate-limited but reachable',
+          detail: errorMsg
+        })
+        overallStatus = 'warn'
+      } else {
+        checks.push({
+          code: 'api_unreachable',
+          level: 'error',
+          message: 'Failed to connect to OpenAI API',
+          detail: errorMsg
+        })
+        overallStatus = 'fail'
+      }
+    }
+
+    return {
+      provider: 'openai',
+      status: overallStatus,
+      checks,
+      testedAt: new Date().toISOString(),
+      latencyMs: Date.now() - start
+    }
   }
 
   // Get available models
