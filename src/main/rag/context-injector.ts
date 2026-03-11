@@ -12,6 +12,7 @@ import { getRAGHttpClient } from './rag-http-client'
 import { getRAGWissenClient } from './rag-wissen-client'
 import { SimpleStore } from '../utils/simple-store'
 import { getInputSanitizer } from '../security/input-sanitizer'
+import { ConversationModel } from '../database/models/conversation'
 
 export interface ContextInjectionConfig {
   enabled: boolean
@@ -99,6 +100,49 @@ export class ContextInjector {
       const local = await this.tryLocalRAG(userMessage)
       return { ...local, timeMs: Date.now() - start }
     }
+  }
+
+  /**
+   * Fetch context for a specific conversation.
+   * Uses the conversation's project-specific collection if set,
+   * otherwise falls back to the global config.
+   */
+  async getContextForConversation(conversationId: string, userMessage: string): Promise<InjectedContext> {
+    if (!this.config.enabled) {
+      return { context: '', sources: [], source: 'none', timeMs: 0 }
+    }
+
+    const conversation = ConversationModel.findById(conversationId)
+    if (conversation?.ragCollectionName) {
+      // Use conversation-specific collection for RAG-Wissen lookup
+      const start = Date.now()
+
+      try {
+        const client = getRAGWissenClient()
+        const available = await client.isAvailable()
+        if (available) {
+          const result = await client.getContext(
+            userMessage,
+            conversation.ragCollectionName,
+            this.config.maxChunks
+          )
+
+          if (result.success && result.context) {
+            return {
+              context: result.context,
+              sources: result.sources || [],
+              source: 'rag-wissen',
+              timeMs: Date.now() - start
+            }
+          }
+        }
+      } catch {
+        // Fall through to default getContext
+      }
+    }
+
+    // Fallback: use global config
+    return this.getContext(userMessage)
   }
 
   /**

@@ -7,6 +7,10 @@ export interface Conversation {
   provider: string
   model: string
   templateId?: string
+  /** RAG-Wissen project ID (e.g. "acme", "university") */
+  projectId?: string
+  /** Qdrant collection name for per-conversation RAG context */
+  ragCollectionName?: string
   createdAt: number
   updatedAt: number
 }
@@ -16,60 +20,76 @@ export class ConversationModel {
     title: string,
     provider: string,
     model: string,
-    templateId?: string
+    templateId?: string,
+    projectId?: string,
+    ragCollectionName?: string
   ): Conversation {
     const id = generateId()
     const now = Date.now()
 
     dbRun(
-      `INSERT INTO conversations (id, title, provider, model, template_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [id, title, provider, model, templateId || null, now, now]
+      `INSERT INTO conversations (id, title, provider, model, template_id, project_id, rag_collection_name, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, title, provider, model, templateId || null, projectId || null, ragCollectionName || null, now, now]
     )
 
-    return { id, title, provider, model, templateId: templateId || undefined, createdAt: now, updatedAt: now }
+    return {
+      id, title, provider, model,
+      templateId: templateId || undefined,
+      projectId: projectId || undefined,
+      ragCollectionName: ragCollectionName || undefined,
+      createdAt: now, updatedAt: now
+    }
   }
 
   static findById(id: string): Conversation | null {
     const row = dbGet(
-      `SELECT id, title, provider, model, template_id, created_at, updated_at
+      `SELECT id, title, provider, model, template_id, project_id, rag_collection_name, created_at, updated_at
        FROM conversations WHERE id = ?`,
       [id]
     )
 
     if (!row) return null
 
+    return ConversationModel.rowToConversation(row)
+  }
+
+  static findAll(): Conversation[] {
+    const rows = dbAll(
+      `SELECT id, title, provider, model, template_id, project_id, rag_collection_name, created_at, updated_at
+       FROM conversations ORDER BY updated_at DESC`
+    )
+
+    return rows.map(ConversationModel.rowToConversation)
+  }
+
+  static findByProject(projectId: string): Conversation[] {
+    const rows = dbAll(
+      `SELECT id, title, provider, model, template_id, project_id, rag_collection_name, created_at, updated_at
+       FROM conversations WHERE project_id = ? ORDER BY updated_at DESC`,
+      [projectId]
+    )
+
+    return rows.map(ConversationModel.rowToConversation)
+  }
+
+  private static rowToConversation(row: Record<string, any>): Conversation {
     return {
       id: row.id as string,
       title: row.title as string,
       provider: row.provider as string,
       model: row.model as string,
       templateId: (row.template_id as string) || undefined,
+      projectId: (row.project_id as string) || undefined,
+      ragCollectionName: (row.rag_collection_name as string) || undefined,
       createdAt: row.created_at as number,
       updatedAt: row.updated_at as number
     }
   }
 
-  static findAll(): Conversation[] {
-    const rows = dbAll(
-      `SELECT id, title, provider, model, template_id, created_at, updated_at
-       FROM conversations ORDER BY updated_at DESC`
-    )
-
-    return rows.map((row) => ({
-      id: row.id as string,
-      title: row.title as string,
-      provider: row.provider as string,
-      model: row.model as string,
-      templateId: (row.template_id as string) || undefined,
-      createdAt: row.created_at as number,
-      updatedAt: row.updated_at as number
-    }))
-  }
-
   static update(
     id: string,
-    data: Partial<Pick<Conversation, 'title' | 'provider' | 'model'>>
+    data: Partial<Pick<Conversation, 'title' | 'provider' | 'model' | 'projectId' | 'ragCollectionName'>>
   ): void {
     const now = Date.now()
     const updates: string[] = []
@@ -86,6 +106,14 @@ export class ConversationModel {
     if (data.model !== undefined) {
       updates.push('model = ?')
       values.push(data.model)
+    }
+    if (data.projectId !== undefined) {
+      updates.push('project_id = ?')
+      values.push(data.projectId)
+    }
+    if (data.ragCollectionName !== undefined) {
+      updates.push('rag_collection_name = ?')
+      values.push(data.ragCollectionName)
     }
 
     updates.push('updated_at = ?')

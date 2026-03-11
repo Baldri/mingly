@@ -275,6 +275,12 @@ function runMigrations(database: SqlJsDatabase): void {
     migration9(database)
     setSchemaVersion(database, 9)
   }
+
+  if (version < 10) {
+    log.info('Running migration 10: Add project_id and rag_collection_name to conversations')
+    migration10(database)
+    setSchemaVersion(database, 10)
+  }
 }
 
 function migration1(database: SqlJsDatabase): void {
@@ -546,4 +552,20 @@ function migration9(database: SqlJsDatabase): void {
   `)
 
   log.info('Migration 9 completed: template_id column added to conversations')
+}
+
+function migration10(database: SqlJsDatabase): void {
+  // Link conversations to RAG-Wissen projects for per-conversation context injection
+  database.run(`
+    ALTER TABLE conversations ADD COLUMN project_id TEXT
+  `)
+  database.run(`
+    ALTER TABLE conversations ADD COLUMN rag_collection_name TEXT
+  `)
+  database.run(`
+    CREATE INDEX IF NOT EXISTS idx_conversations_project
+    ON conversations(project_id)
+  `)
+
+  log.info('Migration 10 completed: project_id and rag_collection_name added to conversations')
 }

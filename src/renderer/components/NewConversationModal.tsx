@@ -1,8 +1,16 @@
 import React, { useState, useEffect } from 'react'
-import { X, Cpu, Sparkles } from 'lucide-react'
+import { X, Cpu, Sparkles, FolderOpen } from 'lucide-react'
 import { useChatStore } from '../stores/chat-store'
 import { useSettingsStore } from '../stores/settings-store'
 import { useTemplateStore } from '../stores/template-store'
+
+interface RAGProject {
+  id: string
+  name: string
+  collection_name: string
+  description: string
+  is_default: number
+}
 
 interface Props {
   isOpen: boolean
@@ -53,6 +61,8 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
   const [localModels, setLocalModels] = useState<LocalModel[]>([])
   const [discovering, setDiscovering] = useState(false)
   const [keysLoaded, setKeysLoaded] = useState(false)
+  const [ragProjects, setRagProjects] = useState<RAGProject[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState<string>('')
 
   // Load API keys on mount to fix the "no key" warning on first open
   useEffect(() => {
@@ -65,6 +75,20 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
   useEffect(() => {
     if (isOpen) loadTemplates()
   }, [isOpen, loadTemplates])
+
+  // Load RAG-Wissen projects (Team+ tier only)
+  useEffect(() => {
+    if (!isOpen) return
+    window.electronAPI.ragWissen.listProjects()
+      .then((result: { success: boolean; projects?: RAGProject[] }) => {
+        if (result.success && result.projects) {
+          setRagProjects(result.projects)
+        }
+      })
+      .catch(() => {
+        // Feature not available or RAG-Wissen offline — silently ignore
+      })
+  }, [isOpen])
 
   // Discover local models when modal opens
   useEffect(() => {
@@ -105,9 +129,16 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
 
   const handleCreate = async () => {
     if (!title.trim()) return
-    await createConversation(title.trim(), provider, model, selectedTemplateId || undefined)
+    const project = ragProjects.find((p) => p.id === selectedProjectId)
+    await createConversation(
+      title.trim(), provider, model,
+      selectedTemplateId || undefined,
+      selectedProjectId || undefined,
+      project?.collection_name
+    )
     setTitle('')
     setSelectedTemplateId('')
+    setSelectedProjectId('')
     onClose()
   }
 
@@ -250,6 +281,35 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                   {templates.find((t) => t.id === selectedTemplateId)?.description ||
                     'Template system prompt will be applied to this conversation'}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* RAG-Wissen Project Selector (Team+ tier) */}
+          {ragProjects.length > 0 && (
+            <div>
+              <label className="block text-sm font-medium mb-1">
+                <span className="flex items-center gap-1">
+                  <FolderOpen size={14} />
+                  Knowledge Base (optional)
+                </span>
+              </label>
+              <select
+                value={selectedProjectId}
+                onChange={(e) => setSelectedProjectId(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">No project linked</option>
+                {ragProjects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}{p.is_default ? ' (Default)' : ''}
+                  </option>
+                ))}
+              </select>
+              {selectedProjectId && (
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  RAG context will be injected from this project's knowledge base.
                 </p>
               )}
             </div>

@@ -549,6 +549,7 @@ export const IPC_CHANNELS = {
   RAG_WISSEN_INDEX_DOCUMENT: 'rag-wissen:index-document',
   RAG_WISSEN_GET_CONFIG: 'rag-wissen:get-config',
   RAG_WISSEN_UPDATE_CONFIG: 'rag-wissen:update-config',
+  RAG_WISSEN_LIST_PROJECTS: 'rag-wissen:list-projects',
 
   // RAG Context Injection
   RAG_CONTEXT_GET_CONFIG: 'rag-context:get-config',

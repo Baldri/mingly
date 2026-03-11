@@ -330,6 +330,29 @@ ${r.content}`
     }
   }
 
+  // ── Projects ─────────────────────────────────────────────────────
+
+  async listProjects(): Promise<{
+    success: boolean
+    projects?: Array<{ id: string; name: string; collection_name: string; description: string; is_default: number }>
+    error?: string
+  }> {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/projects`, {
+        signal: AbortSignal.timeout(5000)
+      })
+
+      if (!response.ok) {
+        return { success: false, error: `HTTP ${response.status}` }
+      }
+
+      const data = await response.json() as any
+      return { success: true, projects: data.projects || data }
+    } catch (error) {
+      return { success: false, error: (error as Error).message }
+    }
+  }
+
   // ── Indexing ─────────────────────────────────────────────────────
 
   async indexDocument(

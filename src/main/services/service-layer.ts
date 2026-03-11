@@ -105,9 +105,12 @@ export class ServiceLayer {
       })
 
       // 3b. Auto-inject RAG context if enabled
+      // Use per-conversation collection if conversation has a project linked
       let ragSources: Array<{ filename: string; score: number }> = []
       try {
-        const ragResult = await this.contextInjector.getContext(actualMessage)
+        const ragResult = conversationId
+          ? await this.contextInjector.getContextForConversation(conversationId, actualMessage)
+          : await this.contextInjector.getContext(actualMessage)
         if (ragResult.context) {
           systemPrompt = this.contextInjector.buildAugmentedPrompt(systemPrompt, ragResult.context)
           ragSources = ragResult.sources
@@ -286,8 +289,14 @@ export class ServiceLayer {
   /**
    * Create a new conversation
    */
-  createConversation(title: string, provider: string, model: string) {
-    return ConversationModel.create(title, provider as LLMProvider, model)
+  createConversation(
+    title: string, provider: string, model: string,
+    projectId?: string, ragCollectionName?: string
+  ) {
+    return ConversationModel.create(
+      title, provider as LLMProvider, model,
+      undefined, projectId, ragCollectionName
+    )
   }
 
   /**

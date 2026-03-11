@@ -17,7 +17,10 @@ export function registerConversationHandlers(): void {
   // Conversation Management
   // ========================================
 
-  wrapHandler(IPC_CHANNELS.CREATE_CONVERSATION, (title: string, provider: string, model: string, templateId?: string) => {
+  wrapHandler(IPC_CHANNELS.CREATE_CONVERSATION, (
+    title: string, provider: string, model: string,
+    templateId?: string, projectId?: string, ragCollectionName?: string
+  ) => {
     // Enforce daily conversation limit for Free tier
     const gate = getFeatureGateManager()
     const convLimit = gate.checkConversationLimit()
@@ -31,7 +34,14 @@ export function registerConversationHandlers(): void {
       requireFeature('cloud_apis')
     }
 
-    const conversation = ConversationModel.create(title, provider, model, templateId)
+    // Project linking requires shared_rag feature (Team+ tier)
+    if (projectId) {
+      requireFeature('shared_rag')
+    }
+
+    const conversation = ConversationModel.create(
+      title, provider, model, templateId, projectId, ragCollectionName
+    )
     return { success: true, conversation }
   })
 

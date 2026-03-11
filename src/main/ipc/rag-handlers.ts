@@ -92,4 +92,10 @@ export function registerRAGHandlers(): void {
     ragWissenClient.updateConfig(updates)
     return { success: true, config: ragWissenClient.getConfig() }
   })
+
+  // List RAG-Wissen projects (calls RAG-Wissen Backend REST API)
+  wrapHandler(IPC_CHANNELS.RAG_WISSEN_LIST_PROJECTS, async () => {
+    requireFeature('shared_rag')
+    return ragWissenClient.listProjects()
+  })
 }

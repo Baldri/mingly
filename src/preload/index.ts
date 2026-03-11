@@ -74,8 +74,14 @@ const api = {
 
   // Conversations
   conversations: {
-    create: (title: string, provider: string, model: string, templateId?: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.CREATE_CONVERSATION, title, provider, model, templateId),
+    create: (
+      title: string, provider: string, model: string,
+      templateId?: string, projectId?: string, ragCollectionName?: string
+    ) =>
+      ipcRenderer.invoke(
+        IPC_CHANNELS.CREATE_CONVERSATION, title, provider, model,
+        templateId, projectId, ragCollectionName
+      ),
 
     get: (conversationId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.GET_CONVERSATION, conversationId),
@@ -291,7 +297,10 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.RAG_WISSEN_GET_CONFIG),
 
     updateConfig: (updates: any) =>
-      ipcRenderer.invoke(IPC_CHANNELS.RAG_WISSEN_UPDATE_CONFIG, updates)
+      ipcRenderer.invoke(IPC_CHANNELS.RAG_WISSEN_UPDATE_CONFIG, updates),
+
+    listProjects: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.RAG_WISSEN_LIST_PROJECTS)
   },
 
   // Tracking & Analytics

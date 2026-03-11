@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, memo } from 'react'
-import { Plus, MessageSquare, Trash2, Crown } from 'lucide-react'
+import { Plus, MessageSquare, Trash2, Crown, FolderOpen } from 'lucide-react'
 import { useChatStore } from '../stores/chat-store'
 import { useSubscriptionStore } from '../stores/subscription-store'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -88,7 +88,7 @@ export const ConversationSidebar = memo(function ConversationSidebar() {
 })
 
 interface ConversationItemProps {
-  conversation: { id: string; title: string; provider: string; model: string }
+  conversation: { id: string; title: string; provider: string; model: string; projectId?: string }
   isActive: boolean
   onSelect: (id: string) => void
   onDelete: (id: string, e: React.MouseEvent | React.KeyboardEvent) => void
@@ -145,6 +145,12 @@ const ConversationItem = memo(function ConversationItem({
             <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
               {conversation.provider} · {conversation.model}
             </p>
+            {conversation.projectId && (
+              <p className="text-xs text-blue-500 dark:text-blue-400 truncate flex items-center gap-1 mt-0.5">
+                <FolderOpen size={10} />
+                {conversation.projectId}
+              </p>
+            )}
           </div>
           <button
             onClick={handleDeleteClick}
