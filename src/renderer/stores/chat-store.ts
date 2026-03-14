@@ -3,6 +3,7 @@ import type { Conversation, Message, MessageAttachment } from '../../shared/type
 import { generateId } from '../utils/id-generator'
 import type { UploadPermissionRequest } from '../../main/security/upload-permission-manager'
 import type { RiskLevel } from '../../main/security/sensitive-data-detector'
+import { usePrivacyStore } from './privacy-store'
 
 interface SensitiveDataConsentState {
   isOpen: boolean
@@ -43,7 +44,7 @@ interface ChatState {
   deleteConversation: (id: string) => Promise<void>
   pendingMetadata: any | null
   appendStreamChunk: (chunk: string) => void
-  completeStreaming: () => void
+  completeStreaming: () => Promise<void> | void
   setPendingMetadata: (metadata: any) => void
   setError: (error: string | null) => void
 
@@ -183,11 +184,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({ isStreaming: false })
       })
 
+      // Privacy: Anonymize user message content before sending to LLM
+      const privacyState = usePrivacyStore.getState()
+      let messagesForLLM = [...messages, userMessage]
+      if (privacyState.enabled && privacyState.mode !== 'transparent') {
+        try {
+          const anonResult = await window.electronAPI.privacy.anonymize(
+            currentConversation.id,
+            content
+          )
+          if (anonResult?.anonymizedText && anonResult.stats?.anonymized > 0) {
+            // Replace user message content with anonymized version for the LLM
+            const anonUserMessage = { ...userMessage, content: anonResult.anonymizedText }
+            messagesForLLM = [...messages, anonUserMessage]
+            privacyState.incrementAnonymized(anonResult.stats.anonymized)
+            console.log(`[Privacy] Anonymized ${anonResult.stats.anonymized} PII entities (mode: ${anonResult.mode})`)
+          }
+        } catch (err) {
+          console.warn('[Privacy] Anonymization failed, sending original:', err)
+        }
+      }
+
       // Send message
       console.log('[ChatStore] Calling electronAPI.llm.sendMessage...')
       const result = await window.electronAPI.llm.sendMessage(
         currentConversation.id,
-        [...messages, userMessage],
+        messagesForLLM,
         currentConversation.provider,
         currentConversation.model
       )
@@ -236,14 +258,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ pendingMetadata: metadata })
   },
 
-  completeStreaming: () => {
-    const { streamingContent, messages, pendingMetadata } = get()
+  completeStreaming: async () => {
+    const { streamingContent, messages, pendingMetadata, currentConversation } = get()
+
+    // Privacy: Rehydrate assistant response (replace fake data back with originals)
+    let finalContent = streamingContent
+    const privacyState = usePrivacyStore.getState()
+    if (privacyState.enabled && currentConversation) {
+      try {
+        const rehydResult = await window.electronAPI.privacy.rehydrate(
+          currentConversation.id,
+          streamingContent
+        )
+        if (rehydResult?.rehydratedText && rehydResult.replacementCount > 0) {
+          finalContent = rehydResult.rehydratedText
+          console.log(`[Privacy] Rehydrated ${rehydResult.replacementCount} PII replacements`)
+        }
+      } catch (err) {
+        console.warn('[Privacy] Rehydration failed, showing original:', err)
+      }
+    }
 
     // Add assistant message with metadata if available
     const assistantMessage: Message = {
       id: generateId(),
       role: 'assistant',
-      content: streamingContent,
+      content: finalContent,
       tokens: pendingMetadata?.metadata?.totalTokens,
       cost: pendingMetadata?.metadata?.cost,
       provider: pendingMetadata?.metadata?.provider,
