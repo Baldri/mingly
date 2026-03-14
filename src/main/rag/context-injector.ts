@@ -12,6 +12,7 @@ import { getRAGHttpClient } from './rag-http-client'
 import { getRAGWissenClient } from './rag-wissen-client'
 import { SimpleStore } from '../utils/simple-store'
 import { getInputSanitizer } from '../security/input-sanitizer'
+import { getOutputGuardrails } from '../security/output-guardrails'
 import { ConversationModel } from '../database/models/conversation'
 
 export interface ContextInjectionConfig {
@@ -153,7 +154,23 @@ export class ContextInjector {
   buildAugmentedPrompt(baseSystemPrompt: string, ragContext: string): string {
     if (!ragContext) return baseSystemPrompt
 
-    // Sanitize RAG context to strip role markers, delimiter injections, invisible chars
+    // Layer 1: Scan RAG context for PII and injection patterns
+    const guardrails = getOutputGuardrails()
+    const scanResult = guardrails.scanRAGContext(ragContext)
+    if (!scanResult.safe) {
+      console.warn(
+        '[RAG Security] Violations found in RAG context:',
+        scanResult.violations.map(v => `${v.type}:${v.severity}`).join(', ')
+      )
+      // Block context with critical violations (PII leak risk)
+      const hasCritical = scanResult.violations.some(v => v.severity === 'critical')
+      if (hasCritical) {
+        console.warn('[RAG Security] Critical violation — RAG context blocked')
+        return baseSystemPrompt
+      }
+    }
+
+    // Layer 2: Sanitize RAG context to strip role markers, delimiter injections, invisible chars
     const sanitizer = getInputSanitizer()
     const sanitizedContext = sanitizer.sanitizeRAGContext(ragContext)
 
