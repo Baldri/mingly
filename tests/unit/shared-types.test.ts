@@ -60,9 +60,9 @@ describe('IPC_CHANNELS', () => {
   })
 
   it('should have RAG channels', () => {
-    expect(IPC_CHANNELS.RAG_INITIALIZE).toBe('rag:initialize')
-    expect(IPC_CHANNELS.RAG_SEARCH).toBe('rag:search')
-    expect(IPC_CHANNELS.RAG_GET_CONTEXT).toBe('rag:get-context')
+    expect(IPC_CHANNELS.RAG_HTTP_HEALTH).toBe('rag-http:health')
+    expect(IPC_CHANNELS.RAG_HTTP_SEARCH).toBe('rag-http:search')
+    expect(IPC_CHANNELS.RAG_WISSEN_HEALTH).toBe('rag-wissen:health')
   })
 
   it('should have unique channel values (no duplicates)', () => {

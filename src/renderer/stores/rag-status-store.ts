@@ -1,9 +1,9 @@
 import { create } from 'zustand'
 
 interface RAGStatusState {
-  /** RAG HTTP server (Python FastAPI) connection status */
+  /** User's external RAG server connection status */
   httpOnline: boolean | null
-  /** RAG-Wissen MCP knowledge base status */
+  /** RAG-Wissen knowledge base status */
   wissenOnline: boolean | null
   /** Number of indexed collections */
   collectionCount: number

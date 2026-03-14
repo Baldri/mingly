@@ -210,37 +210,7 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.UPLOAD_PERMISSION_GET_STATS)
   },
 
-  // RAG (Qdrant) Operations
-  rag: {
-    initialize: (config: any) =>
-      ipcRenderer.invoke(IPC_CHANNELS.RAG_INITIALIZE, config),
-
-    createCollection: (name: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.RAG_CREATE_COLLECTION, name),
-
-    deleteCollection: (name: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.RAG_DELETE_COLLECTION, name),
-
-    listCollections: () =>
-      ipcRenderer.invoke(IPC_CHANNELS.RAG_LIST_COLLECTIONS),
-
-    getCollectionInfo: (name: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.RAG_GET_COLLECTION_INFO, name),
-
-    indexDocument: (collectionName: string, text: string, source: string, filename: string, metadata?: any) =>
-      ipcRenderer.invoke(IPC_CHANNELS.RAG_INDEX_DOCUMENT, collectionName, text, source, filename, metadata),
-
-    indexFile: (collectionName: string, filePath: string, metadata?: any) =>
-      ipcRenderer.invoke(IPC_CHANNELS.RAG_INDEX_FILE, collectionName, filePath, metadata),
-
-    search: (collectionName: string, query: string, limit?: number, scoreThreshold?: number) =>
-      ipcRenderer.invoke(IPC_CHANNELS.RAG_SEARCH, collectionName, query, limit, scoreThreshold),
-
-    getContext: (collectionName: string, query: string, limit?: number) =>
-      ipcRenderer.invoke(IPC_CHANNELS.RAG_GET_CONTEXT, collectionName, query, limit)
-  },
-
-  // RAG HTTP (External Python Server)
+  // RAG HTTP (User-configurable external RAG server)
   ragHttp: {
     health: () =>
       ipcRenderer.invoke(IPC_CHANNELS.RAG_HTTP_HEALTH),

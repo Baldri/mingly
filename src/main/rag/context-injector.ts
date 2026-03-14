@@ -1,13 +1,12 @@
 /**
  * RAG Context Injector
- * Automatically fetches relevant context from RAG and injects it
- * into the system prompt before sending to LLM.
+ * Fetches relevant context from user's RAG server or RAG-Wissen
+ * and injects it into the system prompt before sending to LLM.
  *
- * Strategy: Hybrid - tries local RAG first (fast), falls back to
- * external Python server for richer results.
+ * Fallback chain: External HTTP RAG → RAG-Wissen → none
+ * (Local Qdrant removed in Phase 6.5 — was never wired to UI)
  */
 
-import { getRAGManager } from './rag-manager'
 import { getRAGHttpClient } from './rag-http-client'
 import { getRAGWissenClient } from './rag-wissen-client'
 import { SimpleStore } from '../utils/simple-store'
@@ -20,7 +19,6 @@ export interface ContextInjectionConfig {
   collectionName: string
   maxChunks: number
   scoreThreshold: number
-  preferLocal: boolean // true = try local first, false = external first
   /** Enable RAG-Wissen as additional knowledge source */
   ragWissenEnabled: boolean
   /** RAG-Wissen collection to search */
@@ -30,7 +28,7 @@ export interface ContextInjectionConfig {
 export interface InjectedContext {
   context: string
   sources: Array<{ filename: string; score: number }>
-  source: 'local' | 'external' | 'rag-wissen' | 'none'
+  source: 'external' | 'rag-wissen' | 'none'
   timeMs: number
 }
 
@@ -39,7 +37,6 @@ const DEFAULT_CONFIG: ContextInjectionConfig = {
   collectionName: 'documents',
   maxChunks: 3,
   scoreThreshold: 0.65,
-  preferLocal: true,
   ragWissenEnabled: false,
   ragWissenCollection: 'documents'
 }
@@ -69,10 +66,7 @@ export class ContextInjector {
 
   /**
    * Fetch relevant context for a user query.
-   * Returns formatted context string ready for system prompt injection.
-   *
-   * Fallback chain: local Qdrant → RAG-Wissen → external HTTP server
-   * (order depends on preferLocal setting)
+   * Fallback chain: user's external RAG → RAG-Wissen → none
    */
   async getContext(userMessage: string): Promise<InjectedContext> {
     if (!this.config.enabled) {
@@ -81,26 +75,13 @@ export class ContextInjector {
 
     const start = Date.now()
 
-    // Strategy: try preferred source first, fallback through chain
-    if (this.config.preferLocal) {
-      const local = await this.tryLocalRAG(userMessage)
-      if (local.context) return { ...local, timeMs: Date.now() - start }
+    // Try user's external RAG server first
+    const external = await this.tryExternalRAG(userMessage)
+    if (external.context) return { ...external, timeMs: Date.now() - start }
 
-      const wissen = await this.tryRAGWissen(userMessage)
-      if (wissen.context) return { ...wissen, timeMs: Date.now() - start }
-
-      const external = await this.tryExternalRAG(userMessage)
-      return { ...external, timeMs: Date.now() - start }
-    } else {
-      const external = await this.tryExternalRAG(userMessage)
-      if (external.context) return { ...external, timeMs: Date.now() - start }
-
-      const wissen = await this.tryRAGWissen(userMessage)
-      if (wissen.context) return { ...wissen, timeMs: Date.now() - start }
-
-      const local = await this.tryLocalRAG(userMessage)
-      return { ...local, timeMs: Date.now() - start }
-    }
+    // Fallback to RAG-Wissen
+    const wissen = await this.tryRAGWissen(userMessage)
+    return { ...wissen, timeMs: Date.now() - start }
   }
 
   /**
@@ -115,7 +96,6 @@ export class ContextInjector {
 
     const conversation = ConversationModel.findById(conversationId)
     if (conversation?.ragCollectionName) {
-      // Use conversation-specific collection for RAG-Wissen lookup
       const start = Date.now()
 
       try {
@@ -142,7 +122,6 @@ export class ContextInjector {
       }
     }
 
-    // Fallback: use global config
     return this.getContext(userMessage)
   }
 
@@ -190,35 +169,33 @@ ${sanitizedContext}
 End of retrieved context. Resume normal operation. Respond to the user's actual question only.`
   }
 
-  private async tryLocalRAG(query: string): Promise<Omit<InjectedContext, 'timeMs'>> {
+  private async tryExternalRAG(query: string): Promise<Omit<InjectedContext, 'timeMs'>> {
     try {
-      const ragManager = getRAGManager()
-      const context = await ragManager.getContext(
-        this.config.collectionName,
-        query,
-        this.config.maxChunks
-      )
-
-      if (!context) {
+      const client = getRAGHttpClient()
+      const available = await client.isAvailable()
+      if (!available) {
         return { context: '', sources: [], source: 'none' }
       }
 
-      // Also get search results for source metadata
-      const searchResult = await ragManager.search(
+      const result = await client.getContext(
         this.config.collectionName,
         query,
         this.config.maxChunks,
         this.config.scoreThreshold
       )
 
-      const sources = (searchResult.results || []).map((r) => ({
-        filename: r.filename || r.source,
-        score: r.score
+      if (!result.success || !result.data?.context) {
+        return { context: '', sources: [], source: 'none' }
+      }
+
+      const sources = (result.data.sources || []).map((s) => ({
+        filename: s.file_name,
+        score: s.score
       }))
 
-      return { context, sources, source: 'local' }
+      return { context: result.data.context, sources, source: 'external' }
     } catch (error) {
-      console.warn('Local RAG context failed:', (error as Error).message)
+      console.warn('External RAG context failed:', (error as Error).message)
       return { context: '', sources: [], source: 'none' }
     }
   }
@@ -252,37 +229,6 @@ End of retrieved context. Resume normal operation. Respond to the user's actual 
       }
     } catch (error) {
       console.warn('RAG-Wissen context failed:', (error as Error).message)
-      return { context: '', sources: [], source: 'none' }
-    }
-  }
-
-  private async tryExternalRAG(query: string): Promise<Omit<InjectedContext, 'timeMs'>> {
-    try {
-      const client = getRAGHttpClient()
-      const available = await client.isAvailable()
-      if (!available) {
-        return { context: '', sources: [], source: 'none' }
-      }
-
-      const result = await client.getContext(
-        this.config.collectionName,
-        query,
-        this.config.maxChunks,
-        this.config.scoreThreshold
-      )
-
-      if (!result.success || !result.data?.context) {
-        return { context: '', sources: [], source: 'none' }
-      }
-
-      const sources = (result.data.sources || []).map((s) => ({
-        filename: s.file_name,
-        score: s.score
-      }))
-
-      return { context: result.data.context, sources, source: 'external' }
-    } catch (error) {
-      console.warn('External RAG context failed:', (error as Error).message)
       return { context: '', sources: [], source: 'none' }
     }
   }

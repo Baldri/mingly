@@ -141,14 +141,12 @@ describe('RAGStatusStore', () => {
     })
 
     it('should handle complete failure and set both offline', async () => {
-      // Simulate a total crash in the try block by making Promise.allSettled itself fail
       mockElectronAPI.ragHttp.health.mockImplementation(() => { throw new Error('crash') })
       mockElectronAPI.ragWissen.health.mockResolvedValue({ success: true })
       mockElectronAPI.ragContext.getConfig.mockResolvedValue({ enabled: true })
 
       await useRAGStatusStore.getState().checkHealth()
 
-      // Should have recovered
       const state = useRAGStatusStore.getState()
       expect(state.lastCheckedAt).not.toBeNull()
     })

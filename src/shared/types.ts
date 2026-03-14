@@ -520,18 +520,7 @@ export const IPC_CHANNELS = {
   SENSITIVE_DATA_REMOVE_PATTERN: 'sensitive-data:remove-pattern',
   SENSITIVE_DATA_GET_PATTERNS: 'sensitive-data:get-patterns',
 
-  // RAG (Qdrant)
-  RAG_INITIALIZE: 'rag:initialize',
-  RAG_CREATE_COLLECTION: 'rag:create-collection',
-  RAG_DELETE_COLLECTION: 'rag:delete-collection',
-  RAG_LIST_COLLECTIONS: 'rag:list-collections',
-  RAG_GET_COLLECTION_INFO: 'rag:get-collection-info',
-  RAG_INDEX_DOCUMENT: 'rag:index-document',
-  RAG_INDEX_FILE: 'rag:index-file',
-  RAG_SEARCH: 'rag:search',
-  RAG_GET_CONTEXT: 'rag:get-context',
-
-  // RAG HTTP (External Python Server)
+  // RAG HTTP (User-configurable external RAG server)
   RAG_HTTP_HEALTH: 'rag-http:health',
   RAG_HTTP_SEARCH: 'rag-http:search',
   RAG_HTTP_GET_CONTEXT: 'rag-http:get-context',
@@ -540,7 +529,7 @@ export const IPC_CHANNELS = {
   RAG_HTTP_INDEX_DIRECTORY: 'rag-http:index-directory',
   RAG_HTTP_UPDATE_CONFIG: 'rag-http:update-config',
 
-  // RAG-Wissen (External Knowledge Base)
+  // RAG-Wissen (Holger's Knowledge Base — not bundled for users)
   RAG_WISSEN_HEALTH: 'rag-wissen:health',
   RAG_WISSEN_SEARCH: 'rag-wissen:search',
   RAG_WISSEN_GET_CONTEXT: 'rag-wissen:get-context',

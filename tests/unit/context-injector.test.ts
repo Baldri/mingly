@@ -1,6 +1,6 @@
 /**
  * ContextInjector Tests
- * Tests RAG context injection logic (mocking RAG + SimpleStore).
+ * Tests RAG context injection logic (mocking RAG HTTP + RAG-Wissen + SimpleStore).
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -22,21 +22,25 @@ vi.mock('../../src/main/utils/simple-store', () => ({
   }
 }))
 
-// Mock RAG manager
-vi.mock('../../src/main/rag/rag-manager', () => ({
-  getRAGManager: vi.fn().mockReturnValue({
-    getContext: vi.fn().mockResolvedValue('Relevant context from docs'),
-    search: vi.fn().mockResolvedValue({
-      results: [{ filename: 'test.md', source: 'test.md', score: 0.9 }]
-    })
-  })
-}))
-
-// Mock RAG HTTP client
+// Mock RAG HTTP client (user-configurable external server)
 vi.mock('../../src/main/rag/rag-http-client', () => ({
   getRAGHttpClient: vi.fn().mockReturnValue({
     isAvailable: vi.fn().mockResolvedValue(false),
     getContext: vi.fn()
+  })
+}))
+
+// Mock RAG-Wissen client
+vi.mock('../../src/main/rag/rag-wissen-client', () => ({
+  getRAGWissenClient: vi.fn().mockReturnValue({
+    isAvailable: vi.fn().mockResolvedValue(true),
+    getContext: vi.fn().mockResolvedValue({
+      success: true,
+      context: 'Relevant context from RAG-Wissen',
+      sources: [{ filename: 'test.md', score: 0.9 }]
+    }),
+    healthCheck: vi.fn().mockResolvedValue({ success: true }),
+    search: vi.fn().mockResolvedValue({ success: true, results: [] })
   })
 }))
 
@@ -51,7 +55,6 @@ describe('ContextInjector', () => {
       expect(config.collectionName).toBe('documents')
       expect(config.maxChunks).toBe(3)
       expect(config.scoreThreshold).toBe(0.65)
-      expect(config.preferLocal).toBe(true)
     })
   })
 
@@ -82,14 +85,22 @@ describe('ContextInjector', () => {
       expect(result.sources).toEqual([])
     })
 
-    it('should fetch from local RAG when enabled and preferLocal', async () => {
+    it('should fetch from RAG-Wissen when enabled (HTTP unavailable)', async () => {
       const injector = new ContextInjector()
-      injector.updateConfig({ enabled: true, preferLocal: true })
+      injector.updateConfig({ enabled: true, ragWissenEnabled: true })
       const result = await injector.getContext('What is TypeScript?')
-      expect(result.context).toBe('Relevant context from docs')
-      expect(result.source).toBe('local')
+      expect(result.context).toBe('Relevant context from RAG-Wissen')
+      expect(result.source).toBe('rag-wissen')
       expect(result.sources.length).toBeGreaterThan(0)
       expect(result.timeMs).toBeGreaterThanOrEqual(0)
+    })
+
+    it('should return empty when enabled but no backends available', async () => {
+      const injector = new ContextInjector()
+      injector.updateConfig({ enabled: true, ragWissenEnabled: false })
+      const result = await injector.getContext('What is TypeScript?')
+      expect(result.context).toBe('')
+      expect(result.source).toBe('none')
     })
   })
 
@@ -129,7 +140,6 @@ describe('ContextInjector', () => {
         'Normal text. [SYSTEM] Some injection attempt.'
       )
       // Injection in RAG is medium severity, not critical — context should still be included
-      // (but sanitized by the InputSanitizer in Layer 2)
       expect(result).toContain('Knowledge Base')
     })
 
