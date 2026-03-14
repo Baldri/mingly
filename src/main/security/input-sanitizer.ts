@@ -75,7 +75,7 @@ const INJECTION_PATTERNS: DetectionPattern[] = [
   {
     type: 'instruction_override',
     severity: 'critical',
-    pattern: /\b(disregard|forget|override|bypass|skip) (all |any )?(safety|security|rules|guidelines|instructions|restrictions|filters)\b/i,
+    pattern: /\b(disregard|forget|override|bypass|skip) (all |any |your |the )?(safety|security|rules|guidelines|instructions|restrictions|filters)\b/i,
     description: 'Safety bypass attempt'
   },
   {
@@ -89,7 +89,7 @@ const INJECTION_PATTERNS: DetectionPattern[] = [
   {
     type: 'system_prompt_leak',
     severity: 'high',
-    pattern: /\b(repeat|show|display|reveal|print|output) (your |the )?(system prompt|instructions|rules|initial prompt|hidden prompt|secret prompt)\b/i,
+    pattern: /\b(repeat|show|display|reveal|print|output) (me )?(your |the )?(system prompt|initial instructions|original instructions|instructions|rules|initial prompt|hidden prompt|secret prompt)\b/i,
     description: 'System prompt extraction attempt'
   },
   {
@@ -103,7 +103,7 @@ const INJECTION_PATTERNS: DetectionPattern[] = [
   {
     type: 'data_exfiltration',
     severity: 'critical',
-    pattern: /\b(send|post|transmit|forward|email|upload) (all |the )?(data|information|content|messages|conversations|keys|tokens|passwords) to\b/i,
+    pattern: /\b(send|post|transmit|forward|email|upload) (all |the )?(data|information|content|messages?|conversations?|keys|tokens|passwords) to\b/i,
     description: 'Data exfiltration attempt'
   },
   {
