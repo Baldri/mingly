@@ -1,4 +1,73 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, memo, useCallback } from 'react'
+import { usePrivacyStore } from '../stores/privacy-store'
+import { useChatStore } from '../stores/chat-store'
+
+type PrivacyMode = 'shield' | 'vault' | 'transparent' | 'local_only'
+
+const PRIVACY_MODES: { mode: PrivacyMode; label: string; description: string; color: string }[] = [
+  { mode: 'shield', label: 'Shield', description: 'PII wird mit realistischen Schweizer Fake-Daten ersetzt', color: 'border-green-500 bg-green-50 dark:bg-green-900/20' },
+  { mode: 'vault', label: 'Vault', description: 'PII wird mit [KATEGORIE]-Markern geschwärzt', color: 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' },
+  { mode: 'transparent', label: 'Transparent', description: 'PII wird erkannt aber nicht verändert', color: 'border-yellow-500 bg-yellow-50 dark:bg-yellow-900/20' },
+  { mode: 'local_only', label: 'Local Only', description: 'Nachrichten nur an lokale LLMs senden', color: 'border-purple-500 bg-purple-50 dark:bg-purple-900/20' }
+]
+
+/** PII Privacy Mode Switcher */
+const PrivacyModeSwitcher = memo(function PrivacyModeSwitcher() {
+  const mode = usePrivacyStore((s) => s.mode)
+  const enabled = usePrivacyStore((s) => s.enabled)
+  const setMode = usePrivacyStore((s) => s.setMode)
+  const setEnabled = usePrivacyStore((s) => s.setEnabled)
+  const loading = usePrivacyStore((s) => s.loading)
+  const conversationId = useChatStore((s) => s.currentConversation?.id)
+
+  const handleModeChange = useCallback((newMode: PrivacyMode) => {
+    if (conversationId) {
+      setMode(conversationId, newMode)
+    }
+  }, [conversationId, setMode])
+
+  return (
+    <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="text-sm font-semibold text-gray-900 dark:text-white">
+          Swiss AI Privacy Mode
+        </h4>
+        <button
+          onClick={() => setEnabled(!enabled)}
+          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+            enabled ? 'bg-green-600' : 'bg-gray-300 dark:bg-gray-600'
+          }`}
+        >
+          <span
+            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+              enabled ? 'translate-x-6' : 'translate-x-1'
+            }`}
+          />
+        </button>
+      </div>
+
+      {enabled && (
+        <div className="grid grid-cols-2 gap-2">
+          {PRIVACY_MODES.map(({ mode: m, label, description, color }) => (
+            <button
+              key={m}
+              onClick={() => handleModeChange(m)}
+              disabled={loading}
+              className={`rounded-lg border-2 p-3 text-left transition-all ${
+                mode === m
+                  ? `${color} border-opacity-100`
+                  : 'border-transparent bg-gray-50 hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700'
+              } ${loading ? 'opacity-50' : ''}`}
+            >
+              <div className="text-sm font-medium text-gray-900 dark:text-white">{label}</div>
+              <div className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{description}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+})
 
 interface DirectoryPolicy {
   directoryId: string
@@ -101,9 +170,12 @@ export function PrivacySettingsTab() {
           Privacy & Security
         </h3>
         <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-          Manage data upload policies and view security audit logs
+          PII-Schutz, Upload-Richtlinien und Sicherheitseinstellungen
         </p>
       </div>
+
+      {/* Swiss AI Privacy Mode */}
+      <PrivacyModeSwitcher />
 
       {/* Statistics */}
       {stats && (

@@ -6,6 +6,7 @@ import { MessageList } from './MessageList'
 import { MessageInput } from './MessageInput'
 import { OrchestrationStatusBar } from './OrchestrationStatusBar'
 import { RAGStatusBar } from './RAGStatusBar'
+import { PrivacyIndicator } from './PrivacyIndicator'
 import { RoutingModeToggle } from './RoutingModeToggle'
 import { useChatStore } from '../stores/chat-store'
 import { useOrchestratorStore } from '../stores/orchestrator-store'
@@ -80,6 +81,7 @@ export function ChatLayout() {
                 <span>{currentConversation.provider}</span>
                 <span className="text-gray-300 dark:text-gray-600">/</span>
                 <span className="font-medium text-gray-700 dark:text-gray-300">{currentConversation.model}</span>
+                <PrivacyIndicator />
               </>
             ) : (
               <span className="text-gray-400">No conversation selected</span>

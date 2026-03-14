@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, memo } from 'react'
 import { Send, Paperclip, X, Image as ImageIcon } from 'lucide-react'
 import { useChatStore } from '../stores/chat-store'
+import { PrivacyShield } from './PrivacyShield'
 import type { MessageAttachment } from '../../shared/types'
 
 export const MessageInput = memo(function MessageInput() {
@@ -191,6 +192,9 @@ export const MessageInput = memo(function MessageInput() {
           Drop images here
         </div>
       )}
+
+      {/* PII Detection Preview */}
+      <PrivacyShield inputText={input} />
 
       <div className="flex gap-2 items-end">
         <button
