@@ -139,6 +139,38 @@ const INJECTION_PATTERNS: DetectionPattern[] = [
 // Invisible/control Unicode characters (excluding normal whitespace)
 const INVISIBLE_CHARS = /[\u200B-\u200F\u2028-\u202F\uFEFF\u00AD\u034F\u180E\u2060-\u2064\u2066-\u206F]/g
 
+// Homoglyph map: Cyrillic/Greek lookalikes → Latin equivalents
+// These are characters that look identical to Latin but are different Unicode codepoints
+const HOMOGLYPH_MAP: Record<string, string> = {
+  '\u0410': 'A', '\u0430': 'a', // Cyrillic А/а
+  '\u0412': 'B', '\u0432': 'b', // Cyrillic В/в (actually looks like B/v but used as B)
+  '\u0421': 'C', '\u0441': 'c', // Cyrillic С/с
+  '\u0415': 'E', '\u0435': 'e', // Cyrillic Е/е
+  '\u041D': 'H', '\u043D': 'h', // Cyrillic Н/н
+  '\u041A': 'K', '\u043A': 'k', // Cyrillic К/к
+  '\u041C': 'M', '\u043C': 'm', // Cyrillic М/м
+  '\u041E': 'O', '\u043E': 'o', // Cyrillic О/о
+  '\u0420': 'P', '\u0440': 'p', // Cyrillic Р/р
+  '\u0422': 'T', '\u0442': 't', // Cyrillic Т/т
+  '\u0425': 'X', '\u0445': 'x', // Cyrillic Х/х
+  '\u0443': 'y',                  // Cyrillic у
+  '\u03B1': 'a',                  // Greek α
+  '\u03BF': 'o',                  // Greek ο
+  '\u03C1': 'p',                  // Greek ρ
+  '\u0391': 'A',                  // Greek Α
+  '\u0392': 'B',                  // Greek Β
+  '\u0395': 'E',                  // Greek Ε
+  '\u039A': 'K',                  // Greek Κ
+  '\u039C': 'M',                  // Greek Μ
+  '\u039D': 'N',                  // Greek Ν
+  '\u039F': 'O',                  // Greek Ο
+  '\u03A1': 'P',                  // Greek Ρ
+  '\u03A4': 'T',                  // Greek Τ
+  '\u03A7': 'X',                  // Greek Χ
+}
+
+const HOMOGLYPH_REGEX = new RegExp(`[${Object.keys(HOMOGLYPH_MAP).join('')}]`, 'g')
+
 // ============================================================
 // Input Sanitizer
 // ============================================================
@@ -187,7 +219,18 @@ export class InputSanitizer {
       sanitized = sanitized.replace(INVISIBLE_CHARS, '')
     }
 
-    // Layer 3: Regex pattern detection
+    // Layer 3: Homoglyph detection — replace lookalike characters with Latin
+    const homoglyphMatches = sanitized.match(HOMOGLYPH_REGEX)
+    if (homoglyphMatches && homoglyphMatches.length > 0) {
+      warnings.push({
+        type: 'unicode_abuse',
+        severity: homoglyphMatches.length >= 5 ? 'high' : 'medium',
+        description: `${homoglyphMatches.length} homoglyph character(s) detected and normalized (Cyrillic/Greek lookalikes)`
+      })
+      sanitized = sanitized.replace(HOMOGLYPH_REGEX, (char) => HOMOGLYPH_MAP[char] || char)
+    }
+
+    // Layer 4: Regex pattern detection
     const allPatterns = [...INJECTION_PATTERNS, ...this.customPatterns]
     for (const pattern of allPatterns) {
       const match = pattern.pattern.exec(sanitized)

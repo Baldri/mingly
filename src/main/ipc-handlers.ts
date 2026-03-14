@@ -14,6 +14,10 @@ import { getMCPToolSelector } from './mcp/mcp-tool-selector'
 import { getBudgetManager } from './tracking/budget-manager'
 import { getTrackingEngine } from './tracking/tracking-engine'
 import { getInputSanitizer } from './security/input-sanitizer'
+import { getCircuitBreaker } from './security/circuit-breaker'
+import { getDataClassifier } from './security/data-classifier'
+import { getOutputGuardrails } from './security/output-guardrails'
+import { getCanaryTokenManager } from './security/canary-tokens'
 import { getFeatureGateManager } from './services/feature-gate-manager'
 import { getSessionManager } from './services/session-state'
 import { PromptTemplateModel } from './database/models/prompt-template'
@@ -222,6 +226,59 @@ export async function registerIPCHandlers(): Promise<void> {
           }
         }
 
+        // 3a. Data Classification & Routing: Auto-classify content sensitivity
+        const dataClassifier = getDataClassifier()
+        const routingDecision = dataClassifier.checkRouting(
+          messages.map((m) => m.content).join('\n'),
+          provider
+        )
+
+        if (!routingDecision.allowed) {
+          if (routingDecision.suggestedProvider) {
+            // Auto-fallback to safer provider
+            const originalProvider = provider
+            provider = routingDecision.suggestedProvider
+            console.log(
+              `[DataClassifier] Provider switched: ${originalProvider} -> ${provider} (sensitivity: ${routingDecision.classification.sensitivity})`
+            )
+            event.sender.send('message:safety-warning', {
+              type: 'fallback_triggered',
+              level: 'warning',
+              message: `Content classified as "${routingDecision.classification.sensitivity}" — routed to ${provider}.`,
+              details: { provider, reasons: routingDecision.classification.reasons }
+            })
+          } else {
+            // No safe provider available — block
+            throw new Error(routingDecision.reason)
+          }
+        }
+
+        // 3b. Circuit Breaker: Pre-estimate cost and enforce limits
+        const circuitBreaker = getCircuitBreaker()
+        const inputEstimate = trackingEngine.estimateTokens(
+          messages.map((m) => m.content).join('\n')
+        )
+        // Conservative output estimate: assume output ≈ input * 0.5 (capped at 4096)
+        const outputEstimate = Math.min(Math.ceil(inputEstimate * 0.5), 4096)
+        const costEstimate = trackingEngine.calculateCost(model, inputEstimate, outputEstimate)
+        const estimatedCostCents = Math.round(costEstimate.totalCost * 100)
+
+        const cbResult = circuitBreaker.canExecute({
+          conversationId,
+          provider,
+          model,
+          estimatedCostCents
+        })
+
+        if (!cbResult.allowed) {
+          throw new Error(cbResult.reason)
+        }
+
+        // Forward warnings to renderer
+        for (const warning of cbResult.warnings) {
+          event.sender.send('message:safety-warning', warning)
+        }
+
         // 4. Build system prompt with mode
         let systemPrompt = await systemPromptManager.buildSystemPrompt({
           customMode: mode
@@ -277,9 +334,13 @@ export async function registerIPCHandlers(): Promise<void> {
           console.warn('MCP auto-tool-selection failed (non-blocking):', mcpError)
         }
 
-        // 5. Prepend system prompt to messages
+        // 5. Inject canary token into system prompt (leak detection)
+        const canaryManager = getCanaryTokenManager()
+        const systemPromptWithCanary = canaryManager.inject(conversationId, systemPrompt)
+
+        // 5b. Prepend system prompt to messages
         const messagesWithSystem: Message[] = [
-          { id: generateId(), role: 'system', content: systemPrompt },
+          { id: generateId(), role: 'system', content: systemPromptWithCanary },
           ...messages.slice(0, -1), // Previous messages
           { id: generateId(), role: 'user', content: actualMessage } // Actual message (without @mode prefix)
         ]
@@ -320,14 +381,34 @@ export async function registerIPCHandlers(): Promise<void> {
           console.error('Failed to persist message to database:', dbError)
         }
 
-        // 7. Security: Scan LLM output for leaked sensitive data before returning
-        const outputScanResult = sensitiveDataDetector.scan(fullResponse)
-        if (outputScanResult.hasSensitiveData) {
-          console.warn(
-            `[Security] LLM response contains sensitive data (${outputScanResult.matches.length} items, risk: ${outputScanResult.overallRiskLevel})`
-          )
-          // Note: We log the warning but don't block — the user asked for this response.
-          // In enterprise mode, this could be escalated to audit or redacted.
+        // 7. Security: Scan LLM output with Output Guardrails
+        const outputGuardrails = getOutputGuardrails()
+        const outputScanResult = outputGuardrails.scan(fullResponse, systemPrompt)
+        if (!outputScanResult.safe) {
+          for (const violation of outputScanResult.violations) {
+            console.warn(
+              `[OutputGuardrails] ${violation.type} (${violation.severity}): ${violation.description}`
+            )
+          }
+          // Forward violations to renderer for UI display
+          event.sender.send('message:safety-warning', {
+            type: 'output_violations',
+            level: outputScanResult.violations.some((v) => v.severity === 'critical') ? 'error' : 'warning',
+            message: `${outputScanResult.violations.length} safety issue(s) in LLM response`,
+            details: { violations: outputScanResult.violations.map((v) => ({ type: v.type, severity: v.severity, description: v.description })) }
+          })
+        }
+
+        // 7b. Canary Token leak check
+        const canaryCheck = canaryManager.check(conversationId, fullResponse)
+        if (canaryCheck.leaked) {
+          console.warn(`[Security] CANARY TOKEN LEAKED in response (id: ${canaryCheck.canaryId})`)
+          event.sender.send('message:safety-warning', {
+            type: 'system_prompt_leak',
+            level: 'error',
+            message: 'System prompt leak detected via canary token.',
+            details: { canaryId: canaryCheck.canaryId }
+          })
         }
 
         // 8. Track usage and compute metadata (PRIVACY: no full-text logging)
@@ -353,6 +434,12 @@ export async function registerIPCHandlers(): Promise<void> {
         } catch (trackErr) {
           console.warn('Tracking failed (non-blocking):', trackErr)
         }
+
+        // 8b. Record actual cost in circuit breaker
+        try {
+          const actualCostCents = Math.round(totalCost * 100)
+          circuitBreaker.recordUsage(conversationId, actualCostCents)
+        } catch (_) { /* non-blocking */ }
 
         // 9. Persist session state (provider-specific continuity)
         try {

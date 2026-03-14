@@ -21,6 +21,7 @@ import { getToolRegistry, type ToolRegistry } from './tool-registry'
 import { getAgentContextManager } from './agent-context-manager'
 import { getClientManager } from '../llm-clients/client-manager'
 import type { ToolUseResponse } from '../llm-clients/client-manager'
+import { getCircuitBreaker } from '../security/circuit-breaker'
 import type {
   Message,
   AgentConfig,
@@ -144,6 +145,17 @@ export class AgentExecutor {
       totalCost: 0,
       durationMs: 0,
       createdAt: startTime
+    }
+
+    // Circuit Breaker: Check concurrent agent run limit
+    const circuitBreaker = getCircuitBreaker()
+    const concurrencyCheck = circuitBreaker.canStartAgentRun(runId)
+    if (!concurrencyCheck.allowed) {
+      run.status = 'failed'
+      run.error = concurrencyCheck.reason
+      run.durationMs = Date.now() - startTime
+      this.emit({ type: 'run_complete', runId, run })
+      return run
     }
 
     // Run timeout
@@ -291,6 +303,7 @@ export class AgentExecutor {
     } finally {
       clearTimeout(runTimeout)
       this.activeRuns.delete(runId)
+      circuitBreaker.endAgentRun(runId)
       run.durationMs = Date.now() - startTime
 
       // Task 4: Clean up externalized temp files after run completion

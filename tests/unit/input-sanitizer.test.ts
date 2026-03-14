@@ -96,6 +96,33 @@ describe('InputSanitizer', () => {
     })
   })
 
+  describe('homoglyph detection', () => {
+    it('should detect Cyrillic lookalike characters', () => {
+      // "ignore" with Cyrillic а (U+0430) instead of Latin a
+      const result = sanitizer.sanitize('Please \u0430nswer my question')
+      expect(result.warnings.some(w => w.type === 'unicode_abuse' && w.description.includes('homoglyph'))).toBe(true)
+    })
+
+    it('should normalize homoglyphs to Latin equivalents', () => {
+      // Cyrillic о (U+043E) and а (U+0430) — visually identical to Latin o and a
+      const result = sanitizer.sanitize('hell\u043E w\u043Erld')
+      expect(result.sanitized).toBe('hello world')
+    })
+
+    it('should flag multiple homoglyphs as high severity', () => {
+      // 5+ homoglyphs → high severity
+      const input = '\u0430\u0435\u043E\u0440\u0441\u0445 test'
+      const result = sanitizer.sanitize(input)
+      const homoglyphWarning = result.warnings.find(w => w.description.includes('homoglyph'))
+      expect(homoglyphWarning?.severity).toBe('high')
+    })
+
+    it('should not flag clean Latin text', () => {
+      const result = sanitizer.sanitize('This is normal English text.')
+      expect(result.warnings.filter(w => w.description.includes('homoglyph'))).toHaveLength(0)
+    })
+  })
+
   describe('addPattern()', () => {
     it('should allow adding custom detection patterns', () => {
       const custom = new InputSanitizer()
