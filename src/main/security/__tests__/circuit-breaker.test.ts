@@ -297,6 +297,88 @@ describe('CircuitBreaker', () => {
     })
   })
 
+  describe('token limits', () => {
+    it('blocks requests exceeding input token limit', () => {
+      const result = cb.canExecute({
+        conversationId: 'conv-1',
+        provider: 'anthropic',
+        model: 'claude-3-sonnet',
+        estimatedCostCents: 10,
+        estimatedInputTokens: 200_000 // > 128000 default
+      })
+      expect(result.allowed).toBe(false)
+      expect(result.reason).toContain('Input tokens')
+      expect(result.reason).toContain('exceed limit')
+    })
+
+    it('blocks requests exceeding output token limit', () => {
+      const result = cb.canExecute({
+        conversationId: 'conv-1',
+        provider: 'anthropic',
+        model: 'claude-3-sonnet',
+        estimatedCostCents: 10,
+        estimatedOutputTokens: 16_000 // > 8192 default
+      })
+      expect(result.allowed).toBe(false)
+      expect(result.reason).toContain('Output tokens')
+      expect(result.reason).toContain('exceed limit')
+    })
+
+    it('allows requests within token limits', () => {
+      const result = cb.canExecute({
+        conversationId: 'conv-1',
+        provider: 'anthropic',
+        model: 'claude-3-sonnet',
+        estimatedCostCents: 10,
+        estimatedInputTokens: 50_000,
+        estimatedOutputTokens: 4000
+      })
+      expect(result.allowed).toBe(true)
+    })
+
+    it('allows requests when token estimates are not provided', () => {
+      const result = cb.canExecute({
+        conversationId: 'conv-1',
+        provider: 'anthropic',
+        model: 'claude-3-sonnet',
+        estimatedCostCents: 10
+        // No token estimates — should pass
+      })
+      expect(result.allowed).toBe(true)
+    })
+
+    it('emits tokens_exceeded event', () => {
+      const events: CircuitEvent[] = []
+      cb.onEvent((e) => events.push(e))
+
+      cb.canExecute({
+        conversationId: 'conv-1',
+        provider: 'anthropic',
+        model: 'claude-3-sonnet',
+        estimatedCostCents: 10,
+        estimatedInputTokens: 200_000
+      })
+
+      expect(events.some((e) => e.type === 'tokens_exceeded')).toBe(true)
+    })
+
+    it('respects custom token limits via config', () => {
+      cb.updateConfig({
+        maxInputTokensPerRequest: 50_000,
+        maxOutputTokensPerRequest: 2000
+      })
+
+      const result = cb.canExecute({
+        conversationId: 'conv-1',
+        provider: 'anthropic',
+        model: 'claude-3-sonnet',
+        estimatedCostCents: 10,
+        estimatedInputTokens: 60_000
+      })
+      expect(result.allowed).toBe(false)
+    })
+  })
+
   describe('configuration', () => {
     it('allows config updates', () => {
       cb.updateConfig({ maxCostPerRequestCents: 100 })
@@ -304,6 +386,12 @@ describe('CircuitBreaker', () => {
 
       // Old limits should still work
       expect(cb.getConfig().maxCostPerSessionCents).toBe(200)
+    })
+
+    it('includes token limits in config', () => {
+      const config = cb.getConfig()
+      expect(config.maxInputTokensPerRequest).toBe(128_000)
+      expect(config.maxOutputTokensPerRequest).toBe(8192)
     })
   })
 })

@@ -24,6 +24,8 @@ export interface CircuitBreakerConfig {
   maxCostPerDayCents: number         // Default: 5000 (CHF 50.00)
   maxTurnsPerSession: number         // Default: 50
   maxConcurrentAgentRuns: number     // Default: 3
+  maxInputTokensPerRequest: number   // Default: 128000
+  maxOutputTokensPerRequest: number  // Default: 8192
   warningThresholdPercent: number    // Default: 80
   cooldownAfterLimitMs: number       // Default: 60000 (1 min)
 }
@@ -37,6 +39,7 @@ export type CircuitEventType =
   | 'circuit_half_open'
   | 'circuit_closed'
   | 'turns_exceeded'
+  | 'tokens_exceeded'
   | 'concurrent_limit'
   | 'fallback_triggered'
 
@@ -70,6 +73,8 @@ const DEFAULT_CONFIG: CircuitBreakerConfig = {
   maxCostPerDayCents: 5000,         // CHF 50.00
   maxTurnsPerSession: 50,
   maxConcurrentAgentRuns: 3,
+  maxInputTokensPerRequest: 128_000,  // Most models support 128k context
+  maxOutputTokensPerRequest: 8192,    // Safe default for output
   warningThresholdPercent: 80,
   cooldownAfterLimitMs: 60_000
 }
@@ -153,6 +158,8 @@ export class CircuitBreaker {
     provider: string
     model: string
     estimatedCostCents: number
+    estimatedInputTokens?: number
+    estimatedOutputTokens?: number
   }): CircuitCheckResult {
     const warnings: CircuitEvent[] = []
     const { conversationId, provider, estimatedCostCents } = params
@@ -181,6 +188,30 @@ export class CircuitBreaker {
         level: 'error',
         message: `Estimated request cost (${this.formatCents(estimatedCostCents)}) exceeds per-request limit (${this.formatCents(this.config.maxCostPerRequestCents)}).`,
         details: { limit: this.config.maxCostPerRequestCents, current: estimatedCostCents, provider }
+      }
+      this.emit(event)
+      return { allowed: false, reason: event.message, warnings, state: this.state }
+    }
+
+    // 2b. Check token limits
+    const { estimatedInputTokens, estimatedOutputTokens } = params
+    if (estimatedInputTokens && estimatedInputTokens > this.config.maxInputTokensPerRequest) {
+      const event: CircuitEvent = {
+        type: 'tokens_exceeded',
+        level: 'error',
+        message: `Input tokens (${estimatedInputTokens.toLocaleString()}) exceed limit (${this.config.maxInputTokensPerRequest.toLocaleString()}).`,
+        details: { limit: this.config.maxInputTokensPerRequest, current: estimatedInputTokens, provider }
+      }
+      this.emit(event)
+      return { allowed: false, reason: event.message, warnings, state: this.state }
+    }
+
+    if (estimatedOutputTokens && estimatedOutputTokens > this.config.maxOutputTokensPerRequest) {
+      const event: CircuitEvent = {
+        type: 'tokens_exceeded',
+        level: 'error',
+        message: `Output tokens (${estimatedOutputTokens.toLocaleString()}) exceed limit (${this.config.maxOutputTokensPerRequest.toLocaleString()}).`,
+        details: { limit: this.config.maxOutputTokensPerRequest, current: estimatedOutputTokens, provider }
       }
       this.emit(event)
       return { allowed: false, reason: event.message, warnings, state: this.state }
