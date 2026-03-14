@@ -645,6 +645,30 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.SERVICE_DISCOVER, options),
   },
 
+  // Privacy (Swiss AI Privacy — PII Detection + Anonymization)
+  privacy: {
+    anonymize: (sessionId: string, text: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.PRIVACY_ANONYMIZE, sessionId, text),
+
+    rehydrate: (sessionId: string, text: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.PRIVACY_REHYDRATE, sessionId, text),
+
+    getMode: (sessionId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.PRIVACY_GET_MODE, sessionId),
+
+    setMode: (sessionId: string, mode: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.PRIVACY_SET_MODE, sessionId, mode),
+
+    getSessionMappings: (sessionId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.PRIVACY_GET_SESSION_MAPPINGS, sessionId),
+
+    clearSession: (sessionId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.PRIVACY_CLEAR_SESSION, sessionId),
+
+    detectPII: (text: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.PRIVACY_DETECT_PII, text)
+  },
+
   // Platform Info
   platform: process.platform as 'darwin' | 'win32' | 'linux'
 }

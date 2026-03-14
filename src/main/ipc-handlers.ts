@@ -35,6 +35,7 @@ import { registerContentHandlers } from './ipc/content-handlers'
 import { registerRBACHandlers } from './ipc/rbac-handlers'
 import { registerMCPHandlers } from './ipc/mcp-handlers'
 import { registerRAGHandlers } from './ipc/rag-handlers'
+import { registerPrivacyHandlers } from './ipc/privacy-handlers'
 import { registerAgentHandlers } from './ipc/agent-handlers'
 
 // ============================================================
@@ -65,6 +66,7 @@ export async function registerIPCHandlers(): Promise<void> {
   registerInfrastructureHandlers()
   registerIntegrationHandlers()
   registerRAGHandlers()
+  registerPrivacyHandlers()
   registerMCPHandlers()
   registerRBACHandlers()
   registerBusinessHandlers()

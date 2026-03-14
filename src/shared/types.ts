@@ -701,5 +701,14 @@ export const IPC_CHANNELS = {
   SUBAGENT_START: 'subagent:start',
   SUBAGENT_CANCEL: 'subagent:cancel',
   SUBAGENT_STEP: 'subagent:step',
-  SUBAGENT_STATUS: 'subagent:status'
+  SUBAGENT_STATUS: 'subagent:status',
+
+  // Privacy (Swiss AI Privacy — PII Detection + Anonymization)
+  PRIVACY_ANONYMIZE: 'privacy:anonymize',
+  PRIVACY_REHYDRATE: 'privacy:rehydrate',
+  PRIVACY_GET_MODE: 'privacy:get-mode',
+  PRIVACY_SET_MODE: 'privacy:set-mode',
+  PRIVACY_GET_SESSION_MAPPINGS: 'privacy:get-session-mappings',
+  PRIVACY_CLEAR_SESSION: 'privacy:clear-session',
+  PRIVACY_DETECT_PII: 'privacy:detect-pii'
 } as const
