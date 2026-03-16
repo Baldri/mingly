@@ -5,6 +5,7 @@
 /** Supported PII entity categories */
 export type PIICategory =
   | 'PERSON'           // Full names
+  | 'ORGANIZATION'     // Company/org names
   | 'EMAIL'            // Email addresses
   | 'PHONE'            // Phone numbers (CH + international)
   | 'IBAN'             // Bank account numbers
@@ -94,6 +95,7 @@ export const PII_SENSITIVITY: Record<PIICategory, PIISensitivity> = {
   DATE_OF_BIRTH: 'high',
   EMAIL: 'high',
   PERSON: 'high',
+  ORGANIZATION: 'medium',
   PHONE: 'medium',
   ADDRESS: 'medium',
   LOCATION: 'medium',
@@ -102,3 +104,6 @@ export const PII_SENSITIVITY: Record<PIICategory, PIISensitivity> = {
   URL: 'low',
   CUSTOM: 'medium'
 }
+
+/** NER model status */
+export type NERStatus = 'not_downloaded' | 'downloading' | 'ready' | 'error'
