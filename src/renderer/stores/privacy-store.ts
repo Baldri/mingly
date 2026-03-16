@@ -30,6 +30,10 @@ interface PrivacyState {
   sessionAnonymizedCount: number
   /** Loading state */
   loading: boolean
+  /** NER model status */
+  nerStatus: 'not_downloaded' | 'downloading' | 'ready' | 'error'
+  /** NER download progress (0-100) */
+  nerProgress: number
 
   // Actions
   setMode: (sessionId: string, mode: PrivacyMode) => Promise<void>
@@ -39,6 +43,9 @@ interface PrivacyState {
   clearSession: (sessionId: string) => Promise<void>
   setEnabled: (enabled: boolean) => void
   incrementAnonymized: (count: number) => void
+  loadNerStatus: () => Promise<void>
+  downloadNerModel: () => Promise<void>
+  deleteNerModel: () => Promise<void>
 }
 
 export const usePrivacyStore = create<PrivacyState>((set, get) => ({
@@ -48,6 +55,8 @@ export const usePrivacyStore = create<PrivacyState>((set, get) => ({
   enabled: true,
   sessionAnonymizedCount: 0,
   loading: false,
+  nerStatus: 'not_downloaded',
+  nerProgress: 0,
 
   setMode: async (sessionId: string, mode: PrivacyMode) => {
     set({ loading: true })
@@ -111,5 +120,38 @@ export const usePrivacyStore = create<PrivacyState>((set, get) => ({
   setEnabled: (enabled: boolean) => set({ enabled }),
 
   incrementAnonymized: (count: number) =>
-    set((state) => ({ sessionAnonymizedCount: state.sessionAnonymizedCount + count }))
+    set((state) => ({ sessionAnonymizedCount: state.sessionAnonymizedCount + count })),
+
+  loadNerStatus: async () => {
+    try {
+      const result = await window.electronAPI.privacy.nerStatus()
+      set({ nerStatus: result.status, nerProgress: result.progress })
+    } catch {
+      set({ nerStatus: 'error' })
+    }
+  },
+
+  downloadNerModel: async () => {
+    set({ nerStatus: 'downloading', nerProgress: 0 })
+    const cleanup = window.electronAPI.privacy.onNerProgress((percent: number) => {
+      set({ nerProgress: percent })
+    })
+    try {
+      const result = await window.electronAPI.privacy.nerDownload()
+      if (result.success) {
+        set({ nerStatus: 'ready', nerProgress: 100 })
+      } else {
+        set({ nerStatus: 'error' })
+      }
+    } catch {
+      set({ nerStatus: 'error' })
+    } finally {
+      cleanup()
+    }
+  },
+
+  deleteNerModel: async () => {
+    await window.electronAPI.privacy.nerDelete()
+    set({ nerStatus: 'not_downloaded', nerProgress: 0 })
+  },
 }))

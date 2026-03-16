@@ -69,6 +69,82 @@ const PrivacyModeSwitcher = memo(function PrivacyModeSwitcher() {
   )
 })
 
+const NERModelSection = memo(function NERModelSection() {
+  const nerStatus = usePrivacyStore((s) => s.nerStatus)
+  const nerProgress = usePrivacyStore((s) => s.nerProgress)
+  const loadNerStatus = usePrivacyStore((s) => s.loadNerStatus)
+  const downloadNerModel = usePrivacyStore((s) => s.downloadNerModel)
+  const deleteNerModel = usePrivacyStore((s) => s.deleteNerModel)
+
+  useEffect(() => { loadNerStatus() }, [loadNerStatus])
+
+  const statusConfig = {
+    not_downloaded: { label: 'Nicht installiert', color: 'bg-gray-400', textColor: 'text-gray-600 dark:text-gray-400' },
+    downloading: { label: 'Wird geladen...', color: 'bg-yellow-400', textColor: 'text-yellow-600 dark:text-yellow-400' },
+    ready: { label: 'Bereit', color: 'bg-green-400', textColor: 'text-green-600 dark:text-green-400' },
+    error: { label: 'Fehler', color: 'bg-red-400', textColor: 'text-red-600 dark:text-red-400' }
+  }
+
+  const config = statusConfig[nerStatus]
+
+  return (
+    <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+      <div className="flex items-center justify-between mb-2">
+        <h4 className="text-sm font-semibold text-gray-900 dark:text-white">
+          Personennamen-Erkennung (NER)
+        </h4>
+        <div className="flex items-center gap-2">
+          <span className={`h-2 w-2 rounded-full ${config.color}`} />
+          <span className={`text-xs ${config.textColor}`}>{config.label}</span>
+        </div>
+      </div>
+
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+        piiranha-v1 erkennt Personennamen in DE, EN, FR und IT (~200 MB Download).
+      </p>
+
+      {nerStatus === 'downloading' && (
+        <div className="mb-3">
+          <div className="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700">
+            <div
+              className="h-2 rounded-full bg-blue-500 transition-all"
+              style={{ width: `${nerProgress}%` }}
+            />
+          </div>
+          <span className="text-xs text-gray-500 mt-1">{nerProgress}%</span>
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        {nerStatus === 'not_downloaded' && (
+          <button
+            onClick={downloadNerModel}
+            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+          >
+            Modell herunterladen
+          </button>
+        )}
+        {nerStatus === 'ready' && (
+          <button
+            onClick={deleteNerModel}
+            className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20"
+          >
+            Modell entfernen
+          </button>
+        )}
+        {nerStatus === 'error' && (
+          <button
+            onClick={downloadNerModel}
+            className="rounded-lg bg-yellow-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-yellow-700"
+          >
+            Erneut versuchen
+          </button>
+        )}
+      </div>
+    </div>
+  )
+})
+
 interface DirectoryPolicy {
   directoryId: string
   directoryPath: string
@@ -176,6 +252,9 @@ export function PrivacySettingsTab() {
 
       {/* Swiss AI Privacy Mode */}
       <PrivacyModeSwitcher />
+
+      {/* NER Model Management */}
+      <NERModelSection />
 
       {/* Statistics */}
       {stats && (
