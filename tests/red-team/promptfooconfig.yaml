@@ -1,0 +1,20 @@
+description: "Mingly Privacy Red-Teaming — Phase 7b.5"
+
+providers:
+  - id: "file://providers/pii-pipeline-provider.ts:detect_2layer"
+    label: "PII Detection (2-Layer: Regex+Swiss)"
+  - id: "file://providers/pii-pipeline-provider.ts:detect_3layer"
+    label: "PII Detection (3-Layer: +NER)"
+  - id: "file://providers/pii-pipeline-provider.ts:anonymize_shield"
+    label: "Anonymize (Shield Mode)"
+
+defaultTest:
+  vars:
+    input: "{{input}}"
+
+prompts:
+  - "{{input}}"
+
+tests: []
+
+outputPath: "tests/red-team/results/latest.json"
