@@ -7,6 +7,8 @@ providers:
     label: "PII Detection (3-Layer: +NER)"
   - id: "file://providers/pii-pipeline-provider.ts:anonymize_shield"
     label: "Anonymize (Shield Mode)"
+  - id: "file://providers/rehydration-provider.ts:rehydration_passthrough"
+    label: "Rehydration (Passthrough)"
 
 defaultTest:
   vars:
@@ -15,6 +17,13 @@ defaultTest:
 prompts:
   - "{{input}}"
 
-tests: []
+tests:
+  - file://catalog/format-variations.yaml
+  - file://catalog/encoding-attacks.yaml
+  - file://catalog/context-evasion.yaml
+  - file://catalog/language-mixing.yaml
+  - file://catalog/ner-degradation.yaml
+  - file://jailbreak/prompt-injection.yaml
+  - file://jailbreak/rehydration-hardening.yaml
 
 outputPath: "tests/red-team/results/latest.json"

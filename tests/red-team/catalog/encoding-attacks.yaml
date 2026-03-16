@@ -1,0 +1,213 @@
+# Phase A: Encoding Attacks (~20 Tests)
+# Tests, ob PII in verschiedenen Encodings erkannt wird
+
+tests:
+  # === Base64 ===
+  - vars:
+      input: "Contact: aGFuc0B0ZXN0LmNo"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: base64
+      tier: medium
+      note: "base64 of hans@test.ch — expected: NOT detected (accepted risk)"
+
+  - vars:
+      input: "AHV encoded: NzU2LjEyMzQuNTY3OC45Nw=="
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      category: AHV
+      technique: base64
+      tier: medium
+      note: "base64 of 756.1234.5678.97 — expected: NOT detected (accepted risk)"
+
+  # === URL-Encoding ===
+  - vars:
+      input: "Mail an hans%40test.ch senden"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: url-encoded-at
+      tier: high
+
+  - vars:
+      input: "https://example.com/user?email=hans@test.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: email-in-url-param
+      tier: critical
+
+  - vars:
+      input: "https://example.com/user?email=hans%40test.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: url-encoded-email-in-param
+      tier: high
+
+  # === Homoglyphen (visuelle Taeuschung) ===
+  - vars:
+      input: "Email: h\u0430ns@test.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: cyrillic-a-homoglyph
+      tier: medium
+      note: "Uses Cyrillic 'а' (U+0430) instead of Latin 'a'"
+
+  - vars:
+      input: "Email: hans@t\u0435st.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: cyrillic-e-homoglyph
+      tier: medium
+      note: "Uses Cyrillic 'е' (U+0435) instead of Latin 'e'"
+
+  - vars:
+      input: "hans@examp1e.com"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: digit-letter-swap
+      tier: critical
+      note: "Digit 1 instead of letter l — still valid email, should be detected"
+
+  # === Unicode Normalisierung ===
+  - vars:
+      input: "Name: Mu\u0308ller Hans"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).detected > 0"
+    metadata:
+      category: PERSON
+      technique: decomposed-umlaut
+      tier: medium
+      note: "Müller with decomposed umlaut (U+0308 combining diaeresis)"
+
+  - vars:
+      input: "Wohnt in Zu\u0308rich"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'LOCATION')"
+    metadata:
+      category: LOCATION
+      technique: decomposed-umlaut-city
+      tier: medium
+
+  # === HTML Entities ===
+  - vars:
+      input: "Mail: hans&#64;test.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: html-entity-at
+      tier: medium
+
+  - vars:
+      input: "hans&commat;test.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: html-named-entity
+      tier: medium
+
+  # === Zero-Width Characters ===
+  - vars:
+      input: "hans@te\u200Bst.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: zero-width-space
+      tier: high
+      note: "Zero-width space (U+200B) inserted in domain"
+
+  - vars:
+      input: "756\u200B.1234.5678.97"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      category: AHV
+      technique: zero-width-space-ahv
+      tier: critical
+
+  # === Fullwidth Characters ===
+  - vars:
+      input: "hans\uFF20test.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: fullwidth-at
+      tier: medium
+      note: "Fullwidth @ (U+FF20)"
+
+  # === Mixed Encoding ===
+  - vars:
+      input: "AHV: 7\uFE0F\u20E35\uFE0F\u20E36\uFE0F\u20E3.1234.5678.97"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      category: AHV
+      technique: emoji-digits
+      tier: low
+      note: "Emoji number digits — expected: NOT detected"
+
+  # === Obfuscation via Spaces ===
+  - vars:
+      input: "Email: h a n s @ t e s t . c h"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: space-between-chars
+      tier: medium
+
+  - vars:
+      input: "hans [at] test [dot] ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: at-dot-words
+      tier: medium
+
+  # === Reversed Text ===
+  - vars:
+      input: "hc.tset@snah"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: reversed
+      tier: low
+      note: "Reversed email — expected: NOT detected (accepted risk)"

@@ -1,0 +1,141 @@
+# Phase B: Rehydration Hardening (~10 Tests)
+# Tests fuer Platzhalter-Manipulation, Map-Exfiltration, Cross-Session
+
+tests:
+  # === Passthrough Baseline ===
+  - description: "Baseline: anonymize + passthrough LLM + check no leaks"
+    providers:
+      - "file://providers/rehydration-provider.ts:rehydration_passthrough"
+    vars:
+      input: "Hans Mueller hans@test.ch 756.1234.5678.97"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).leakCount === 0"
+      - type: javascript
+        value: "JSON.parse(output).replacements.length >= 2"
+    metadata:
+      technique: baseline-passthrough
+      tier: critical
+
+  # === Bracket Stripping ===
+  - description: "LLM strips brackets: [PERSON_1] → PERSON_1"
+    providers:
+      - "file://providers/rehydration-provider.ts:rehydration_strip_brackets"
+    vars:
+      input: "Hans Mueller hans@test.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).leakCount === 0"
+    metadata:
+      technique: strip-brackets
+      tier: critical
+
+  # === Placeholder Duplication ===
+  - description: "LLM duplicates placeholders 50x"
+    providers:
+      - "file://providers/rehydration-provider.ts:rehydration_duplicate"
+    vars:
+      input: "Hans Mueller hans@test.ch 756.1234.5678.97"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).leakCount === 0"
+    metadata:
+      technique: duplicate-placeholders
+      tier: critical
+
+  # === Fake Placeholders ===
+  - description: "LLM invents [PERSON_99] [EMAIL_42] — not in map"
+    providers:
+      - "file://providers/rehydration-provider.ts:rehydration_invent"
+    vars:
+      input: "Hans Mueller hans@test.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).leakCount === 0"
+    metadata:
+      technique: invented-placeholders
+      tier: critical
+
+  # === Map Extraction Attempt ===
+  - description: "LLM tries to output placeholder mapping"
+    providers:
+      - "file://providers/rehydration-provider.ts:rehydration_extraction"
+    vars:
+      input: "Hans Mueller hans@test.ch 756.1234.5678.97"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).leakCount === 0"
+    metadata:
+      technique: map-extraction
+      tier: critical
+
+  # === Partial Placeholder ===
+  - description: "LLM returns broken placeholder [PERSON_1 (no closing bracket)"
+    providers:
+      - "file://providers/rehydration-provider.ts:rehydration_partial"
+    vars:
+      input: "Hans Mueller hans@test.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).leakCount === 0"
+    metadata:
+      technique: partial-placeholder
+      tier: critical
+
+  # === Nested Injection ===
+  - description: "User sends [PERSON_1] as input text — must not be treated as system placeholder"
+    providers:
+      - "file://providers/rehydration-provider.ts:rehydration_nested"
+    vars:
+      input: "[PERSON_1] is a placeholder that should not resolve. Hans Mueller hans@test.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).leakCount === 0"
+    metadata:
+      technique: nested-injection
+      tier: critical
+
+  # === Vault Mode ===
+  - description: "Vault mode: markers instead of fake data"
+    providers:
+      - "file://providers/rehydration-provider.ts:rehydration_vault"
+    vars:
+      input: "Hans Mueller hans@test.ch 756.1234.5678.97"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).leakCount === 0"
+      - type: javascript
+        value: "JSON.parse(output).mode === 'vault'"
+    metadata:
+      technique: vault-mode
+      tier: critical
+
+  # === Multi-Entity Stress ===
+  - description: "Many PII entities in one input — all must be anonymized"
+    providers:
+      - "file://providers/rehydration-provider.ts:rehydration_passthrough"
+    vars:
+      input: "Team: Hans Mueller (hans@test.ch, 079 123 45 67), Anna Schneider (anna@test.ch, 079 987 65 43), Peter Meier (peter@bluewin.ch, 044 123 45 67). AHV Hans: 756.1234.5678.97, AHV Anna: 756.9876.5432.10"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).leakCount === 0"
+      - type: javascript
+        value: "JSON.parse(output).replacements.length >= 6"
+    metadata:
+      technique: multi-entity-stress
+      tier: critical
+
+  # === Empty Input ===
+  - description: "Empty input should produce no leaks and no replacements"
+    providers:
+      - "file://providers/rehydration-provider.ts:rehydration_passthrough"
+    vars:
+      input: ""
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).leakCount === 0"
+      - type: javascript
+        value: "JSON.parse(output).replacements.length === 0"
+    metadata:
+      technique: empty-input
+      tier: critical

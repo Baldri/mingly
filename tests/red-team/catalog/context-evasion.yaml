@@ -1,0 +1,242 @@
+# Phase A: Context Evasion (~25 Tests)
+# PII versteckt in verschiedenen Textformaten
+
+tests:
+  # === In Code-Blocks ===
+  - vars:
+      input: 'email = "hans@test.ch"'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: in-code-assignment
+      tier: critical
+
+  - vars:
+      input: 'const ahv = "756.1234.5678.97";'
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      category: AHV
+      technique: in-js-const
+      tier: critical
+
+  - vars:
+      input: "SELECT * FROM users WHERE email = 'hans@test.ch'"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: in-sql-query
+      tier: critical
+
+  # === In JSON ===
+  - vars:
+      input: '{"name": "Hans Mueller", "ahv": "756.1234.5678.97", "email": "hans@test.ch"}'
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'AHV') && e.some(x => x.category === 'EMAIL')"
+    metadata:
+      category: MULTI
+      technique: in-json-object
+      tier: critical
+
+  - vars:
+      input: '[{"contact": "079 123 45 67"}, {"contact": "hans@bluewin.ch"}]'
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'PHONE') && e.some(x => x.category === 'EMAIL')"
+    metadata:
+      category: MULTI
+      technique: in-json-array
+      tier: high
+
+  # === In Markdown ===
+  - vars:
+      input: "| Name | Email |\n|------|-------|\n| Hans Mueller | hans@test.ch |"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: in-markdown-table
+      tier: critical
+
+  - vars:
+      input: "# Kontakt\n\n- **Name:** Hans Mueller\n- **Tel:** 079 123 45 67"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PHONE')"
+    metadata:
+      category: PHONE
+      technique: in-markdown-list
+      tier: high
+
+  # === In Prosa (narrativer Text) ===
+  - vars:
+      input: "Gestern habe ich Hans Mueller getroffen. Er wohnt in 8001 Zuerich und arbeitet bei der Credit Suisse. Seine Nummer ist 079 123 45 67."
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'PHONE') && e.some(x => x.category === 'LOCATION')"
+    metadata:
+      category: MULTI
+      technique: narrative-text
+      tier: high
+
+  - vars:
+      input: "The patient Hans Mueller, born 15.03.1985, was admitted with symptoms of..."
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'DATE_OF_BIRTH')"
+    metadata:
+      category: DATE_OF_BIRTH
+      technique: medical-context
+      tier: high
+
+  # === In XML/HTML ===
+  - vars:
+      input: "<user><name>Hans Mueller</name><email>hans@test.ch</email></user>"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: in-xml
+      tier: critical
+
+  # === In CSV ===
+  - vars:
+      input: "name,email,phone\nHans Mueller,hans@test.ch,079 123 45 67"
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'EMAIL') && e.some(x => x.category === 'PHONE')"
+    metadata:
+      category: MULTI
+      technique: in-csv
+      tier: critical
+
+  # === In Log-Format ===
+  - vars:
+      input: "[2026-03-16 14:23:01] INFO user=hans@test.ch ip=192.168.1.100 action=login"
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'EMAIL') && e.some(x => x.category === 'IP_ADDRESS')"
+    metadata:
+      category: MULTI
+      technique: in-log-line
+      tier: high
+
+  # === Leetspeak ===
+  - vars:
+      input: "H4ns Mu3ll3r, 3m4il: h4ns@t3st.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: leetspeak
+      tier: low
+      note: "Leetspeak — expected: partially detected (email regex might still match)"
+
+  # === Split ueber Zeilen ===
+  - vars:
+      input: "Name:\nHans Mueller\nEmail:\nhans@test.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: split-over-lines
+      tier: critical
+
+  - vars:
+      input: "AHV-Nr:\n756.1234.\n5678.97"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      category: AHV
+      technique: split-ahv-over-lines
+      tier: critical
+      note: "AHV split across lines — likely NOT detected (newline breaks regex)"
+
+  # === In URL Path ===
+  - vars:
+      input: "Profil: https://example.com/users/hans.mueller"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'URL')"
+    metadata:
+      category: URL
+      technique: name-in-url-path
+      tier: medium
+
+  # === In Concatenation ===
+  - vars:
+      input: "Kontakt: hans + @ + test.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: concatenation-trick
+      tier: low
+      note: "Split email with + operators — expected: NOT detected"
+
+  # === Multiple PII in Single Line ===
+  - vars:
+      input: "Hans Mueller hans@test.ch 756.1234.5678.97 079 123 45 67 4111 1111 1111 1111"
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.length >= 4"
+    metadata:
+      category: MULTI
+      technique: pii-dense-line
+      tier: critical
+      note: "All critical PII in one line — should detect at least 4 entities"
+
+  # === Empty/Edge Cases ===
+  - vars:
+      input: ""
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).detected === 0"
+    metadata:
+      category: NONE
+      technique: empty-input
+      tier: critical
+
+  - vars:
+      input: "Kein PII hier, nur ein normaler Satz ueber das Wetter in der Schweiz."
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).detected === 0"
+    metadata:
+      category: NONE
+      technique: no-pii-text
+      tier: critical
+      note: "False positive check — should detect 0 entities"
+
+  # === Whitespace Variations ===
+  - vars:
+      input: "  hans@test.ch  "
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: padded-whitespace
+      tier: critical
+
+  - vars:
+      input: "AHV:\t756.1234.5678.97"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      category: AHV
+      technique: tab-separated
+      tier: critical

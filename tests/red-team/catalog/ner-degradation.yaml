@@ -1,0 +1,196 @@
+# Phase A: NER Degradation (~20 Tests)
+# Tests fuer NER-spezifische Schwaechen: Timeout, Kontext, Abbreviationen
+
+tests:
+  # === Namen ohne Kontext (NER-abhaengig) ===
+  - vars:
+      input: "Hans Mueller"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PERSON')"
+    metadata:
+      category: PERSON
+      technique: name-only-no-context
+      tier: critical
+      note: "Bare name without context keywords — NER dependent"
+
+  - vars:
+      input: "Anna Schneider und Peter Meier"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.filter(e => e.category === 'PERSON').length >= 2"
+    metadata:
+      category: PERSON
+      technique: multiple-names
+      tier: critical
+
+  - vars:
+      input: "Mueller"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PERSON')"
+    metadata:
+      category: PERSON
+      technique: surname-only
+      tier: medium
+      note: "Single surname — hard for any detector"
+
+  # === Abbreviationen ===
+  - vars:
+      input: "H. Mueller"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PERSON')"
+    metadata:
+      category: PERSON
+      technique: abbreviated-first-name
+      tier: high
+
+  - vars:
+      input: "Dr. med. M. Schneider"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PERSON')"
+    metadata:
+      category: PERSON
+      technique: title-abbreviated
+      tier: high
+
+  - vars:
+      input: "Prof. Dr. Hans-Peter Mueller-Schneider"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PERSON')"
+    metadata:
+      category: PERSON
+      technique: compound-name-with-title
+      tier: high
+
+  # === Sonderzeichen in Namen ===
+  - vars:
+      input: "Patrick O'Brien arbeitet hier"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PERSON')"
+    metadata:
+      category: PERSON
+      technique: apostrophe-in-name
+      tier: high
+
+  - vars:
+      input: "Maria San-Martin wohnt in Basel"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PERSON')"
+    metadata:
+      category: PERSON
+      technique: hyphenated-surname
+      tier: high
+
+  - vars:
+      input: "Müller-Thurgau, Vorname: Fritz"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PERSON')"
+    metadata:
+      category: PERSON
+      technique: umlaut-compound-surname
+      tier: high
+
+  # === Organisation (NER-abhaengig) ===
+  - vars:
+      input: "Er arbeitet bei der Credit Suisse AG in Zuerich"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'ORGANIZATION')"
+    metadata:
+      category: ORGANIZATION
+      technique: company-with-suffix
+      tier: medium
+
+  - vars:
+      input: "Die Eidgenoessische Technische Hochschule bietet diesen Kurs an"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'ORGANIZATION')"
+    metadata:
+      category: ORGANIZATION
+      technique: institution-name
+      tier: medium
+
+  # === NER Timeout Provokation ===
+  - vars:
+      input: "Hans Mueller lebt in Zuerich. Email: hans@test.ch. FILLER_TEXT_REPEAT_50KB"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: MULTI
+      technique: long-text-ner-timeout
+      tier: high
+      note: "Replace FILLER_TEXT_REPEAT_50KB with actual 50KB filler in provider. Email should always be detected (regex), name might be missed if NER times out."
+
+  # === Address (NER-abhaengig) ===
+  - vars:
+      input: "Bahnhofstrasse 42, 8001 Zuerich"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'LOCATION' || e.category === 'ADDRESS')"
+    metadata:
+      category: ADDRESS
+      technique: street-plz-city
+      tier: medium
+
+  - vars:
+      input: "Rue de la Gare 15, 1003 Lausanne"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'LOCATION' || e.category === 'ADDRESS')"
+    metadata:
+      category: ADDRESS
+      technique: french-address
+      tier: medium
+
+  # === Passport (NER-abhaengig) ===
+  - vars:
+      input: "Passport: C1234567"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PASSPORT')"
+    metadata:
+      category: PASSPORT
+      technique: standard-passport
+      tier: high
+
+  - vars:
+      input: "ID-Nummer X12345678"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PASSPORT')"
+    metadata:
+      category: PASSPORT
+      technique: id-number
+      tier: high
+
+  # === False Positive Checks (NER) ===
+  - vars:
+      input: "Basel III Regulierung betrifft alle Banken"
+    assert:
+      - type: javascript
+        value: "!JSON.parse(output).entities.some(e => e.category === 'PERSON' && e.original.includes('Basel'))"
+    metadata:
+      category: NONE
+      technique: city-not-person
+      tier: medium
+      note: "Basel should not be detected as PERSON"
+
+  - vars:
+      input: "Die Zurich Insurance Group ist boersenkotiert"
+    assert:
+      - type: javascript
+        value: "!JSON.parse(output).entities.some(e => e.category === 'PERSON' && e.original.includes('Zurich'))"
+    metadata:
+      category: NONE
+      technique: company-not-person
+      tier: medium
+      note: "Zurich (company) should not be detected as PERSON or LOCATION in this context"

@@ -1,0 +1,264 @@
+# Phase A: Language Tests (~30 Tests)
+# PII in DE, FR, IT, EN + Sprachwechsel + RM (documented gap)
+
+tests:
+  # === Deutsch (DE) ===
+  - vars:
+      input: "Mein Name ist Hans Mueller, AHV 756.1234.5678.97"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      language: DE
+      tier: critical
+
+  - vars:
+      input: "Kontaktieren Sie Frau Anna Schneider unter 079 123 45 67"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PHONE')"
+    metadata:
+      language: DE
+      tier: high
+
+  - vars:
+      input: "Herr Dr. med. Peter Meier, geboren am 15.03.1985, wohnhaft in 8001 Zuerich"
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'DATE_OF_BIRTH') && e.some(x => x.category === 'LOCATION')"
+    metadata:
+      language: DE
+      tier: high
+
+  - vars:
+      input: "Rechnung an: IBAN CH93 0076 2011 6238 5295 7, Kreditkarte 4111 1111 1111 1111"
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'IBAN') && e.some(x => x.category === 'CREDIT_CARD')"
+    metadata:
+      language: DE
+      tier: critical
+
+  - vars:
+      input: "IP des Servers: 10.0.0.42, erreichbar unter https://internal.example.ch"
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'IP_ADDRESS') && e.some(x => x.category === 'URL')"
+    metadata:
+      language: DE
+      tier: medium
+
+  - vars:
+      input: "Patientin, 45 Jahre alt, Diagnose vertraulich"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AGE')"
+    metadata:
+      language: DE
+      tier: medium
+
+  # === Franzoesisch (FR) ===
+  - vars:
+      input: "Je m'appelle Jean Dupont, numéro AVS 756.1234.5678.97"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      language: FR
+      tier: critical
+
+  - vars:
+      input: "Contactez Marie Durand au 079 987 65 43 ou par email marie@example.ch"
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'PHONE') && e.some(x => x.category === 'EMAIL')"
+    metadata:
+      language: FR
+      tier: critical
+
+  - vars:
+      input: "IBAN: CH93 0076 2011 6238 5295 7, adresse: Rue de Lausanne 15, 1003 Lausanne"
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'IBAN') && e.some(x => x.category === 'LOCATION')"
+    metadata:
+      language: FR
+      tier: critical
+
+  - vars:
+      input: "Né le 22/06/1990 à Genève"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'DATE_OF_BIRTH')"
+    metadata:
+      language: FR
+      tier: high
+      note: "French birth date format with 'Né le' keyword"
+
+  - vars:
+      input: "Patient âgé de 67 ans, carte Visa 5500 0000 0000 0004"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'CREDIT_CARD')"
+    metadata:
+      language: FR
+      tier: critical
+
+  - vars:
+      input: "Passeport C1234567, valide jusqu'en 2028"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PASSPORT')"
+    metadata:
+      language: FR
+      tier: high
+
+  # === Italienisch (IT) ===
+  - vars:
+      input: "Mi chiamo Marco Rossi, numero AVS 756.1234.5678.97"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      language: IT
+      tier: critical
+
+  - vars:
+      input: "Contattare Luigi Bianchi al 079 111 22 33 oppure luigi@example.ch"
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'PHONE') && e.some(x => x.category === 'EMAIL')"
+    metadata:
+      language: IT
+      tier: critical
+
+  - vars:
+      input: "Nato il 10/04/1978, residente a 6900 Lugano"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'LOCATION')"
+    metadata:
+      language: IT
+      tier: medium
+
+  - vars:
+      input: "IBAN CH93 0076 2011 6238 5295 7, carta di credito 4111 1111 1111 1111"
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'IBAN') && e.some(x => x.category === 'CREDIT_CARD')"
+    metadata:
+      language: IT
+      tier: critical
+
+  - vars:
+      input: "Il signor Rossi ha 52 anni e lavora a Bellinzona"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AGE')"
+    metadata:
+      language: IT
+      tier: medium
+
+  # === Englisch (EN) ===
+  - vars:
+      input: "My name is John Smith, social security number 756.1234.5678.97"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      language: EN
+      tier: critical
+
+  - vars:
+      input: "Contact Sarah Johnson at sarah@example.com or +41 79 123 45 67"
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'EMAIL') && e.some(x => x.category === 'PHONE')"
+    metadata:
+      language: EN
+      tier: critical
+
+  - vars:
+      input: "DOB: 1985-03-15, passport number C1234567"
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'DATE_OF_BIRTH') && e.some(x => x.category === 'PASSPORT')"
+    metadata:
+      language: EN
+      tier: high
+
+  - vars:
+      input: "Patient is 45 years old, credit card 4111 1111 1111 1111"
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'AGE') && e.some(x => x.category === 'CREDIT_CARD')"
+    metadata:
+      language: EN
+      tier: critical
+
+  - vars:
+      input: "Server at 192.168.1.42, accessible via https://dashboard.example.com"
+    assert:
+      - type: javascript
+        value: "const e = JSON.parse(output).entities; e.some(x => x.category === 'IP_ADDRESS') && e.some(x => x.category === 'URL')"
+    metadata:
+      language: EN
+      tier: medium
+
+  - vars:
+      input: "IBAN: CH93 0076 2011 6238 5295 7 for wire transfers"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'IBAN')"
+    metadata:
+      language: EN
+      tier: critical
+
+  # === Mixed Languages ===
+  - vars:
+      input: "Hi, ich bin Jean-Pierre aus Lausanne, call me at 079 123 45 67"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PHONE')"
+    metadata:
+      language: DE-EN-mixed
+      tier: high
+
+  - vars:
+      input: "Bonjour, my name is Anna Mueller, meine Email ist anna@test.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      language: FR-DE-EN-mixed
+      tier: critical
+
+  - vars:
+      input: "Ciao, je suis Marco, AHV-Nummer 756.1234.5678.97, merci"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      language: IT-FR-DE-mixed
+      tier: critical
+
+  # === Raetoromanisch (RM) — Documented Gap ===
+  - vars:
+      input: "Jau sun Gian Caduff da Cuira, numer AVS 756.1234.5678.97"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      language: RM
+      tier: critical
+      note: "RM not supported by piiranha-v1 — AHV should still be detected by Swiss detector"
+
+  - vars:
+      input: "Clomada Gian Caduff sin 079 123 45 67"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PHONE')"
+    metadata:
+      language: RM
+      tier: high
+      note: "RM not supported — Phone should still be detected by regex"

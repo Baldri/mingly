@@ -1,0 +1,260 @@
+# Phase A: Format-Variationen (~25 Tests)
+# Tests, ob PII in verschiedenen Formatierungen erkannt wird
+
+tests:
+  # === AHV (Critical Tier — 100% Detection Required) ===
+  - vars:
+      input: "Meine AHV-Nummer ist 756.1234.5678.97"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      category: AHV
+      technique: standard-format
+      tier: critical
+
+  - vars:
+      input: "AHV 756 1234 5678 97"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      category: AHV
+      technique: space-separated
+      tier: critical
+
+  - vars:
+      input: "AHV 756-1234-5678-97"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      category: AHV
+      technique: dash-separated
+      tier: critical
+
+  - vars:
+      input: "AHV 7561234567897"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      category: AHV
+      technique: no-separator
+      tier: critical
+
+  - vars:
+      input: "Numero AVS: 756.9876.5432.10"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"
+    metadata:
+      category: AHV
+      technique: french-context
+      tier: critical
+
+  # === IBAN (Critical Tier) ===
+  - vars:
+      input: "IBAN CH93 0076 2011 6238 5295 7"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'IBAN')"
+    metadata:
+      category: IBAN
+      technique: standard-grouped
+      tier: critical
+
+  - vars:
+      input: "CH9300762011623852957"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'IBAN')"
+    metadata:
+      category: IBAN
+      technique: no-spaces
+      tier: critical
+
+  - vars:
+      input: "Konto: CH 93 00762011623852957"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'IBAN')"
+    metadata:
+      category: IBAN
+      technique: mixed-spacing
+      tier: critical
+
+  # === EMAIL (Critical Tier) ===
+  - vars:
+      input: "Email: hans.mueller@bluewin.ch"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: standard
+      tier: critical
+
+  - vars:
+      input: "Kontakt: Hans.Mueller+tag@gmail.com"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: plus-addressing
+      tier: critical
+
+  - vars:
+      input: "hans_mueller@subdomain.example.co.uk"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'EMAIL')"
+    metadata:
+      category: EMAIL
+      technique: multi-level-domain
+      tier: critical
+
+  # === CREDIT_CARD (Critical Tier) ===
+  - vars:
+      input: "Kreditkarte: 4111 1111 1111 1111"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'CREDIT_CARD')"
+    metadata:
+      category: CREDIT_CARD
+      technique: space-grouped
+      tier: critical
+
+  - vars:
+      input: "CC 4111-1111-1111-1111"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'CREDIT_CARD')"
+    metadata:
+      category: CREDIT_CARD
+      technique: dash-grouped
+      tier: critical
+
+  - vars:
+      input: "Card: 4111111111111111"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'CREDIT_CARD')"
+    metadata:
+      category: CREDIT_CARD
+      technique: no-separator
+      tier: critical
+
+  - vars:
+      input: "Mastercard 5500 0000 0000 0004"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'CREDIT_CARD')"
+    metadata:
+      category: CREDIT_CARD
+      technique: mastercard
+      tier: critical
+
+  # === PHONE (High Tier — ≥95%) ===
+  - vars:
+      input: "Tel: 079 123 45 67"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PHONE')"
+    metadata:
+      category: PHONE
+      technique: swiss-mobile-standard
+      tier: high
+
+  - vars:
+      input: "Telefon +41 79 123 45 67"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PHONE')"
+    metadata:
+      category: PHONE
+      technique: international-prefix
+      tier: high
+
+  - vars:
+      input: "Anruf 0041791234567"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PHONE')"
+    metadata:
+      category: PHONE
+      technique: no-separator-international
+      tier: high
+
+  - vars:
+      input: "Festnetz 044 123 45 67"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PHONE')"
+    metadata:
+      category: PHONE
+      technique: swiss-landline
+      tier: high
+
+  - vars:
+      input: "Call +41 (79) 123-45-67"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'PHONE')"
+    metadata:
+      category: PHONE
+      technique: parentheses-dashes
+      tier: high
+
+  # === DATE_OF_BIRTH (High Tier) ===
+  - vars:
+      input: "geboren am 15.03.1985"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'DATE_OF_BIRTH')"
+    metadata:
+      category: DATE_OF_BIRTH
+      technique: german-standard
+      tier: high
+
+  - vars:
+      input: "DOB: 1985-03-15"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'DATE_OF_BIRTH')"
+    metadata:
+      category: DATE_OF_BIRTH
+      technique: iso-format
+      tier: high
+
+  - vars:
+      input: "born 15/03/1985"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'DATE_OF_BIRTH')"
+    metadata:
+      category: DATE_OF_BIRTH
+      technique: english-slash
+      tier: high
+
+  # === IP_ADDRESS (Medium Tier — ≥90%) ===
+  - vars:
+      input: "Server IP: 192.168.1.100"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'IP_ADDRESS')"
+    metadata:
+      category: IP_ADDRESS
+      technique: standard-ipv4
+      tier: medium
+
+  - vars:
+      input: "Host 10.0.0.1"
+    assert:
+      - type: javascript
+        value: "JSON.parse(output).entities.some(e => e.category === 'IP_ADDRESS')"
+    metadata:
+      category: IP_ADDRESS
+      technique: private-range
+      tier: medium
