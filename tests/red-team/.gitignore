@@ -1,2 +1,3 @@
-results/
-*.html
+results/*.json
+results/*.html
+!results/*-summary.md
