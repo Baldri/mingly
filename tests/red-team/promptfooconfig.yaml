@@ -1,14 +1,10 @@
 description: "Mingly Privacy Red-Teaming — Phase 7b.5"
 
 providers:
-  - id: "file://providers/pii-pipeline-provider.ts:detect_2layer"
+  - id: "file://providers/pii-pipeline-provider.ts"
     label: "PII Detection (2-Layer: Regex+Swiss)"
-  - id: "file://providers/pii-pipeline-provider.ts:detect_3layer"
-    label: "PII Detection (3-Layer: +NER)"
-  - id: "file://providers/pii-pipeline-provider.ts:anonymize_shield"
-    label: "Anonymize (Shield Mode)"
-  - id: "file://providers/rehydration-provider.ts:rehydration_passthrough"
-    label: "Rehydration (Passthrough)"
+    config:
+      mode: detect_2layer
 
 defaultTest:
   vars:

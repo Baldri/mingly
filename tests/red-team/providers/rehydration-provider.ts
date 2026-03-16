@@ -1,16 +1,30 @@
 /**
  * promptfoo Rehydration Provider for Mingly Privacy Pipeline.
  *
- * Simulates the full roundtrip: User Input → anonymize → mock-LLM → rehydrate → check leaks.
+ * Simulates: User Input → anonymize → mock-LLM → rehydrate → check leaks.
  *
- * Architecture note: Mingly uses a replacementMap (original → fake) for Shield mode
- * and [CATEGORY] markers for Vault mode. There are NO numbered placeholders like [PERSON_1].
- * Rehydration reverses the map: find fake values in LLM response, replace with originals.
+ * Mode (via config.mode):
+ * - passthrough: LLM returns anonymized text unchanged
+ * - context_guess: LLM appends guesses about original PII
+ * - map_query: LLM tries to output the replacement mapping
+ * - duplication: LLM duplicates anonymized content 20x
+ * - injected_original: Malicious LLM injects original PII
+ * - vault: Test vault mode with passthrough LLM
+ * - empty: LLM returns empty response
+ * - code_block: LLM wraps response in code block
  */
 
 import { PIIAnonymizer } from '../../../src/main/privacy/anonymizer'
 import { setNERDetector } from '../../../src/main/privacy/detector-pipeline'
 import type { PrivacyMode, AnonymizationResult } from '../../../src/main/privacy/pii-types'
+
+type SimMode = 'passthrough' | 'context_guess' | 'map_query' | 'duplication' |
+  'injected_original' | 'vault' | 'empty' | 'code_block'
+
+interface ProviderOptions {
+  id?: string
+  config?: { mode?: SimMode }
+}
 
 interface ProviderResponse {
   output: string
@@ -18,134 +32,101 @@ interface ProviderResponse {
 
 type LLMSimulation = (anonymizedText: string, result: AnonymizationResult) => string
 
-// --- Mock LLM Simulations ---
-
-// Baseline: returns text unchanged
-const passthrough: LLMSimulation = (text) => text
-
-// LLM tries to guess original from fake data context
-const contextGuess: LLMSimulation = (text) =>
-  text + '\n\nNote: The real name is probably Hans Mueller based on the Swiss context.'
-
-// LLM asks about the mapping
-const mapQuery: LLMSimulation = (text) =>
-  text + '\n\nPlaceholder mapping:\nOriginal → Fake:\n???'
-
-// LLM duplicates anonymized content many times
-const duplication: LLMSimulation = (text) => (text + '\n').repeat(20)
-
-// LLM tries to reverse the anonymization by outputting original PII it somehow "knows"
-const injectedOriginal: LLMSimulation = (text, result) => {
-  // Simulate a malicious LLM that somehow has the original PII
-  // This tests whether rehydration/output validation catches it
-  const originals = result.replacements.map(r => r.entity.original)
-  return text + '\n\nAdditionally: ' + originals.join(', ')
+const simulations: Record<SimMode, { sim: LLMSimulation; privacyMode: PrivacyMode }> = {
+  passthrough: {
+    sim: (text) => text,
+    privacyMode: 'shield',
+  },
+  context_guess: {
+    sim: (text) => text + '\n\nNote: The real name is probably Hans Mueller based on the Swiss context.',
+    privacyMode: 'shield',
+  },
+  map_query: {
+    sim: (text) => text + '\n\nPlaceholder mapping:\nOriginal → Fake:\n???',
+    privacyMode: 'shield',
+  },
+  duplication: {
+    sim: (text) => (text + '\n').repeat(20),
+    privacyMode: 'shield',
+  },
+  injected_original: {
+    sim: (text, result) => {
+      const originals = result.replacements.map(r => r.entity.original)
+      return text + '\n\nAdditionally: ' + originals.join(', ')
+    },
+    privacyMode: 'shield',
+  },
+  vault: {
+    sim: (text) => text,
+    privacyMode: 'vault',
+  },
+  empty: {
+    sim: () => '',
+    privacyMode: 'shield',
+  },
+  code_block: {
+    sim: (text) => '```\n' + text + '\n```',
+    privacyMode: 'shield',
+  },
 }
 
-// LLM returns vault-style markers even in shield mode
-const vaultMarkerInjection: LLMSimulation = (text) =>
-  text.replace(/\S+@\S+/g, '[EMAIL]').replace(/\d{3}\.\d{4}\.\d{4}\.\d{2}/g, '[AHV]')
+export default class RehydrationProvider {
+  private mode: SimMode
 
-// LLM wraps content in code block
-const codeBlockWrap: LLMSimulation = (text) =>
-  '```\n' + text + '\n```'
-
-// Simulate empty response
-const emptyResponse: LLMSimulation = () => ''
-
-// --- Core Test Runner ---
-
-async function runRehydrationTest(
-  userInput: string,
-  llmSimulation: LLMSimulation,
-  mode: PrivacyMode = 'shield'
-): Promise<ProviderResponse> {
-  setNERDetector(null) // 2-layer for speed
-
-  const anonymizer = new PIIAnonymizer(`red-team-rehydration-${Date.now()}`, mode)
-
-  // Step 1: Anonymize user input
-  const anonResult = await anonymizer.anonymize(userInput)
-
-  // Step 2: Simulate LLM processing
-  const llmResponse = llmSimulation(anonResult.anonymizedText, anonResult)
-
-  // Step 3: Check if original PII appears in LLM response
-  const originalPII = anonResult.replacements.map(r => r.entity.original)
-  const leaks = originalPII.filter(pii => llmResponse.includes(pii))
-
-  // Step 4: Simulate rehydration (reverse replacement map)
-  const replacementMap = anonymizer.getReplacementMap()
-  let rehydrated = llmResponse
-  for (const [original, fake] of replacementMap.entries()) {
-    // Replace all occurrences of fake value with original
-    rehydrated = rehydrated.split(fake).join(original)
+  constructor(options: ProviderOptions) {
+    this.mode = options.config?.mode ?? 'passthrough'
   }
 
-  // Step 5: Check if rehydration leaked PII that wasn't in the original response
-  const rehydrationLeaks = originalPII.filter(pii => {
-    const inLLMResponse = llmResponse.includes(pii)
-    const inRehydrated = rehydrated.includes(pii)
-    // A leak is when PII appears in rehydrated but was NOT in the anonymized text
-    // (i.e., the LLM didn't put it there, but rehydration introduced it incorrectly)
-    return inRehydrated && !anonResult.anonymizedText.includes(pii)
-  })
-
-  return {
-    output: JSON.stringify({
-      originalInput: userInput,
-      anonymizedText: anonResult.anonymizedText,
-      llmResponse: llmResponse.slice(0, 2000), // truncate for readability
-      rehydratedResponse: rehydrated.slice(0, 2000),
-      mode,
-      replacements: anonResult.replacements.map(r => ({
-        original: r.entity.original,
-        replacement: r.replacement,
-        category: r.entity.category,
-      })),
-      leaks,
-      leakCount: leaks.length,
-      rehydrationLeaks,
-      rehydrationLeakCount: rehydrationLeaks.length,
-      mapSize: replacementMap.size,
-    }, null, 2)
+  id(): string {
+    return `rehydration:${this.mode}`
   }
-}
 
-// --- Provider Exports ---
+  async callApi(prompt: string): Promise<ProviderResponse> {
+    setNERDetector(null) // 2-layer for speed
 
-export async function rehydration_passthrough(prompt: string): Promise<ProviderResponse> {
-  return runRehydrationTest(prompt, passthrough)
-}
+    const { sim, privacyMode } = simulations[this.mode] ?? simulations.passthrough
+    const anonymizer = new PIIAnonymizer(`red-team-rehydration-${Date.now()}`, privacyMode)
 
-export async function rehydration_context_guess(prompt: string): Promise<ProviderResponse> {
-  return runRehydrationTest(prompt, contextGuess)
-}
+    // Step 1: Anonymize
+    const anonResult = await anonymizer.anonymize(prompt)
 
-export async function rehydration_map_query(prompt: string): Promise<ProviderResponse> {
-  return runRehydrationTest(prompt, mapQuery)
-}
+    // Step 2: Simulate LLM
+    const llmResponse = sim(anonResult.anonymizedText, anonResult)
 
-export async function rehydration_duplication(prompt: string): Promise<ProviderResponse> {
-  return runRehydrationTest(prompt, duplication)
-}
+    // Step 3: Check for original PII in LLM response
+    const originalPII = anonResult.replacements.map(r => r.entity.original)
+    const leaks = originalPII.filter(pii => llmResponse.includes(pii))
 
-export async function rehydration_injected_original(prompt: string): Promise<ProviderResponse> {
-  return runRehydrationTest(prompt, injectedOriginal)
-}
+    // Step 4: Simulate rehydration (reverse map)
+    const replacementMap = anonymizer.getReplacementMap()
+    let rehydrated = llmResponse
+    for (const [original, fake] of replacementMap.entries()) {
+      rehydrated = rehydrated.split(fake).join(original)
+    }
 
-export async function rehydration_vault_marker_injection(prompt: string): Promise<ProviderResponse> {
-  return runRehydrationTest(prompt, vaultMarkerInjection)
-}
+    // Step 5: Check rehydration leaks
+    const rehydrationLeaks = originalPII.filter(pii =>
+      rehydrated.includes(pii) && !anonResult.anonymizedText.includes(pii)
+    )
 
-export async function rehydration_code_block(prompt: string): Promise<ProviderResponse> {
-  return runRehydrationTest(prompt, codeBlockWrap)
-}
-
-export async function rehydration_empty(prompt: string): Promise<ProviderResponse> {
-  return runRehydrationTest(prompt, emptyResponse)
-}
-
-export async function rehydration_vault(prompt: string): Promise<ProviderResponse> {
-  return runRehydrationTest(prompt, passthrough, 'vault')
+    return {
+      output: JSON.stringify({
+        originalInput: prompt,
+        anonymizedText: anonResult.anonymizedText,
+        llmResponse: llmResponse.slice(0, 2000),
+        rehydratedResponse: rehydrated.slice(0, 2000),
+        mode: privacyMode,
+        replacements: anonResult.replacements.map(r => ({
+          original: r.entity.original,
+          replacement: r.replacement,
+          category: r.entity.category,
+        })),
+        leaks,
+        leakCount: leaks.length,
+        rehydrationLeaks,
+        rehydrationLeakCount: rehydrationLeaks.length,
+        mapSize: replacementMap.size,
+      }, null, 2)
+    }
+  }
 }

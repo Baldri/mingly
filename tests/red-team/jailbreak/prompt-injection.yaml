@@ -3,8 +3,10 @@
 # Provider: anonymize_shield — checks that PII is anonymized regardless of instructions
 
 providers:
-  - id: "file://providers/pii-pipeline-provider.ts:anonymize_shield"
+  - id: "file://providers/pii-pipeline-provider.ts"
     label: "Anonymize (Shield Mode)"
+    config:
+      mode: anonymize_shield
 
 tests:
   # === Direkte Anweisungen ===

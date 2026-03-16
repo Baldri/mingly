@@ -1,21 +1,31 @@
 /**
  * promptfoo Custom Provider for Mingly PII Pipeline.
  *
- * Calls detectPII() and PIIAnonymizer.anonymize() directly (Node.js, no Electron).
- * Two modes: detect (entities) and anonymize (full anonymization).
- * NER toggle via setNERDetector(null) for 2-layer vs 3-layer testing.
+ * Uses the promptfoo ApiProvider class interface (default export).
+ * Mode is configured via the `config.mode` option in promptfooconfig.yaml.
+ *
+ * Supported modes:
+ * - detect_2layer: Regex + Swiss only (NER disabled)
+ * - detect_3layer: Regex + Swiss + NER (requires model on disk)
+ * - anonymize_shield: Full anonymization with fake CH data
+ * - anonymize_vault: Full anonymization with [CATEGORY] markers
  */
 
 import { detectPII, setNERDetector } from '../../../src/main/privacy/detector-pipeline'
 import { PIIAnonymizer } from '../../../src/main/privacy/anonymizer'
 import type { PIIEntity, DetectionResult, AnonymizationResult } from '../../../src/main/privacy/pii-types'
 
+type Mode = 'detect_2layer' | 'detect_3layer' | 'anonymize_shield' | 'anonymize_vault'
+
+interface ProviderOptions {
+  id?: string
+  config?: { mode?: Mode }
+}
+
 interface ProviderResponse {
   output: string
   tokenUsage?: { total: number }
 }
-
-// --- Helpers ---
 
 function formatDetectionResult(result: DetectionResult): string {
   return JSON.stringify({
@@ -36,11 +46,9 @@ function formatAnonymizationResult(
   result: AnonymizationResult,
   originalPII: string[]
 ): string {
-  // Check for PII leaks in anonymized output
   const leaks = originalPII.filter(pii =>
     result.anonymizedText.includes(pii)
   )
-
   return JSON.stringify({
     anonymizedText: result.anonymizedText,
     mode: result.mode,
@@ -56,47 +64,48 @@ function formatAnonymizationResult(
   }, null, 2)
 }
 
-// --- Provider Exports ---
+export default class PiiPipelineProvider {
+  private mode: Mode
 
-/**
- * 2-Layer Detection (Regex + Swiss only, NER disabled).
- */
-export async function detect_2layer(prompt: string): Promise<ProviderResponse> {
-  setNERDetector(null)
-  const result = await detectPII(prompt)
-  return { output: formatDetectionResult(result) }
-}
+  constructor(options: ProviderOptions) {
+    this.mode = options.config?.mode ?? 'detect_2layer'
+  }
 
-/**
- * 3-Layer Detection (Regex + Swiss + NER).
- * Requires piiranha-v1 model at ~/.mingly/models/.
- */
-export async function detect_3layer(prompt: string): Promise<ProviderResponse> {
-  // Reset to default NER singleton (will lazy-init from model on disk)
-  // Note: calling setNERDetector with a fresh instance would require NERModelManager
-  // For now, we rely on the default singleton behavior
-  const result = await detectPII(prompt)
-  return { output: formatDetectionResult(result) }
-}
+  id(): string {
+    return `pii-pipeline:${this.mode}`
+  }
 
-/**
- * Anonymize in Shield mode (fake CH data).
- */
-export async function anonymize_shield(prompt: string): Promise<ProviderResponse> {
-  setNERDetector(null)
-  const anonymizer = new PIIAnonymizer(`red-team-${Date.now()}`, 'shield')
-  const result = await anonymizer.anonymize(prompt)
-  const originalPII = result.replacements.map(r => r.entity.original)
-  return { output: formatAnonymizationResult(result, originalPII) }
-}
+  async callApi(prompt: string): Promise<ProviderResponse> {
+    switch (this.mode) {
+      case 'detect_2layer': {
+        setNERDetector(null)
+        const result = await detectPII(prompt)
+        return { output: formatDetectionResult(result) }
+      }
 
-/**
- * Anonymize in Vault mode ([CATEGORY] markers).
- */
-export async function anonymize_vault(prompt: string): Promise<ProviderResponse> {
-  setNERDetector(null)
-  const anonymizer = new PIIAnonymizer(`red-team-${Date.now()}`, 'vault')
-  const result = await anonymizer.anonymize(prompt)
-  const originalPII = result.replacements.map(r => r.entity.original)
-  return { output: formatAnonymizationResult(result, originalPII) }
+      case 'detect_3layer': {
+        const result = await detectPII(prompt)
+        return { output: formatDetectionResult(result) }
+      }
+
+      case 'anonymize_shield': {
+        setNERDetector(null)
+        const anonymizer = new PIIAnonymizer(`red-team-${Date.now()}`, 'shield')
+        const result = await anonymizer.anonymize(prompt)
+        const originalPII = result.replacements.map(r => r.entity.original)
+        return { output: formatAnonymizationResult(result, originalPII) }
+      }
+
+      case 'anonymize_vault': {
+        setNERDetector(null)
+        const anonymizer = new PIIAnonymizer(`red-team-${Date.now()}`, 'vault')
+        const result = await anonymizer.anonymize(prompt)
+        const originalPII = result.replacements.map(r => r.entity.original)
+        return { output: formatAnonymizationResult(result, originalPII) }
+      }
+
+      default:
+        return { output: JSON.stringify({ error: `Unknown mode: ${this.mode}` }) }
+    }
+  }
 }
