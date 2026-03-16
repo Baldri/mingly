@@ -4,23 +4,29 @@ import os from 'os'
 
 export type NERStatus = 'not_downloaded' | 'downloading' | 'ready' | 'error'
 
-const MODEL_ID = 'piiranha/piiranha-v1-detect-personal-information'
-const MODEL_DIR_NAME = 'piiranha-v1'
+const MODEL_ID = 'onnx-community/piiranha-v1-detect-personal-information-ONNX'
+const DEFAULT_BASE_DIR = path.join(os.homedir(), '.mingly', 'models')
 
 export class NERModelManager {
+  private baseDir: string
   private modelDir: string
   private status: NERStatus = 'not_downloaded'
   private downloadProgress = 0
 
   constructor(baseDir?: string) {
-    this.modelDir = baseDir
-      ? path.join(baseDir, MODEL_DIR_NAME)
-      : path.join(os.homedir(), '.mingly', 'models', MODEL_DIR_NAME)
+    this.baseDir = baseDir ?? DEFAULT_BASE_DIR
+    // @xenova/transformers caches in {cacheDir}/{org}/{model-name}/
+    this.modelDir = path.join(this.baseDir, ...MODEL_ID.split('/'))
     this.status = this.checkLocalStatus()
   }
 
   getModelDir(): string {
     return this.modelDir
+  }
+
+  /** Returns the base cache directory (used as env.cacheDir) */
+  getCacheDir(): string {
+    return this.baseDir
   }
 
   getModelId(): string {
@@ -41,13 +47,16 @@ export class NERModelManager {
     this.downloadProgress = 0
 
     try {
-      fs.mkdirSync(path.dirname(this.modelDir), { recursive: true })
+      fs.mkdirSync(this.baseDir, { recursive: true })
 
       const { pipeline, env } = await import('@xenova/transformers')
-      env.cacheDir = path.dirname(this.modelDir)
+      env.cacheDir = this.baseDir
       env.allowRemoteModels = true
 
+      // Use non-quantized (fp32) model for full GIVENNAME/SURNAME detection quality.
+      // Quantized model loses name recognition. fp32 is ~1.15GB but inference is still <50ms.
       const pipe = await pipeline('token-classification', MODEL_ID, {
+        quantized: false,
         progress_callback: (progress: { status: string; loaded?: number; total?: number }) => {
           if (progress.status === 'progress' && progress.total) {
             this.downloadProgress = Math.round(((progress.loaded ?? 0) / progress.total) * 100)

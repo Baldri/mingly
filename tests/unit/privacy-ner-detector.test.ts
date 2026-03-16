@@ -16,8 +16,9 @@ vi.mock('worker_threads', () => {
 vi.mock('../../src/main/privacy/model-manager', () => ({
   NERModelManager: class MockNERModelManager {
     getStatus = vi.fn().mockReturnValue('not_downloaded')
-    getModelDir = vi.fn().mockReturnValue('/tmp/test-models/piiranha-v1')
-    getModelId = vi.fn().mockReturnValue('piiranha/piiranha-v1-detect-personal-information')
+    getModelDir = vi.fn().mockReturnValue('/tmp/test-models/onnx-community/piiranha-v1-detect-personal-information-ONNX')
+    getCacheDir = vi.fn().mockReturnValue('/tmp/test-models')
+    getModelId = vi.fn().mockReturnValue('onnx-community/piiranha-v1-detect-personal-information-ONNX')
   }
 }))
 

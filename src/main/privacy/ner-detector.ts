@@ -93,7 +93,7 @@ export class NERDetector {
       this.worker!.postMessage({
         type: 'init',
         modelId: this.modelManager.getModelId(),
-        cacheDir: path.dirname(this.modelManager.getModelDir())
+        cacheDir: this.modelManager.getCacheDir()
       })
     })
   }

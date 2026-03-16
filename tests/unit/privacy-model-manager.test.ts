@@ -41,19 +41,27 @@ describe('NERModelManager', () => {
   })
 
   it('returns correct model directory path', () => {
-    const expected = path.join(os.homedir(), '.mingly', 'models', 'piiranha-v1')
+    const expected = path.join(
+      os.homedir(), '.mingly', 'models',
+      'onnx-community', 'piiranha-v1-detect-personal-information-ONNX'
+    )
     expect(manager.getModelDir()).toBe(expected)
   })
 
+  it('returns correct cache directory path', () => {
+    const expected = path.join(os.homedir(), '.mingly', 'models')
+    expect(manager.getCacheDir()).toBe(expected)
+  })
+
   it('getModelId returns piiranha model identifier', () => {
-    expect(manager.getModelId()).toBe('piiranha/piiranha-v1-detect-personal-information')
+    expect(manager.getModelId()).toBe('onnx-community/piiranha-v1-detect-personal-information-ONNX')
   })
 
   it('delete removes model directory', () => {
     ;(fs.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(true)
     manager.deleteModel()
     expect(fs.rmSync).toHaveBeenCalledWith(
-      expect.stringContaining('piiranha-v1'),
+      expect.stringContaining('piiranha-v1-detect-personal-information-ONNX'),
       { recursive: true, force: true }
     )
   })
