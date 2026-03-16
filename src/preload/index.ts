@@ -666,7 +666,22 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.PRIVACY_CLEAR_SESSION, sessionId),
 
     detectPII: (text: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.PRIVACY_DETECT_PII, text)
+      ipcRenderer.invoke(IPC_CHANNELS.PRIVACY_DETECT_PII, text),
+
+    nerStatus: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.PRIVACY_NER_STATUS),
+
+    nerDownload: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.PRIVACY_NER_DOWNLOAD),
+
+    nerDelete: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.PRIVACY_NER_DELETE),
+
+    onNerProgress: (callback: (percent: number) => void) => {
+      const listener = (_event: any, percent: number) => callback(percent)
+      ipcRenderer.on('privacy:ner-progress', listener)
+      return () => ipcRenderer.removeListener('privacy:ner-progress', listener)
+    },
   },
 
   // Platform Info

@@ -6,6 +6,7 @@
 import { IPC_CHANNELS } from '../../shared/types'
 import { wrapHandler } from './ipc-utils'
 import { PIIAnonymizer } from '../privacy/anonymizer'
+import { NERDetector } from '../privacy/ner-detector'
 import { PrivacySessionMap } from '../privacy/session-map'
 import { rehydrate } from '../privacy/rehydrator'
 import { detectPII } from '../privacy/detector-pipeline'
@@ -23,6 +24,12 @@ function getOrCreateAnonymizer(sessionId: string, mode: PrivacyMode = 'shield'):
     anonymizers.set(sessionId, anon)
   }
   return anon
+}
+
+let nerDetector: NERDetector | null = null
+function getNERDetector(): NERDetector {
+  if (!nerDetector) nerDetector = new NERDetector()
+  return nerDetector
 }
 
 function getOrCreateSessionMap(sessionId: string): PrivacySessionMap {
@@ -90,6 +97,41 @@ export function registerPrivacyHandlers(): void {
   // Detect PII without anonymizing (for preview/UI)
   wrapHandler(IPC_CHANNELS.PRIVACY_DETECT_PII, async (text: string) => {
     return await detectPII(text)
+  })
+
+  // NER Model Status
+  wrapHandler(IPC_CHANNELS.PRIVACY_NER_STATUS, () => {
+    const ner = getNERDetector()
+    const manager = ner.getModelManager()
+    return {
+      status: manager.getStatus(),
+      progress: manager.getDownloadProgress()
+    }
+  })
+
+  // NER Model Download
+  wrapHandler(IPC_CHANNELS.PRIVACY_NER_DOWNLOAD, async () => {
+    const ner = getNERDetector()
+    const manager = ner.getModelManager()
+    try {
+      await manager.download((percent) => {
+        const { BrowserWindow } = require('electron')
+        BrowserWindow.getAllWindows().forEach((win: any) => {
+          win.webContents.send('privacy:ner-progress', percent)
+        })
+      })
+      return { success: true }
+    } catch (error: unknown) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  // NER Model Delete
+  wrapHandler(IPC_CHANNELS.PRIVACY_NER_DELETE, () => {
+    const ner = getNERDetector()
+    ner.getModelManager().deleteModel()
+    ner.shutdown()
+    return { success: true }
   })
 }
 

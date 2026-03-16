@@ -710,5 +710,8 @@ export const IPC_CHANNELS = {
   PRIVACY_SET_MODE: 'privacy:set-mode',
   PRIVACY_GET_SESSION_MAPPINGS: 'privacy:get-session-mappings',
   PRIVACY_CLEAR_SESSION: 'privacy:clear-session',
-  PRIVACY_DETECT_PII: 'privacy:detect-pii'
+  PRIVACY_DETECT_PII: 'privacy:detect-pii',
+  PRIVACY_NER_STATUS: 'privacy:ner-status',
+  PRIVACY_NER_DOWNLOAD: 'privacy:ner-download',
+  PRIVACY_NER_DELETE: 'privacy:ner-delete',
 } as const
