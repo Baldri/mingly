@@ -36,9 +36,9 @@ function getOrCreateSessionMap(sessionId: string): PrivacySessionMap {
 
 export function registerPrivacyHandlers(): void {
   // Anonymize text (detect PII + replace with fake data or markers)
-  wrapHandler(IPC_CHANNELS.PRIVACY_ANONYMIZE, (sessionId: string, text: string) => {
+  wrapHandler(IPC_CHANNELS.PRIVACY_ANONYMIZE, async (sessionId: string, text: string) => {
     const anon = getOrCreateAnonymizer(sessionId)
-    const result = anon.anonymize(text)
+    const result = await anon.anonymize(text)
 
     // Sync replacements into session map
     const map = getOrCreateSessionMap(sessionId)
@@ -88,8 +88,8 @@ export function registerPrivacyHandlers(): void {
   })
 
   // Detect PII without anonymizing (for preview/UI)
-  wrapHandler(IPC_CHANNELS.PRIVACY_DETECT_PII, (text: string) => {
-    return detectPII(text)
+  wrapHandler(IPC_CHANNELS.PRIVACY_DETECT_PII, async (text: string) => {
+    return await detectPII(text)
   })
 }
 

@@ -101,9 +101,9 @@ export class PIIAnonymizer {
   /**
    * Detect and anonymize PII in the given text.
    */
-  anonymize(text: string): AnonymizationResult {
+  async anonymize(text: string): Promise<AnonymizationResult> {
     const startTime = performance.now()
-    const detection = detectPII(text)
+    const detection = await detectPII(text)
 
     if (this.mode === 'transparent' || detection.entities.length === 0) {
       return {
