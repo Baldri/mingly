@@ -37,7 +37,20 @@ Die Kosten haengen vom gewaehlten KI-Anbieter und Modell ab. Richtwerte pro 1 Mi
 
 Ja. Unter *Einstellungen > Budget* koennen Sie monatliche Limits setzen. Mingly warnt Sie, bevor das Limit erreicht wird.
 
-## Datenschutz
+## Datenschutz & Swiss AI Privacy
+
+### Was ist Swiss AI Privacy?
+
+Swiss AI Privacy ist Mingly's Kernversprechen: Ihre persoenlichen Daten werden automatisch erkannt und geschuetzt, bevor sie an Cloud-KI-Anbieter gesendet werden. Namen, Adressen, Gesundheitsdaten und Finanzinformationen werden on-device anonymisiert — die KI sieht nur Platzhalter, die Antwort wird fuer Sie wieder mit den echten Daten angereichert.
+
+### Welche Privacy-Modi gibt es?
+
+Mingly bietet 4 Privacy-Modi:
+
+- **Shield**: Persoenliche Daten werden automatisch anonymisiert, bevor sie die Cloud erreichen. Antworten werden re-hydriert.
+- **Vault**: PII wird komplett blockiert — Nachrichten mit erkannten persoenlichen Daten werden nicht gesendet.
+- **Transparent**: Sie sehen, welche Daten erkannt wurden, und entscheiden selbst.
+- **Local Only**: Alles bleibt auf Ihrem Geraet — nur lokale Modelle (Ollama).
 
 ### Wo werden meine Daten gespeichert?
 
@@ -45,16 +58,17 @@ Alle Gespraeche, Einstellungen und die Wissensdatenbank werden ausschliesslich a
 
 ### Werden meine Chats an die KI-Anbieter gesendet?
 
-Ja, Ihre Nachrichten werden an den jeweiligen KI-Anbieter (z.B. Anthropic, OpenAI) gesendet, um eine Antwort zu erhalten. Das ist fuer die Funktionsweise erforderlich. Ausnahme: Mit Ollama bleibt alles lokal.
+Ja, Ihre Nachrichten werden an den jeweiligen KI-Anbieter (z.B. Anthropic, OpenAI) gesendet, um eine Antwort zu erhalten. Das ist fuer die Funktionsweise erforderlich. Im Shield-Modus werden persoenliche Daten vorher automatisch anonymisiert. Mit Ollama oder im Local-Only-Modus bleibt alles lokal.
 
-### Ist Mingly DSGVO-konform?
+### Ist Mingly DSGVO/nDSG-konform?
 
-Mingly bietet Funktionen fuer DSGVO-Konformitaet:
+Mingly bietet Funktionen fuer DSGVO- und nDSG-Konformitaet:
 
+- **PII-Anonymisierung**: Persoenliche Daten werden on-device erkannt und geschuetzt (piiranha-v1, 400M ONNX)
 - **Datenexport**: Alle Ihre Daten als Datei exportieren
 - **Datenloeschung**: Alle Ihre Daten vollstaendig entfernen
 - **Keine Telemetrie**: Keine Nutzungsdaten werden gesammelt
-- **Sensible-Daten-Erkennung**: Warnt vor versehentlichem Senden von Passwoertern
+- **Schweizer Firma**: Entwickelt von digital opua GmbH, Walchwil, Schweiz
 
 ### Wie sicher sind meine API-Schluessel?
 

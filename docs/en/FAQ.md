@@ -37,7 +37,20 @@ Costs depend on the AI provider and model. Approximate pricing per 1 million tok
 
 Yes. Under *Settings > Budget*, you can set monthly limits. Mingly warns you before the limit is reached.
 
-## Privacy
+## Privacy & Swiss AI Privacy
+
+### What is Swiss AI Privacy?
+
+Swiss AI Privacy is Mingly's core promise: your personal data is automatically detected and protected before it reaches cloud AI providers. Names, addresses, health data, and financial information are anonymized on-device — the AI only sees placeholders, and the response is rehydrated with real data for you.
+
+### What privacy modes are available?
+
+Mingly offers 4 privacy modes:
+
+- **Shield**: Personal data is automatically anonymized before reaching the cloud. Responses are rehydrated.
+- **Vault**: PII is blocked entirely — messages with detected personal data are not sent.
+- **Transparent**: You see what data was detected and decide yourself.
+- **Local Only**: Everything stays on your device — local models only (Ollama).
 
 ### Where is my data stored?
 
@@ -45,16 +58,17 @@ All conversations, settings, and the knowledge base are stored exclusively on yo
 
 ### Are my chats sent to AI providers?
 
-Yes, your messages are sent to the respective AI provider (e.g., Anthropic, OpenAI) to generate a response. This is required for the service to work. Exception: With Ollama, everything stays local.
+Yes, your messages are sent to the respective AI provider (e.g., Anthropic, OpenAI) to generate a response. This is required for the service to work. In Shield mode, personal data is automatically anonymized first. With Ollama or in Local Only mode, everything stays local.
 
-### Is Mingly GDPR-compliant?
+### Is Mingly GDPR/nDSG-compliant?
 
-Mingly includes features for GDPR compliance:
+Mingly includes features for GDPR and Swiss nDSG compliance:
 
+- **PII anonymization**: Personal data detected and protected on-device (piiranha-v1, 400M ONNX model)
 - **Data export**: Export all your data as a file
 - **Data deletion**: Completely remove all your data
 - **No telemetry**: No usage data is collected
-- **Sensitive data detection**: Warns before accidentally sending passwords
+- **Swiss-made**: Built by digital opua GmbH, Walchwil, Switzerland
 
 ### How secure are my API keys?
 

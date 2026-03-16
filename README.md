@@ -1,12 +1,12 @@
 # Mingly
 
-**Mingle with all AI minds in one place.**
+**Swiss AI Privacy — Use AI without giving up your data.**
 
 [![CI](https://github.com/Baldri/mingly/actions/workflows/ci.yml/badge.svg)](https://github.com/Baldri/mingly/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Website](https://img.shields.io/badge/Website-mingly.ch-6366f1)](https://mingly.ch)
 
-Mingly gives you unified access to Claude, ChatGPT, Gemini, and local LLMs in a single privacy-first desktop app. Use it standalone or deploy as a server for your team.
+Mingly is a privacy-first multi-LLM desktop app from Switzerland. Use Claude, ChatGPT, Gemini, and local LLMs in one interface — with automatic PII protection that keeps your personal data off the cloud. Use it standalone or deploy as a server for your team.
 
 ## Highlights
 
@@ -41,8 +41,14 @@ Mingly gives you unified access to Claude, ChatGPT, Gemini, and local LLMs in a 
 - **DocMind Integration** — MCPO + RAG context injection for document intelligence
 - **Integrations** — Slack, Notion, Obsidian + custom workflows
 
+### Swiss AI Privacy
+- **Automatic PII Protection** — Names, addresses, health data, financial info detected and anonymized before reaching cloud APIs
+- **4 Privacy Modes** — Shield (auto-anonymize), Vault (block PII entirely), Transparent (show what's detected), Local Only (nothing leaves your device)
+- **On-Device NER** — piiranha-v1 (400M ONNX model) runs locally for DE+EN entity recognition, no cloud processing
+- **Swiss-Made** — Built by digital opua GmbH, Walchwil, Switzerland. nDSG-aligned, your data stays yours
+
 ### Security & Enterprise
-- **Enterprise Ready** — RBAC, audit logging, budget controls, GDPR/DSG compliance, license activation
+- **Enterprise Ready** — RBAC, audit logging, budget controls, GDPR/nDSG compliance, license activation
 - **Activity Tracking** — Token/cost analytics per provider, daily summaries, budget alerts
 - **Secure** — AES-256-GCM encrypted API keys, IPC input validation, CSP, rate limiting, sensitive data detection
 

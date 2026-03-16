@@ -438,8 +438,8 @@ Q2 2026    Q3 2026    Q4 2026    Q1 2027
                            │
                        Revenue
                     ┌──────────────┐
-                    │ Mingly Pro   │  CHF 9.90/Mo
-                    │ Business     │  CHF 49/Mo pro Seat
+                    │ Mingly Pro   │  CHF 24/Mo
+                    │ Team         │  CHF 69/Mo pro Seat
                     └──────────────┘
 ```
 
@@ -486,6 +486,40 @@ das ist der Upgrade-Grund zu Mingly.
 - Pro fügt Cloud-Provider hinzu, Privacy bleibt aktiv
 - Team/Enterprise fügen organisationsweite Privacy-Policies hinzu
 - **Kein Tier ohne Privacy** — das IST der Brand
+
+### 7.5 Messaging-Pyramide (VERBINDLICH)
+
+> Entscheidung 2026-03-16: "Swiss AI Privacy" ist der Primaer-Claim.
+> "Multi-LLM Client" ist ein Feature, keine Positionierung.
+
+```
+MISSION (Why)
+  KI nutzen, ohne die Privatsphaere aufzugeben.
+
+CLAIM (What)
+  Swiss AI Privacy
+
+VALUE PROPOSITION (How)
+  Der einzige Multi-LLM Desktop Client, der persoenliche Daten
+  automatisch schuetzt — on-device, open source, aus der Schweiz.
+
+REASON TO BELIEVE (Proof)
+  1. On-Device PII-Anonymisierung (piiranha-v1, 400M ONNX, <50ms)
+  2. 4 Privacy Modes (Shield / Vault / Transparent / Local Only)
+  3. Schweizer Firma (digital opua GmbH, Walchwil, nDSG)
+  4. MIT-lizenzierter Core (auditierbar, kein Vertrauen auf Versprechen)
+  5. Proton = Email, Threema = Chat, Mingly = AI (freie Position)
+
+TAGLINE (One-Liner)
+  DE: "Swiss AI Privacy — KI nutzen, Daten behalten."
+  EN: "Swiss AI Privacy — Use AI, keep your data."
+```
+
+**Regeln:**
+- "Swiss AI Privacy" steht IMMER vor "Multi-LLM"
+- README, Website, FAQ, LinkedIn, ProductHunt: Tagline zuerst
+- "Mingle with all AI minds" ist ein Sub-Slogan fuer die Multi-Provider-Feature-Section, NICHT die Hauptpositionierung
+- Jede externe Kommunikation muss mindestens 1 der 5 RTBs enthalten
 
 ---
 
