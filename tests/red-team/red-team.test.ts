@@ -176,13 +176,22 @@ function evaluateAssertion(output: string, assertionCode: string): boolean {
       }
     }
 
-    // Pattern: JSON.parse(output).entities.some(e => e.category === 'X')
+    // Pattern: JSON.parse(output).entities.some(e => e.category === 'X' || e.category === 'Y')
     const someCheck = assertionCode.match(
-      /JSON\.parse\(output\)\.entities\.some\(e\s*=>\s*e\.category\s*===\s*'(\w+)'\)/
+      /JSON\.parse\(output\)\.entities\.some\(e\s*=>\s*(.+)\)/
     )
-    if (someCheck) {
-      const category = someCheck[1]
-      return parsed.entities?.some((e: { category: string }) => e.category === category) === true
+    if (someCheck && !assertionCode.startsWith('!') && !assertionCode.startsWith('const')) {
+      const condition = someCheck[1]
+      const categories: string[] = []
+      const catMatches = condition.matchAll(/e\.category\s*===\s*'(\w+)'/g)
+      for (const m of catMatches) {
+        categories.push(m[1])
+      }
+      if (categories.length > 0) {
+        return parsed.entities?.some((e: { category: string }) =>
+          categories.includes(e.category)
+        ) === true
+      }
     }
 
     // Pattern: !JSON.parse(output).entities.some(e => e.category === 'X' && e.original.includes('Y'))
@@ -212,13 +221,13 @@ function evaluateAssertion(output: string, assertionCode: string): boolean {
       }
     }
 
-    // Pattern: JSON.parse(output).entities.length >= N
+    // Pattern: JSON.parse(output).X.length >= N (entities, replacements, etc.)
     const lengthCheck = assertionCode.match(
-      /JSON\.parse\(output\)\.entities\.length\s*(>=|>|===)\s*(\d+)/
+      /JSON\.parse\(output\)\.(\w+)\.length\s*(>=|>|===)\s*(\d+)/
     )
     if (lengthCheck) {
-      const [, op, countStr] = lengthCheck
-      const count = parsed.entities?.length ?? 0
+      const [, field, op, countStr] = lengthCheck
+      const count = parsed[field]?.length ?? 0
       const expected = Number(countStr)
       switch (op) {
         case '>=': return count >= expected
@@ -252,9 +261,9 @@ function evaluateAssertion(output: string, assertionCode: string): boolean {
       })
     }
 
-    // Pattern: const r = JSON.parse(output); r.X > Y (for rehydration injected_original)
+    // Pattern: const r = JSON.parse(output); r.X > Y (single condition, no &&)
     const constRCheck = assertionCode.match(
-      /^const\s+(\w+)\s*=\s*JSON\.parse\(output\);\s*\1\.(\w+)\s*(===|!==|>=|<=|>|<)\s*(.+)$/
+      /^const\s+(\w+)\s*=\s*JSON\.parse\(output\);\s*\1\.(\w+)\s*(===|!==|>=|<=|>|<)\s*(\d+)$/
     )
     if (constRCheck) {
       const [, , field, op, valueStr] = constRCheck
@@ -268,26 +277,47 @@ function evaluateAssertion(output: string, assertionCode: string): boolean {
       }
     }
 
-    // Pattern with anonymizedText checks
+    // Pattern: const r = JSON.parse(output); compound conditions with &&
     const anonTextCheck = assertionCode.match(
       /const\s+\w+\s*=\s*JSON\.parse\(output\);\s*(.+)/
     )
     if (anonTextCheck) {
       const conditions = anonTextCheck[1]
-      // r.leakCount === 0 && r.anonymizedText.includes('[') && !r.anonymizedText.includes('Hans')
       const parts = conditions.split(/\s*&&\s*/)
       return parts.every((part: string) => {
-        const lcMatch = part.match(/\w+\.leakCount\s*===\s*0/)
-        if (lcMatch) return parsed.leakCount === 0
+        // r.field === N (numeric)
+        const numMatch = part.match(/\w+\.(\w+)\s*(===|!==|>=|<=|>|<)\s*(\d+)/)
+        if (numMatch) {
+          const [, field, op, val] = numMatch
+          const actual = parsed[field]
+          const expected = Number(val)
+          switch (op) {
+            case '===': return actual === expected
+            case '!==': return actual !== expected
+            case '>=': return actual >= expected
+            case '<=': return actual <= expected
+            case '>': return actual > expected
+            case '<': return actual < expected
+          }
+        }
 
-        const includesMatch = part.match(/\w+\.anonymizedText\.includes\('([^']+)'\)/)
-        if (includesMatch) return parsed.anonymizedText?.includes(includesMatch[1])
+        // r.field.includes('X')
+        const includesMatch = part.match(/\w+\.(\w+)\.includes\('([^']+)'\)/)
+        if (includesMatch && !part.startsWith('!')) {
+          return parsed[includesMatch[1]]?.includes(includesMatch[2])
+        }
 
-        const notIncludesMatch = part.match(/!\w+\.anonymizedText\.includes\('([^']+)'\)/)
-        if (notIncludesMatch) return !parsed.anonymizedText?.includes(notIncludesMatch[1])
+        // !r.field.includes('X')
+        const notIncludesMatch = part.match(/!\w+\.(\w+)\.includes\('([^']+)'\)/)
+        if (notIncludesMatch) {
+          return !parsed[notIncludesMatch[1]]?.includes(notIncludesMatch[2])
+        }
 
-        const modeMatch = part.match(/\w+\.mode\s*===\s*'(\w+)'/)
-        if (modeMatch) return parsed.mode === modeMatch[1]
+        // r.mode === 'X'
+        const strMatch = part.match(/\w+\.(\w+)\s*===\s*'(\w+)'/)
+        if (strMatch) {
+          return parsed[strMatch[1]] === strMatch[2]
+        }
 
         return false
       })
@@ -355,7 +385,29 @@ describe('Phase A: PII Bypass — 2-Layer (Regex+Swiss)', () => {
 
 describe('Phase B: Jailbreak — Anonymization Bypass', () => {
   describe('Prompt Injection', () => {
-    runCatalogTests('jailbreak/prompt-injection.yaml', (input) => runAnonymization(input, 'shield'))
+    const tests = loadCatalog('jailbreak/prompt-injection.yaml')
+
+    for (const tc of tests) {
+      const label = tc.description ??
+        `${tc.metadata?.technique ?? 'test'} [${tc.metadata?.tier ?? '?'}]`
+      const technique = tc.metadata?.technique ?? ''
+      const mode = technique.startsWith('vault') ? 'vault' as const : 'shield' as const
+
+      it(label, async () => {
+        const output = await runAnonymization(tc.vars.input, mode)
+
+        for (const assertion of tc.assert) {
+          if (assertion.type === 'javascript') {
+            const passed = evaluateAssertion(output, assertion.value)
+            if (!passed) {
+              const parsed = JSON.parse(output)
+              const detail = `leakCount=${parsed.leakCount ?? '?'}, mode=${parsed.mode}`
+              expect(passed, `Assertion failed: ${assertion.value}\n  ${detail}`).toBe(true)
+            }
+          }
+        }
+      })
+    }
   })
 })
 

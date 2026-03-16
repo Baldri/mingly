@@ -38,7 +38,7 @@ const PATTERNS: RegexPattern[] = [
   // Date of birth patterns (DD.MM.YYYY, DD/MM/YYYY, YYYY-MM-DD)
   {
     category: 'DATE_OF_BIRTH',
-    pattern: /\b(?:geboren|geb\.|Geburtsdatum|born|DOB|date of birth)[:\s]*(\d{1,2}[./]\d{1,2}[./]\d{2,4}|\d{4}-\d{2}-\d{2})\b/gi,
+    pattern: /\b(?:geboren\s+am|geboren|geb\.|Geburtsdatum|né(?:e)?\s+le|born\s+on|born|DOB|date of birth|date de naissance|data di nascita)[:\s]*(\d{1,2}[./]\d{1,2}[./]\d{2,4}|\d{4}-\d{2}-\d{2})\b/gi,
     source: 'regex'
   },
 
@@ -63,6 +63,9 @@ const PATTERNS: RegexPattern[] = [
     source: 'regex'
   }
 ]
+
+/** Email pattern used to extract emails from URLs */
+const EMAIL_IN_URL_PATTERN = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
 
 /**
  * Run all regex patterns against input text and return detected entities.
@@ -94,6 +97,23 @@ export function detectWithRegex(text: string): PIIEntity[] {
         source,
         sensitivity: PII_SENSITIVITY[category]
       })
+
+      // Extract emails embedded in URLs (e.g., ?email=hans@test.ch)
+      if (category === 'URL') {
+        EMAIL_IN_URL_PATTERN.lastIndex = 0
+        let emailMatch: RegExpExecArray | null
+        while ((emailMatch = EMAIL_IN_URL_PATTERN.exec(matchedText)) !== null) {
+          entities.push({
+            category: 'EMAIL',
+            original: emailMatch[0],
+            start: start + emailMatch.index,
+            end: start + emailMatch.index + emailMatch[0].length,
+            confidence: 0.95,
+            source: 'regex',
+            sensitivity: PII_SENSITIVITY.EMAIL
+          })
+        }
+      }
     }
   }
 

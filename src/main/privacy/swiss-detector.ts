@@ -10,7 +10,8 @@ import type { PIIEntity } from './pii-types'
 import { PII_SENSITIVITY } from './pii-types'
 
 /** Swiss AHV number: 756.XXXX.XXXX.XX (with checksum validation) */
-const AHV_PATTERN = /\b756[.\s-]?\d{4}[.\s-]?\d{4}[.\s-]?\d{2}\b/g
+// \s includes newlines — handles AHV split across lines
+const AHV_PATTERN = /\b756[.\s-]{0,3}\d{4}[.\s-]{0,3}\d{4}[.\s-]{0,3}\d{2}\b/g
 
 /** Swiss IBAN: CH followed by 2 check digits + 17 alphanumeric */
 const CH_IBAN_PATTERN = /\bCH\s?\d{2}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{4}\s?\d{1}\b/gi

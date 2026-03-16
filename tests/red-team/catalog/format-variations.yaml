@@ -44,7 +44,7 @@ tests:
       tier: critical
 
   - vars:
-      input: "Numero AVS: 756.9876.5432.10"
+      input: "Numero AVS: 756.9876.5432.17"
     assert:
       - type: javascript
         value: "JSON.parse(output).entities.some(e => e.category === 'AHV')"

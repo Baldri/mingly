@@ -8,6 +8,7 @@ import type { PIIEntity, PIICategory, DetectionResult } from './pii-types'
 import { detectWithRegex } from './regex-detector'
 import { detectSwissPII } from './swiss-detector'
 import { NERDetector } from './ner-detector'
+import { preprocessText } from './text-preprocessor'
 
 // Singleton NER detector — initialized lazily
 let nerDetector: NERDetector | null = null
@@ -32,18 +33,34 @@ export function setNERDetector(detector: NERDetector | null): void {
 export async function detectPII(text: string): Promise<DetectionResult> {
   const start = performance.now()
 
+  // Preprocess: strip zero-width chars, URL-decode, NFC normalize
+  const { normalized, toOriginalOffset, wasModified } = preprocessText(text)
+
   // Layer 1: Regex patterns (emails, phones, IPs, credit cards, etc.)
-  const regexEntities = detectWithRegex(text)
+  const regexEntities = detectWithRegex(normalized)
 
   // Layer 2: Swiss-specific patterns (AHV, CH-IBAN, CH-phones, cities)
-  const swissEntities = detectSwissPII(text)
+  const swissEntities = detectSwissPII(normalized)
 
   // Layer 3: NER/ONNX model (piiranha-v1)
   const ner = getNERDetector()
-  const nerEntities = ner.isAvailable() ? await ner.detect(text) : []
+  const nerEntities = ner.isAvailable() ? await ner.detect(normalized) : []
 
   // Merge all entities
-  const allEntities = [...regexEntities, ...swissEntities, ...nerEntities]
+  let allEntities = [...regexEntities, ...swissEntities, ...nerEntities]
+
+  // Map offsets back to original text if preprocessing modified anything
+  if (wasModified) {
+    allEntities = allEntities.map(entity => ({
+      ...entity,
+      start: toOriginalOffset(entity.start),
+      end: toOriginalOffset(entity.end),
+      original: text.substring(
+        toOriginalOffset(entity.start),
+        toOriginalOffset(entity.end)
+      )
+    }))
+  }
 
   // Deduplicate overlapping spans
   const deduped = deduplicateEntities(allEntities)
@@ -89,6 +106,13 @@ function deduplicateEntities(entities: PIIEntity[]): PIIEntity[] {
     const overlapping = result.find(
       existing => entity.start < existing.end && entity.end > existing.start
     )
+
+    // Keep EMAIL entities that are sub-spans of URL entities (emails in URL params)
+    if (overlapping && entity.category === 'EMAIL' && overlapping.category === 'URL' &&
+        entity.start >= overlapping.start && entity.end <= overlapping.end) {
+      result.push(entity)
+      continue
+    }
 
     if (!overlapping) {
       result.push(entity)
