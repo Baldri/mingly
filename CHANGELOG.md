@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] - 2026-03-17
+
+### Added — Swiss AI Privacy (Phase 7b)
+- **3-Layer PII Detection Pipeline** — Regex → Swiss Patterns → piiranha-v1 NER (400M ONNX, fp32). 17 PII-Kategorien: PERSON, EMAIL, PHONE, IBAN, AHV, CREDIT_CARD, ADDRESS, LOCATION, DATE_OF_BIRTH, PASSPORT, IP_ADDRESS, URL, ORGANIZATION, CUSTOM
+- **On-Device NER** — piiranha-v1 (onnx-community/piiranha-v1-detect-personal-information-ONNX) laeuft im Worker Thread, <50ms Inferenz, kein Cloud-Call
+- **NER Model Manager** — Download, Status-Tracking, Cache-Management fuer ONNX-Modell (~1.15GB fp32)
+- **4 Privacy-Modi** — Shield (anonymize before cloud), Vault (local-only for sensitive), Transparent (detect + warn), Local Only (never cloud)
+- **Text Preprocessor** — Defeats evasion: Zero-Width Character Stripping, URL-Decoding, Unicode NFC, HTML-Entity Decoding, Fullwidth Normalization
+- **Entity Dedup with Co-existence** — NER + Regex entities with different categories on overlapping spans are both kept (e.g., PERSON + EMAIL)
+- **Privacy UI** — Settings page with model download, privacy mode selection, PII category toggles
+- **Privacy IPC** — Full Electron IPC layer for privacy settings, detection, and NER model management
+
+### Security
+- **Red-Team Suite** — 143 test cases across 10 categories (encoding tricks, format embedding, language mixing, etc.)
+- **3-Layer Results** — 84.9% detection rate (113/133), 0 CRITICAL failures
+- **REGEX_STRUCTURAL_CATEGORIES** — EMAIL, PHONE, CREDIT_CARD, IP_ADDRESS, URL, IBAN, AHV, DATE_OF_BIRTH protected from NER override
+
+### Technical
+- 1254+ Tests, 143 Red-Team Tests
+- Neue Dateien: 15+ (privacy modules, preprocessor, red-team infrastructure)
+- TypeScript strict mode clean
+
 ## [0.5.1] - 2026-02-26
 
 ### Fixed
