@@ -16,6 +16,14 @@ const ZERO_WIDTH_CHARS = /[\u200B\u200C\u200D\uFEFF\u00AD\u2060\u180E]/g
 /** URL-encoded sequences that commonly appear in PII evasion */
 const URL_ENCODED_PATTERN = /%[0-9A-Fa-f]{2}/g
 
+/** PII-relevant HTML entities */
+const HTML_ENTITY_MAP: Record<string, string> = {
+  '&amp;': '&', '&lt;': '<', '&gt;': '>',
+  '&commat;': '@', '&period;': '.', '&plus;': '+',
+  '&hyphen;': '-', '&dash;': '-', '&num;': '#',
+  '&lpar;': '(', '&rpar;': ')',
+}
+
 /**
  * Result of preprocessing: normalized text + offset mapping.
  */
@@ -74,6 +82,42 @@ export function preprocessText(text: string): PreprocessResult {
     }
     offsetMap.length = 0
     offsetMap.push(...newOffsetMap)
+  }
+
+  // Step 2b: Decode HTML entities commonly used in PII evasion
+  const preHtmlText = normalized
+  const preHtmlMap = [...offsetMap]
+
+  const htmlDecoded = decodeHtmlEntities(preHtmlText)
+  if (htmlDecoded.text !== preHtmlText) {
+    wasModified = true
+    normalized = htmlDecoded.text
+    const newHtmlOffsetMap: number[] = []
+    for (let ni = 0; ni < htmlDecoded.text.length; ni++) {
+      const preHtmlIndex = htmlDecoded.toPreIndex(ni)
+      newHtmlOffsetMap.push(preHtmlMap[preHtmlIndex] ?? preHtmlIndex)
+    }
+    offsetMap.length = 0
+    offsetMap.push(...newHtmlOffsetMap)
+  }
+
+  // Step 2c: Normalize fullwidth ASCII characters (U+FF01-FF5E -> U+0021-007E)
+  const preFullwidthText = normalized
+  let fullwidthModified = false
+  let fullwidthResult = ''
+  for (let fi = 0; fi < preFullwidthText.length; fi++) {
+    const code = preFullwidthText.charCodeAt(fi)
+    if (code >= 0xFF01 && code <= 0xFF5E) {
+      fullwidthResult += String.fromCharCode(code - 0xFEE0)
+      fullwidthModified = true
+    } else {
+      fullwidthResult += preFullwidthText[fi]
+    }
+  }
+  if (fullwidthModified) {
+    wasModified = true
+    normalized = fullwidthResult
+    // Offset map stays same length (1:1 character replacement)
   }
 
   // Step 3: Unicode NFC normalization
@@ -139,6 +183,71 @@ function decodeUrlEncoded(text: string): {
   return {
     text: decoded,
     toPreUrlIndex(decodedIndex: number): number {
+      return offsetMap[decodedIndex] ?? decodedIndex
+    }
+  }
+}
+
+/**
+ * Decode HTML entities commonly used in PII evasion.
+ * Handles numeric (&#64;), hex (&#x40;), and named (&commat;) entities.
+ */
+function decodeHtmlEntities(text: string): {
+  text: string
+  toPreIndex(decodedIndex: number): number
+} {
+  const offsetMap: number[] = []
+  let decoded = ''
+  let i = 0
+
+  while (i < text.length) {
+    if (text[i] === '&') {
+      // Try numeric entity: &#DD; or &#xHH;
+      const numMatch = text.substring(i).match(/^&#(\d{1,4});/)
+      const hexMatch = !numMatch ? text.substring(i).match(/^&#x([0-9A-Fa-f]{1,4});/) : null
+
+      // Try named entity
+      let namedEntity: string | undefined
+      if (!numMatch && !hexMatch) {
+        for (const entity of Object.keys(HTML_ENTITY_MAP)) {
+          if (text.substring(i, i + entity.length) === entity) {
+            namedEntity = entity
+            break
+          }
+        }
+      }
+
+      if (numMatch) {
+        const charCode = parseInt(numMatch[1], 10)
+        if (charCode > 0 && charCode < 0x10000) {
+          offsetMap.push(i)
+          decoded += String.fromCharCode(charCode)
+          i += numMatch[0].length
+          continue
+        }
+      } else if (hexMatch) {
+        const charCode = parseInt(hexMatch[1], 16)
+        if (charCode > 0 && charCode < 0x10000) {
+          offsetMap.push(i)
+          decoded += String.fromCharCode(charCode)
+          i += hexMatch[0].length
+          continue
+        }
+      } else if (namedEntity) {
+        offsetMap.push(i)
+        decoded += HTML_ENTITY_MAP[namedEntity]
+        i += namedEntity.length
+        continue
+      }
+    }
+    offsetMap.push(i)
+    decoded += text[i]
+    i++
+  }
+
+  return {
+    text: decoded,
+    toPreIndex(decodedIndex: number): number {
       return offsetMap[decodedIndex] ?? decodedIndex
     }
   }
