@@ -85,12 +85,23 @@ export async function detectPII(text: string): Promise<DetectionResult> {
 /**
  * Remove overlapping entities, preferring:
  * 1. Swiss-specific over generic regex (more precise, e.g. AHV checksums)
- * 2. NER over regex (contextual understanding)
+ * 2. NER over regex — BUT only for non-structural categories (NER must not
+ *    override pattern-matched entities like EMAIL, PHONE, CREDIT_CARD, etc.)
  * 3. Swiss over NER for Swiss-specific types (AHV, CH-IBAN — checksum validation)
  * 4. Higher confidence
  * 5. Longer match
+ *
+ * Co-existence: NER + regex entities with DIFFERENT categories on overlapping
+ * spans are both kept (e.g., PERSON from NER + EMAIL from regex on "hans@test.ch").
  */
 const SWISS_SPECIFIC_CATEGORIES = new Set(['AHV', 'IBAN'])
+
+// Categories where regex patterns are structurally reliable and must not be
+// overridden by NER. These are format-based matches (checksum, grammar, etc.).
+const REGEX_STRUCTURAL_CATEGORIES = new Set([
+  'EMAIL', 'PHONE', 'CREDIT_CARD', 'IP_ADDRESS', 'URL',
+  'IBAN', 'AHV', 'DATE_OF_BIRTH',
+])
 
 function deduplicateEntities(entities: PIIEntity[]): PIIEntity[] {
   if (entities.length <= 1) return entities
@@ -119,6 +130,21 @@ function deduplicateEntities(entities: PIIEntity[]): PIIEntity[] {
       continue
     }
 
+    // Co-existence: NER entity overlaps a structural regex entity with a
+    // DIFFERENT category → keep both (e.g., PERSON + EMAIL on same span)
+    if (entity.source === 'ner' && overlapping.source === 'regex' &&
+        REGEX_STRUCTURAL_CATEGORIES.has(overlapping.category) &&
+        entity.category !== overlapping.category) {
+      result.push(entity)
+      continue
+    }
+    if (entity.source === 'regex' && overlapping.source === 'ner' &&
+        REGEX_STRUCTURAL_CATEGORIES.has(entity.category) &&
+        entity.category !== overlapping.category) {
+      result.push(entity)
+      continue
+    }
+
     // Rule 1: Swiss > Regex
     if (entity.source === 'swiss' && overlapping.source === 'regex') {
       const idx = result.indexOf(overlapping)
@@ -126,8 +152,9 @@ function deduplicateEntities(entities: PIIEntity[]): PIIEntity[] {
       continue
     }
 
-    // Rule 2: NER > Regex
-    if (entity.source === 'ner' && overlapping.source === 'regex') {
+    // Rule 2: NER > Regex (only for non-structural regex categories)
+    if (entity.source === 'ner' && overlapping.source === 'regex' &&
+        !REGEX_STRUCTURAL_CATEGORIES.has(overlapping.category)) {
       const idx = result.indexOf(overlapping)
       result[idx] = entity
       continue

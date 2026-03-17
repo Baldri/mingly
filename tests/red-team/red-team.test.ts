@@ -4,16 +4,20 @@
  * Runs adversarial test cases from YAML catalogs against the PII pipeline.
  * Uses Vitest (same framework as all other Mingly tests).
  *
- * Execution mode: 2-Layer (Regex + Swiss, NER disabled)
+ * Execution modes:
+ * - 2-Layer (Regex + Swiss, NER disabled) — always runs
+ * - 3-Layer (Regex + Swiss + NER/piiranha-v1) — runs when RUN_3LAYER=1
  */
 
 import { readFileSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import * as yaml from 'yaml'
+import { afterAll, beforeAll } from 'vitest'
 import { detectPII, setNERDetector } from '../../src/main/privacy/detector-pipeline'
 import { PIIAnonymizer } from '../../src/main/privacy/anonymizer'
 import type { AnonymizationResult } from '../../src/main/privacy/pii-types'
+import { createDirectNERDetector } from './helpers/direct-ner-detector'
 
 // --- YAML Loader ---
 
@@ -448,4 +452,109 @@ describe('Phase B: Rehydration Hardening', () => {
       }
     })
   }
+})
+
+// --- 3-Layer Test Suites (NER enabled) ---
+// Only runs when RUN_3LAYER=1 environment variable is set.
+// Model load takes ~5-10s, inference adds ~50ms per test case.
+
+const run3Layer = process.env.RUN_3LAYER === '1'
+
+;(run3Layer ? describe : describe.skip)('Phase A: PII Bypass — 3-Layer (Regex+Swiss+NER)', () => {
+  let nerDetector: Awaited<ReturnType<typeof createDirectNERDetector>> | null = null
+
+  beforeAll(async () => {
+    nerDetector = await createDirectNERDetector()
+    setNERDetector(nerDetector as any)
+  }, 60_000) // 60s timeout for model load
+
+  afterAll(async () => {
+    setNERDetector(null)
+    if (nerDetector) await nerDetector.shutdown()
+  })
+
+  // 3-Layer detection helper (NER already injected via beforeAll)
+  async function run3LayerDetection(input: string): Promise<string> {
+    const result = await detectPII(input)
+    return JSON.stringify({
+      detected: result.entities.length,
+      entities: result.entities.map(e => ({
+        category: e.category,
+        original: e.original,
+        source: e.source,
+        confidence: e.confidence,
+        start: e.start,
+        end: e.end,
+      })),
+      latencyMs: result.latencyMs,
+    })
+  }
+
+  // 3-Layer anonymization helper
+  async function run3LayerAnonymization(input: string, mode: 'shield' | 'vault' = 'shield'): Promise<string> {
+    const anonymizer = new PIIAnonymizer(`red-team-3l-${Date.now()}`, mode)
+    const result = await anonymizer.anonymize(input)
+    const originalPII = result.replacements.map(r => r.entity.original)
+    const leaks = originalPII.filter(pii => result.anonymizedText.includes(pii))
+
+    return JSON.stringify({
+      anonymizedText: result.anonymizedText,
+      mode: result.mode,
+      replacements: result.replacements.map(r => ({
+        category: r.entity.category,
+        original: r.entity.original,
+        replacement: r.replacement,
+      })),
+      stats: result.stats,
+      latencyMs: result.latencyMs,
+      leaks,
+      leakCount: leaks.length,
+    })
+  }
+
+  describe('Format Variations', () => {
+    runCatalogTests('catalog/format-variations.yaml', run3LayerDetection)
+  })
+
+  describe('Encoding Attacks', () => {
+    runCatalogTests('catalog/encoding-attacks.yaml', run3LayerDetection)
+  })
+
+  describe('Context Evasion', () => {
+    runCatalogTests('catalog/context-evasion.yaml', run3LayerDetection)
+  })
+
+  describe('Language Mixing', () => {
+    runCatalogTests('catalog/language-mixing.yaml', run3LayerDetection)
+  })
+
+  describe('NER Detection (3-Layer)', () => {
+    runCatalogTests('catalog/ner-degradation.yaml', run3LayerDetection)
+  })
+
+  describe('Prompt Injection (3-Layer)', () => {
+    const tests = loadCatalog('jailbreak/prompt-injection.yaml')
+
+    for (const tc of tests) {
+      const label = tc.description ??
+        `${tc.metadata?.technique ?? 'test'} [${tc.metadata?.tier ?? '?'}]`
+      const technique = tc.metadata?.technique ?? ''
+      const mode = technique.startsWith('vault') ? 'vault' as const : 'shield' as const
+
+      it(label, async () => {
+        const output = await run3LayerAnonymization(tc.vars.input, mode)
+
+        for (const assertion of tc.assert) {
+          if (assertion.type === 'javascript') {
+            const passed = evaluateAssertion(output, assertion.value)
+            if (!passed) {
+              const parsed = JSON.parse(output)
+              const detail = `leakCount=${parsed.leakCount ?? '?'}, mode=${parsed.mode}`
+              expect(passed, `Assertion failed: ${assertion.value}\n  ${detail}`).toBe(true)
+            }
+          }
+        }
+      })
+    }
+  })
 })
