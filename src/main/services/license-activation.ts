@@ -16,6 +16,7 @@ import * as path from 'path'
 import * as fs from 'fs'
 import * as crypto from 'crypto'
 import { getFeatureGateManager } from './feature-gate-manager'
+import { LICENSE_HMAC_SECRET, IS_PRODUCTION_SECRET } from './_license-secret'
 import type { SubscriptionTier } from '../../shared/types'
 
 // ---------------------------------------------------------------------------
@@ -50,14 +51,6 @@ interface LicenseStore {
 // Constants
 // ---------------------------------------------------------------------------
 
-/**
- * HMAC secret for license key verification.
- * In production, this would be derived from a more complex scheme.
- * The signing secret is kept at digital opua for key generation.
- * This verification key allows the app to validate signatures offline.
- */
-const LICENSE_HMAC_SECRET = 'mingly-license-v1-digitalnalu-2026'
-
 /** Legacy grace period: 90 days for keys without HMAC signature */
 const LEGACY_GRACE_DAYS = 90
 
@@ -81,6 +74,12 @@ export class LicenseActivationService {
   private store: LicenseStore
 
   constructor(configDir?: string) {
+    // Guard: production builds must inject a real license secret
+    if (app.isPackaged && !IS_PRODUCTION_SECRET) {
+      throw new Error(
+        'Production build requires a real license secret. Set LICENSE_HMAC_SECRET via build-time injection.'
+      )
+    }
     const dir = configDir || this.resolveConfigDir()
     this.storePath = path.join(dir, 'license.json')
     this.store = this.load()

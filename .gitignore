@@ -18,6 +18,9 @@ yarn-error.log*
 .env.local
 .env.*.local
 
+# License secret (injected at build time)
+src/main/services/_license-secret.ts
+
 # IDE
 .vscode/
 .idea/

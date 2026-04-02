@@ -262,6 +262,16 @@ export class AutoUpdater extends EventEmitter {
    */
   openReleasePage(): void {
     const url = this.status.info?.downloadUrl || GITHUB_RELEASES
+    try {
+      const parsedUrl = new URL(url)
+      if (parsedUrl.protocol !== 'https:' || !parsedUrl.host.endsWith('github.com')) {
+        console.error('[updater] Blocked suspicious URL:', url)
+        return
+      }
+    } catch {
+      console.error('[updater] Invalid URL:', url)
+      return
+    }
     shell.openExternal(url)
   }
 
