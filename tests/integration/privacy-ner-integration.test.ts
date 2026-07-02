@@ -146,7 +146,7 @@ describe.skipIf(SKIP)('piiranha-v1 NER Integration', () => {
       console.log('[NER Integration] Model already cached.')
     }
 
-    const transformers = await import('@xenova/transformers')
+    const transformers = await import('@huggingface/transformers')
     transformers.env.cacheDir = INTEGRATION_MODEL_DIR
     transformers.env.allowRemoteModels = true // allow download of non-quantized variant
 
@@ -154,7 +154,7 @@ describe.skipIf(SKIP)('piiranha-v1 NER Integration', () => {
     pipeline = await transformers.pipeline(
       'token-classification',
       'onnx-community/piiranha-v1-detect-personal-information-ONNX',
-      { quantized: false }
+      { dtype: 'fp32' }
     )
     console.log('[NER Integration] Pipeline ready.')
   }, 300_000)

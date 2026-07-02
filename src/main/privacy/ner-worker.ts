@@ -13,11 +13,11 @@ type WorkerMessage =
 let pipe: any = null
 
 async function initPipeline(modelId: string, cacheDir: string): Promise<void> {
-  const { pipeline, env } = await import('@xenova/transformers')
+  const { pipeline, env } = await import('@huggingface/transformers')
   env.cacheDir = cacheDir
   env.allowRemoteModels = false // model must be pre-downloaded via model-manager
-  // Use non-quantized (fp32) for full PII detection quality
-  pipe = await pipeline('token-classification', modelId, { quantized: false })
+  // fp32 (non-quantized) for full PII detection quality
+  pipe = await pipeline('token-classification', modelId, { dtype: 'fp32' })
   parentPort?.postMessage({ type: 'ready' })
 }
 

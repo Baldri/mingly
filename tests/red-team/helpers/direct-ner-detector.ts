@@ -188,13 +188,13 @@ export async function createDirectNERDetector(): Promise<{
   shutdown: () => Promise<void>
   getModelManager: () => { getStatus: () => string }
 }> {
-  const { pipeline, env } = await import('@xenova/transformers')
+  const { pipeline, env } = await import('@huggingface/transformers')
   env.cacheDir = CACHE_DIR
   env.allowRemoteModels = false
 
   console.log('[DirectNER] Loading piiranha-v1 fp32 model...')
   const startLoad = performance.now()
-  const pipe = await pipeline('token-classification', MODEL_ID, { quantized: false })
+  const pipe = await pipeline('token-classification', MODEL_ID, { dtype: 'fp32' })
   console.log(`[DirectNER] Model loaded in ${Math.round(performance.now() - startLoad)}ms`)
 
   let available = true
