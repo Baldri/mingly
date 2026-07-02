@@ -15,7 +15,7 @@ export class NERModelManager {
 
   constructor(baseDir?: string) {
     this.baseDir = baseDir ?? DEFAULT_BASE_DIR
-    // @xenova/transformers caches in {cacheDir}/{org}/{model-name}/
+    // @huggingface/transformers caches in {cacheDir}/{org}/{model-name}/ (same layout as @xenova v2)
     this.modelDir = path.join(this.baseDir, ...MODEL_ID.split('/'))
     this.status = this.checkLocalStatus()
   }
@@ -49,14 +49,14 @@ export class NERModelManager {
     try {
       fs.mkdirSync(this.baseDir, { recursive: true })
 
-      const { pipeline, env } = await import('@xenova/transformers')
+      const { pipeline, env } = await import('@huggingface/transformers')
       env.cacheDir = this.baseDir
       env.allowRemoteModels = true
 
-      // Use non-quantized (fp32) model for full GIVENNAME/SURNAME detection quality.
+      // fp32 (non-quantized) model for full GIVENNAME/SURNAME detection quality.
       // Quantized model loses name recognition. fp32 is ~1.15GB but inference is still <50ms.
       const pipe = await pipeline('token-classification', MODEL_ID, {
-        quantized: false,
+        dtype: 'fp32',
         progress_callback: (progress: { status: string; loaded?: number; total?: number }) => {
           if (progress.status === 'progress' && progress.total) {
             this.downloadProgress = Math.round(((progress.loaded ?? 0) / progress.total) * 100)
