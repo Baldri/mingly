@@ -75,7 +75,7 @@ export function registerConversationHandlers(): void {
     const settings = (store.get('settings') || {
       theme: 'system',
       defaultProvider: 'anthropic',
-      defaultModel: 'claude-3-5-sonnet-20241022',
+      defaultModel: 'claude-sonnet-4-6',
       enableParallelMode: false,
       enableCostTracking: true,
       enableAuditLog: true

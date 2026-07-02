@@ -25,10 +25,9 @@ const CLOUD_PROVIDERS = [
 
 const CLOUD_MODELS: Record<string, { id: string; name: string }[]> = {
   anthropic: [
-    { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet' },
-    { id: 'claude-3-opus-20240229', name: 'Claude 3 Opus' },
-    { id: 'claude-3-sonnet-20240229', name: 'Claude 3 Sonnet' },
-    { id: 'claude-3-haiku-20240307', name: 'Claude 3 Haiku' }
+    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
+    { id: 'claude-opus-4-6', name: 'Claude Opus 4.6' },
+    { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' }
   ],
   openai: [
     { id: 'gpt-4-turbo-preview', name: 'GPT-4 Turbo' },
@@ -56,7 +55,7 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
 
   const [title, setTitle] = useState('')
   const [provider, setProvider] = useState('anthropic')
-  const [model, setModel] = useState('claude-3-5-sonnet-20241022')
+  const [model, setModel] = useState('claude-sonnet-4-6')
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('')
   const [localModels, setLocalModels] = useState<LocalModel[]>([])
   const [discovering, setDiscovering] = useState(false)

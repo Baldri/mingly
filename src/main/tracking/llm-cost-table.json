@@ -3,12 +3,14 @@
   "_version": "2026-03-10",
   "_description": "LLM provider pricing in USD per 1M tokens. Shared across Mingly and Claude Remote.",
   "anthropic": {
+    "claude-opus-4-6": { "input": 5, "output": 25 },
+    "claude-sonnet-4-6": { "input": 3, "output": 15 },
+    "claude-haiku-4-5-20251001": { "input": 1, "output": 5 },
     "claude-sonnet-4-20250514": { "input": 3, "output": 15 },
     "claude-opus-4-20250514": { "input": 15, "output": 75 },
     "claude-3-5-sonnet-20241022": { "input": 3, "output": 15 },
     "claude-3-5-haiku-20241022": { "input": 0.8, "output": 4 },
     "claude-3-opus-20240229": { "input": 15, "output": 75 },
-    "claude-3-sonnet-20240229": { "input": 3, "output": 15 },
     "claude-3-haiku-20240307": { "input": 0.25, "output": 1.25 }
   },
   "openai": {

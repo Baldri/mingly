@@ -27,7 +27,7 @@ export class AnthropicClient {
     try {
       // Simple test request to validate API key
       await this.client.messages.create({
-        model: 'claude-3-haiku-20240307',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 10,
         messages: [{ role: 'user', content: 'Hi' }]
       })
@@ -40,7 +40,7 @@ export class AnthropicClient {
 
   async *sendMessage(
     messages: Message[],
-    model: string = 'claude-3-5-sonnet-20241022',
+    model: string = 'claude-sonnet-4-6',
     temperature: number = 1.0
   ): AsyncGenerator<StreamChunk> {
     if (!this.client) {
@@ -100,7 +100,7 @@ export class AnthropicClient {
 
   async sendMessageNonStreaming(
     messages: Message[],
-    model: string = 'claude-3-5-sonnet-20241022',
+    model: string = 'claude-sonnet-4-6',
     temperature: number = 1.0
   ): Promise<string> {
     if (!this.client) {
@@ -322,7 +322,7 @@ export class AnthropicClient {
     // 2. Test API connectivity with a minimal request
     try {
       await this.client.messages.create({
-        model: 'claude-3-haiku-20240307',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 5,
         messages: [{ role: 'user', content: 'ping' }]
       })
@@ -383,10 +383,9 @@ export class AnthropicClient {
   // Get available models
   getModels(): string[] {
     return [
-      'claude-3-5-sonnet-20241022', // Latest Sonnet
-      'claude-3-opus-20240229',
-      'claude-3-sonnet-20240229',
-      'claude-3-haiku-20240307'
+      'claude-sonnet-4-6',
+      'claude-opus-4-6',
+      'claude-haiku-4-5-20251001'
     ]
   }
 }

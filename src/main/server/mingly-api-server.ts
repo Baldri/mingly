@@ -266,7 +266,7 @@ export class MinglyAPIServer {
         conversationId: parsed.conversationId || generateId(),
         messages: parsed.messages.map(m => ({ id: generateId(), role: m.role, content: m.content })),
         provider: parsed.provider || 'anthropic',
-        model: parsed.model || 'claude-3-5-sonnet-20241022',
+        model: parsed.model || 'claude-sonnet-4-6',
         temperature: parsed.temperature
       },
       () => {} // No streaming for REST
@@ -298,7 +298,7 @@ export class MinglyAPIServer {
         conversationId: parsed.conversationId || generateId(),
         messages: parsed.messages.map(m => ({ id: generateId(), role: m.role, content: m.content })),
         provider: parsed.provider || 'anthropic',
-        model: parsed.model || 'claude-3-5-sonnet-20241022',
+        model: parsed.model || 'claude-sonnet-4-6',
         temperature: parsed.temperature
       },
       (event: ChatStreamEvent) => {
@@ -329,7 +329,7 @@ export class MinglyAPIServer {
       const conversation = serviceLayer.createConversation(
         title || 'New Conversation',
         provider || 'anthropic',
-        model || 'claude-3-5-sonnet-20241022'
+        model || 'claude-sonnet-4-6'
       )
       this.sendJSON(res, 201, { conversation })
     } catch {
@@ -368,7 +368,7 @@ export class MinglyAPIServer {
         conversationId: message.conversationId || generateId(),
         messages: message.messages.map((m: any) => ({ id: generateId(), role: m.role, content: m.content })),
         provider: message.provider || 'anthropic',
-        model: message.model || 'claude-3-5-sonnet-20241022',
+        model: message.model || 'claude-sonnet-4-6',
         temperature: message.temperature
       },
       (event: ChatStreamEvent) => {
