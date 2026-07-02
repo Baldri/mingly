@@ -23,6 +23,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # _license-secret.ts is generated (gitignored) — required by
+      # license-activation.ts before tsc/vitest can run.
+      - name: Inject license secret
+        env:
+          MINGLY_LICENSE_SECRET: ${{ secrets.MINGLY_LICENSE_SECRET }}
+        run: npx tsx scripts/inject-secret.ts
+
       - name: Type check (main process)
         run: npx tsc -p tsconfig.main.json --noEmit
 
@@ -47,6 +54,11 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Inject license secret
+        env:
+          MINGLY_LICENSE_SECRET: ${{ secrets.MINGLY_LICENSE_SECRET }}
+        run: npx tsx scripts/inject-secret.ts
 
       - name: Run tests with coverage
         run: npx vitest run --coverage
@@ -96,7 +108,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # prebuild:main runs inject-secret automatically (npm lifecycle hook)
       - name: Build main process
+        env:
+          MINGLY_LICENSE_SECRET: ${{ secrets.MINGLY_LICENSE_SECRET }}
         run: npm run build:main
 
       - name: Build renderer
@@ -176,7 +191,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # prebuild:main runs inject-secret automatically (npm lifecycle hook)
       - name: Build
+        env:
+          MINGLY_LICENSE_SECRET: ${{ secrets.MINGLY_LICENSE_SECRET }}
         run: npm run build
 
       - name: Package and publish Electron app
