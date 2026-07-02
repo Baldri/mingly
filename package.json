@@ -28,6 +28,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:red-team": "vitest run -c vitest.redteam.config.ts",
     "red-team": "promptfoo eval --config tests/red-team/promptfooconfig.yaml",
     "red-team:view": "promptfoo view --config tests/red-team/promptfooconfig.yaml",
     "build:server": "tsc -p tsconfig.server.json",
