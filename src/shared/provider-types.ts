@@ -56,28 +56,22 @@ export const BUILT_IN_PROVIDERS: Record<BuiltInProvider, ProviderConfig> = {
     supportsFunctionCalling: true,
     models: [
       {
-        id: 'claude-3-5-sonnet-20241022',
-        name: 'Claude 3.5 Sonnet',
-        contextWindow: 200000,
+        id: 'claude-sonnet-4-6',
+        name: 'Claude Sonnet 4.6',
+        contextWindow: 1000000,
         costPer1kTokens: { input: 0.003, output: 0.015 }
       },
       {
-        id: 'claude-3-opus-20240229',
-        name: 'Claude 3 Opus',
-        contextWindow: 200000,
-        costPer1kTokens: { input: 0.015, output: 0.075 }
+        id: 'claude-opus-4-6',
+        name: 'Claude Opus 4.6',
+        contextWindow: 1000000,
+        costPer1kTokens: { input: 0.005, output: 0.025 }
       },
       {
-        id: 'claude-3-sonnet-20240229',
-        name: 'Claude 3 Sonnet',
+        id: 'claude-haiku-4-5-20251001',
+        name: 'Claude Haiku 4.5',
         contextWindow: 200000,
-        costPer1kTokens: { input: 0.003, output: 0.015 }
-      },
-      {
-        id: 'claude-3-haiku-20240307',
-        name: 'Claude 3 Haiku',
-        contextWindow: 200000,
-        costPer1kTokens: { input: 0.00025, output: 0.00125 }
+        costPer1kTokens: { input: 0.001, output: 0.005 }
       }
     ],
     color: '#D97757'

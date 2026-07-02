@@ -84,7 +84,7 @@ export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   autoApproveThreshold: 0, // Always require approval by default
   maxSubTasks: 3,
   preferredModels: {
-    code: { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
+    code: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
     creative: { provider: 'openai', model: 'gpt-4-turbo' },
     analysis: { provider: 'google', model: 'gemini-1.5-flash' }
   }
@@ -93,9 +93,9 @@ export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
 // ── Cost Estimates (per 1K tokens) ──────────────────────────────
 
 const COST_PER_1K: Record<string, { input: number; output: number }> = {
-  'claude-3-5-sonnet-20241022': { input: 0.003, output: 0.015 },
-  'claude-3-sonnet': { input: 0.003, output: 0.015 },
-  'claude-3-haiku': { input: 0.00025, output: 0.00125 },
+  'claude-sonnet-4-6': { input: 0.003, output: 0.015 },
+  'claude-opus-4-6': { input: 0.005, output: 0.025 },
+  'claude-haiku-4-5-20251001': { input: 0.001, output: 0.005 },
   'gpt-4-turbo': { input: 0.01, output: 0.03 },
   'gpt-3.5-turbo': { input: 0.0005, output: 0.0015 },
   'gemini-1.5-flash': { input: 0.000075, output: 0.0003 },
@@ -397,7 +397,7 @@ export class HybridOrchestrator {
 
   private getDefaultModel(provider: string): string {
     switch (provider) {
-      case 'anthropic': return 'claude-3-5-sonnet-20241022'
+      case 'anthropic': return 'claude-sonnet-4-6'
       case 'openai': return 'gpt-4-turbo'
       case 'google': return 'gemini-1.5-flash'
       default: return 'gpt-3.5-turbo'

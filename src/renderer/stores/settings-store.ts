@@ -5,7 +5,7 @@ import type { AppSettings, LLMProvider } from '../../shared/types'
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
   defaultProvider: 'anthropic',
-  defaultModel: 'claude-3-5-sonnet-20241022',
+  defaultModel: 'claude-sonnet-4-6',
   enableParallelMode: false,
   enableCostTracking: true,
   enableAuditLog: true,

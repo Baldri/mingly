@@ -12,8 +12,8 @@ const CATEGORY_LABELS: Record<string, string> = {
 }
 
 const PROVIDER_OPTIONS = [
-  { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
-  { provider: 'anthropic', model: 'claude-3-opus', label: 'Claude 3 Opus' },
+  { provider: 'anthropic', model: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+  { provider: 'anthropic', model: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
   { provider: 'openai', model: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
   { provider: 'openai', model: 'gpt-4', label: 'GPT-4' },
   { provider: 'google', model: 'gemini-ultra', label: 'Gemini Ultra' },
