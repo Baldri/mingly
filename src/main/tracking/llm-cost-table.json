@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "_version": "2026-03-10",
+  "_version": "2026-07-02",
   "_description": "LLM provider pricing in USD per 1M tokens. Shared across Mingly and Claude Remote.",
   "anthropic": {
     "claude-opus-4-6": { "input": 5, "output": 25 },
