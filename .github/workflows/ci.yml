@@ -197,13 +197,32 @@ jobs:
           MINGLY_LICENSE_SECRET: ${{ secrets.MINGLY_LICENSE_SECRET }}
         run: npm run build
 
+      # ── macOS signing & notarization setup ──────────────────────────
+      # Writes the App Store Connect API key to disk and exports signing/
+      # notarization env vars via GITHUB_ENV (macOS only). electron-builder
+      # signs, notarizes and staples automatically when these are present.
+      # CSC vars must NOT be set on Linux/Windows jobs — an empty or
+      # wrong-type cert crashes electron-builder there.
+      - name: Setup macOS signing & notarization
+        if: runner.os == 'macOS'
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          printf '%s' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+          {
+            echo "CSC_LINK=${{ secrets.CSC_LINK }}"
+            echo "CSC_KEY_PASSWORD=${{ secrets.CSC_KEY_PASSWORD }}"
+            echo "APPLE_API_KEY=$RUNNER_TEMP/AuthKey.p8"
+            echo "APPLE_API_KEY_ID=CULSWP7496"
+            echo "APPLE_API_ISSUER=2e60499e-ced7-40e9-9481-3556fdb7ff36"
+          } >> "$GITHUB_ENV"
+
       - name: Package and publish Electron app
         run: npx electron-builder --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Code signing is disabled until certificates are configured.
-          # To enable: add CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID,
-          # APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID secrets in GitHub.
+          # Keychain auto-discovery off; explicit CSC_LINK (macOS, from the
+          # setup step above) still applies. Windows/Linux stay unsigned.
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
       - name: Generate checksums (macOS/Linux)
