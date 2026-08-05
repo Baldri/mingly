@@ -83,16 +83,53 @@ export async function detectPII(text: string): Promise<DetectionResult> {
 }
 
 /**
- * Remove overlapping entities, preferring:
- * 1. Swiss-specific over generic regex (more precise, e.g. AHV checksums)
- * 2. NER over regex — BUT only for non-structural categories (NER must not
- *    override pattern-matched entities like EMAIL, PHONE, CREDIT_CARD, etc.)
- * 3. Swiss over NER for Swiss-specific types (AHV, CH-IBAN — checksum validation)
- * 4. Higher confidence
- * 5. Longer match
+ * Remove overlapping entities so that every surviving entity is mutually
+ * disjoint from every other one.
  *
- * Co-existence: NER + regex entities with DIFFERENT categories on overlapping
- * spans are both kept (e.g., PERSON from NER + EMAIL from regex on "hans@test.ch").
+ * Why disjointness is mandatory (not just a nicety): anonymizer.ts applies
+ * replacements SEQUENTIALLY over the original text, tracking one cumulative
+ * offset (see `anonymize()` in anonymizer.ts). That is only correct if the
+ * entities it receives never overlap — for any overlap (full containment or
+ * a partial crossing), a later replacement is applied at a position that no
+ * longer lines up with the text after an earlier replacement already
+ * shifted it, corrupting the output.
+ *
+ * This function used to make a deliberate exception for "co-existence":
+ * an NER entity and a structurally-reliable regex entity (EMAIL, PHONE, …)
+ * on overlapping spans, but different categories, were BOTH kept — e.g. so
+ * a name-shaped NER hit and a regex EMAIL hit on the same text wouldn't
+ * silently lose one of them. In practice this mostly fired when NER tagged
+ * a SUBSTRING of an already-matched EMAIL as a name fragment (e.g. NER
+ * splits "anna.meier@example.ch" into "anna" + "meier", both fully nested
+ * inside the EMAIL regex already matched as a whole). Keeping both nested
+ * entities passed two overlapping spans downstream and corrupted the
+ * anonymized text: "Kontakt: davi[CUSTOM]b[CUSTOM]otonmail.ch" instead of a
+ * clean fake email. The same latent bug existed for the "EMAIL nested
+ * inside URL" case a few lines below (embedded ?email= params).
+ *
+ * The fix: resolve EVERY overlap — nested or partial — via the same
+ * source/confidence priority cascade, with no exceptions:
+ * 1. Swiss > Regex (checksum-validated AHV/IBAN beats a generic regex guess
+ *    at the SAME real-world value, even if the regex match is textually
+ *    longer — this is not "two facts", it's one fact matched twice with
+ *    different boundary confidence)
+ * 2. NER > Regex — but only for non-structural regex categories (NER must
+ *    not override pattern-matched entities like EMAIL, PHONE, CREDIT_CARD)
+ * 3. Swiss > NER for Swiss-specific categories (AHV, CH-IBAN)
+ * 4. Higher confidence wins
+ * 5. Larger span wins (final tiebreak)
+ *
+ * Full containment (nested) vs. partial overlap are handled identically by
+ * this cascade — there is no separate "outer always wins" rule. In the
+ * common case (a structural regex/Swiss match containing an NER sub-token)
+ * this resolves to the larger, more complete entity by rules 1/2/4/5 — the
+ * full email protects more than its username fragment — but a
+ * checksum-validated Swiss match still wins over a longer, looser regex
+ * guess via rule 1, because span size is not what makes an entity
+ * authoritative. Rule 5 (larger span) is the same, single rule that also
+ * covers genuine partial (non-nesting) overlaps between two different
+ * detector categories: whichever entity does not win on source/confidence
+ * loses entirely, rather than surviving as a second overlapping fragment.
  */
 const SWISS_SPECIFIC_CATEGORIES = new Set(['AHV', 'IBAN'])
 
@@ -114,66 +151,53 @@ function deduplicateEntities(entities: PIIEntity[]): PIIEntity[] {
   const result: PIIEntity[] = []
 
   for (const entity of sorted) {
-    const overlapping = result.find(
+    const overlapIdx = result.findIndex(
       existing => entity.start < existing.end && entity.end > existing.start
     )
 
-    // Keep EMAIL entities that are sub-spans of URL entities (emails in URL params)
-    if (overlapping && entity.category === 'EMAIL' && overlapping.category === 'URL' &&
-        entity.start >= overlapping.start && entity.end <= overlapping.end) {
+    if (overlapIdx === -1) {
       result.push(entity)
       continue
     }
 
-    if (!overlapping) {
-      result.push(entity)
-      continue
-    }
-
-    // Co-existence: NER entity overlaps a structural regex entity with a
-    // DIFFERENT category → keep both (e.g., PERSON + EMAIL on same span)
-    if (entity.source === 'ner' && overlapping.source === 'regex' &&
-        REGEX_STRUCTURAL_CATEGORIES.has(overlapping.category) &&
-        entity.category !== overlapping.category) {
-      result.push(entity)
-      continue
-    }
-    if (entity.source === 'regex' && overlapping.source === 'ner' &&
-        REGEX_STRUCTURAL_CATEGORIES.has(entity.category) &&
-        entity.category !== overlapping.category) {
-      result.push(entity)
-      continue
-    }
+    const existing = result[overlapIdx]
 
     // Rule 1: Swiss > Regex
-    if (entity.source === 'swiss' && overlapping.source === 'regex') {
-      const idx = result.indexOf(overlapping)
-      result[idx] = entity
+    if (entity.source === 'swiss' && existing.source === 'regex') {
+      result[overlapIdx] = entity
       continue
     }
 
     // Rule 2: NER > Regex (only for non-structural regex categories)
-    if (entity.source === 'ner' && overlapping.source === 'regex' &&
-        !REGEX_STRUCTURAL_CATEGORIES.has(overlapping.category)) {
-      const idx = result.indexOf(overlapping)
-      result[idx] = entity
+    if (entity.source === 'ner' && existing.source === 'regex' &&
+        !REGEX_STRUCTURAL_CATEGORIES.has(existing.category)) {
+      result[overlapIdx] = entity
       continue
     }
 
     // Rule 3: Swiss > NER for Swiss-specific categories
-    if (entity.source === 'swiss' && overlapping.source === 'ner' &&
+    if (entity.source === 'swiss' && existing.source === 'ner' &&
         SWISS_SPECIFIC_CATEGORIES.has(entity.category)) {
-      const idx = result.indexOf(overlapping)
-      result[idx] = entity
+      result[overlapIdx] = entity
       continue
     }
 
-    // Rule 4: Higher confidence
-    if (entity.confidence > overlapping.confidence) {
-      const idx = result.indexOf(overlapping)
-      result[idx] = entity
+    // Rule 4: Higher confidence wins
+    if (entity.confidence > existing.confidence) {
+      result[overlapIdx] = entity
       continue
     }
+
+    // Rule 5: Final tiebreak — larger span wins (broader coverage; also the
+    // rule that resolves genuine partial overlaps once source/confidence
+    // don't discriminate between the two entities).
+    if ((entity.end - entity.start) > (existing.end - existing.start)) {
+      result[overlapIdx] = entity
+      continue
+    }
+
+    // Otherwise `existing` already wins (equal-or-higher priority, equal-or-
+    // larger span) — drop `entity` by leaving `result` unchanged.
   }
 
   return result

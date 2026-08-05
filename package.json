@@ -17,6 +17,7 @@
     "prebuild:main": "npx tsx scripts/inject-secret.ts",
     "build:main": "esbuild src/main/index.ts --bundle --platform=node --outfile=dist/main/index.js --external:electron --external:electron-updater --external:sql.js --external:@huggingface/transformers --format=cjs --target=node18 --sourcemap",
     "build:ner-worker": "esbuild src/main/privacy/ner-worker.ts --bundle --platform=node --outfile=dist/main/ner-worker.js --external:@huggingface/transformers --format=cjs --target=node18 --sourcemap",
+    "build:ner-worker:src": "esbuild src/main/privacy/ner-worker.ts --bundle --platform=node --outfile=src/main/privacy/ner-worker.js --external:@huggingface/transformers --format=cjs --target=node18",
     "build:preload": "esbuild src/preload/index.ts --bundle --platform=node --outfile=dist/preload/index.js --external:electron --format=iife --target=node18",
     "build:renderer": "vite build",
     "start": "electron .",

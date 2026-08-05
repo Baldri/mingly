@@ -83,6 +83,14 @@ export class PIIAnonymizer {
   private random: () => number
   /** Maps original PII text → replacement text for consistency */
   private replacementMap: Map<string, string> = new Map()
+  /**
+   * Per-category counters for shield-mode fallback markers (categories
+   * without a plausible-fake-data generator, e.g. CUSTOM, ORGANIZATION —
+   * see generateFakeData's default case). Used to number markers as
+   * [CUSTOM_1], [CUSTOM_2], … so two distinct entities of the same
+   * unmapped category never collide on the same replacement string.
+   */
+  private fallbackMarkerCounters: Map<PIICategory, number> = new Map()
 
   constructor(sessionId: string, mode: PrivacyMode = 'shield') {
     this.sessionId = sessionId
@@ -265,8 +273,22 @@ export class PIIAnonymizer {
       case 'URL':
         return 'https://example.com/redacted'
 
-      default:
-        return `[${entity.category}]`
+      default: {
+        // Categories without a plausible-fake-data generator (CUSTOM,
+        // ORGANIZATION) fall back to a bracketed marker. Unlike vault mode's
+        // [CATEGORY] marker — which is intentionally identical for every
+        // entity of that category, since vault mode is never rehydrated —
+        // shield mode promises reversibility (rehydrate() maps a fake value
+        // back to exactly one original, see rehydrator.ts). A bare
+        // "[CUSTOM]" shared by two different CUSTOM entities makes that
+        // mapping ambiguous: the reverse lookup can only remember whichever
+        // original was registered last. Numbering the marker per distinct
+        // original keeps it reversible without inventing fake data for
+        // categories that have none.
+        const next = (this.fallbackMarkerCounters.get(entity.category) ?? 0) + 1
+        this.fallbackMarkerCounters.set(entity.category, next)
+        return `[${entity.category}_${next}]`
+      }
     }
   }
 
@@ -282,5 +304,6 @@ export class PIIAnonymizer {
    */
   clear(): void {
     this.replacementMap.clear()
+    this.fallbackMarkerCounters.clear()
   }
 }
