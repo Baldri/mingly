@@ -1,9 +1,34 @@
 /**
  * Detector Pipeline Tests
  */
-import { describe, it, expect } from 'vitest'
-import { detectPII, deduplicateEntities } from '../../src/main/privacy/detector-pipeline'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { detectPII, deduplicateEntities, setNERDetector } from '../../src/main/privacy/detector-pipeline'
 import type { PIIEntity } from '../../src/main/privacy/pii-types'
+
+/**
+ * Pin layer 3 (NER) to unavailable for this file — see the same block in
+ * tests/unit/privacy-anonymizer.test.ts for the measurement behind it.
+ *
+ * Every test below names the layer it targets ("from regex layer", "from
+ * swiss layer"); none asserts anything about NER. Without this pin they also
+ * spin up the real worker and a 1.15GB ONNX session, whose nondeterministic
+ * init intermittently blows the 5000ms default timeout. Pinning makes the
+ * tests measure what their names claim.
+ *
+ * Note this changes coverage: 'should return empty for clean text' and
+ * 'should return entities sorted by position' previously ran with NER live.
+ * That is deliberate — NER coverage belongs in the files that opt in, not as
+ * an accidental side effect here.
+ */
+beforeAll(() => {
+  setNERDetector({
+    isAvailable: () => false,
+    detect: async () => [],
+    shutdown: () => {},
+    getModelManager: () => undefined as any
+  } as any)
+})
+afterAll(() => setNERDetector(null))
 
 describe('detectPII', () => {
   it('should detect email from regex layer', async () => {

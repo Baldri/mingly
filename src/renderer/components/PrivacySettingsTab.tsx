@@ -91,7 +91,7 @@ const NERModelSection = memo(function NERModelSection() {
     <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
       <div className="flex items-center justify-between mb-2">
         <h4 className="text-sm font-semibold text-gray-900 dark:text-white">
-          Personennamen-Erkennung (NER)
+          Erweiterte PII-Erkennung (NER)
         </h4>
         <div className="flex items-center gap-2">
           <span className={`h-2 w-2 rounded-full ${config.color}`} />
@@ -99,8 +99,41 @@ const NERModelSection = memo(function NERModelSection() {
         </div>
       </div>
 
-      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
-        piiranha-v1 erkennt Personennamen in DE, EN, FR und IT (~200 MB Download).
+      {/*
+        Copy states measured behaviour, not the model card's claims.
+        Measured 2026-08-05 against the local fp32 export (fs-instrumented:
+        onnx/model.onnx is the file actually loaded): across ten phrasings in
+        German and English the model returned ZERO GIVENNAME/SURNAME tokens
+        while returning 19 other PII tokens in the same run. Per-token
+        probabilities show this is not a threshold miss — O sits at
+        0.9985-0.9992 for name tokens, i.e. the model is confident. The label
+        set does contain I-GIVENNAME/I-SURNAME and the id2label mapping is
+        byte-identical to the upstream model's, so this is not a mapping
+        defect either. Upstream documents 93%/78% recall for those labels;
+        the ONNX export does not deliver it and the cause is not yet
+        isolated.
+
+        PERSON entities can only originate here — regex-detector.ts and
+        swiss-detector.ts produce none — so shield mode does not replace
+        person names at all. Promising that it does would be a false
+        assurance in a privacy feature, which is why the heading no longer
+        says "Personennamen-Erkennung".
+
+        Size was stated as "~200 MB", which matches model_quantized.onnx
+        (317 MB); the code loads fp32 (1.15 GB, see ner-worker.ts).
+
+        Revert this copy once names are actually detected — verify with a
+        measurement, not with the model card.
+      */}
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+        piiranha-v1 ergänzt die Muster-Erkennung um Adressen, Orte und
+        Geburtsdaten (1.15 GB Download).
+      </p>
+
+      <p className="text-xs text-amber-700 dark:text-amber-500 mb-3">
+        Personennamen erkennt dieses Modell derzeit nicht — sie bleiben auch
+        im Shield-Modus unersetzt. E-Mail-Adressen, Telefonnummern, AHV und
+        IBAN deckt weiterhin die Muster-Erkennung ab.
       </p>
 
       {nerStatus === 'downloading' && (

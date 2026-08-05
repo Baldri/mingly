@@ -1,8 +1,40 @@
 /**
  * PII Anonymizer Tests
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { PIIAnonymizer } from '../../src/main/privacy/anonymizer'
+import { setNERDetector } from '../../src/main/privacy/detector-pipeline'
+
+/**
+ * Pin layer 3 (NER) to unavailable for this file.
+ *
+ * These are unit tests for the anonymizer's replacement logic over the regex
+ * and Swiss layers; none of them asserts anything about NER. Left unpinned,
+ * anonymize() -> detectPII() constructs the real NERDetector, which spawns a
+ * worker thread and initialises a 1.15GB ONNX session. That init time is
+ * nondeterministic and intermittently exceeds vitest's 5000ms default,
+ * failing tests that have nothing to do with the model — measured
+ * 2026-08-05: the same command red, then green, then green on an otherwise
+ * unchanged tree.
+ *
+ * The timeout is NOT raised here: per CLAUDE.md a timeout bump is only
+ * acceptable for actual NER tests, and these are not. Tests that do exercise
+ * NER opt in explicitly — with a mock in
+ * tests/unit/privacy-nested-entity-offsets.test.ts, with the real model in
+ * tests/integration/privacy-anonymizer-round-trip.test.ts.
+ *
+ * This trap only became reachable on 2026-08-05, when the source-adjacent
+ * ner-worker.js artifact started existing and NER stopped being inert.
+ */
+beforeAll(() => {
+  setNERDetector({
+    isAvailable: () => false,
+    detect: async () => [],
+    shutdown: () => {},
+    getModelManager: () => undefined as any
+  } as any)
+})
+afterAll(() => setNERDetector(null))
 
 describe('PIIAnonymizer', () => {
   describe('constructor', () => {

@@ -53,8 +53,19 @@ export class NERModelManager {
       env.cacheDir = this.baseDir
       env.allowRemoteModels = true
 
-      // fp32 (non-quantized) model for full GIVENNAME/SURNAME detection quality.
-      // Quantized model loses name recognition. fp32 is ~1.15GB but inference is still <50ms.
+      // fp32 (non-quantized), ~1.15GB; inference is still <50ms.
+      //
+      // This comment used to justify fp32 with "full GIVENNAME/SURNAME
+      // detection quality — quantized model loses name recognition". Measured
+      // 2026-08-05: that claim does not hold for this export. Neither variant
+      // emits GIVENNAME/SURNAME at all — fp32 and model_quantized.onnx were
+      // A/B'd on the same sentences and behave identically on names, while
+      // both detect CITY/STREET/BUILDINGNUM/DATEOFBIRTH. So fp32 is not what
+      // buys name recognition; nothing currently does. Keeping fp32 for the
+      // categories that DO work, not for names.
+      //
+      // Do not restore the old rationale without re-measuring: it was the
+      // starting premise of an investigation and pointed it the wrong way.
       const pipe = await pipeline('token-classification', MODEL_ID, {
         dtype: 'fp32',
         progress_callback: (progress: { status: string; loaded?: number; total?: number }) => {
