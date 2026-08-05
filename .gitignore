@@ -56,3 +56,9 @@ docs/internal/
 docs/STRATEGY.md
 docs/MINGLY_PROJECT_PLAN.md
 docs/MINGLY_CRITICAL_REVIEW.md
+
+# NER worker build artifact — esbuild output placed next to its source so that
+# consumers importing src/main/privacy/ directly (rather than the dist bundle)
+# resolve path.join(__dirname, "ner-worker.js"). Generated, never edited.
+src/main/privacy/ner-worker.js
+src/main/privacy/ner-worker.js.map
