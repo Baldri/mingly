@@ -39,6 +39,28 @@ async function detect(text: string, requestId: string): Promise<void> {
 /** Tokens the tokenizer adds; they have no counterpart in the source text. */
 const SPECIAL_TOKEN = /^\[(CLS|SEP|PAD|UNK|MASK)\]$/
 
+/**
+ * Countries and continents reported as LOC but dropped as non-personal.
+ *
+ * The model tags them like any other place, and the anonymizer then swaps in
+ * a Swiss city — measured 2026-08-05: "das Wetter in der Schweiz" became
+ * "das Wetter in der Luzern", "exportiert nach Deutschland und Österreich"
+ * became "nach Luzern und Baden". A country on its own identifies nobody, so
+ * redacting it buys no privacy and costs the downstream model a sentence it
+ * can work with. The red-team catalog checks exactly this as a critical-tier
+ * false positive ("no-pii-text" in context-evasion.yaml).
+ *
+ * Deliberately narrow: only whole-span matches, so "Schweizerhof" and
+ * "Deutschlandsberg" stay locations. A city keeps being redacted — that one
+ * can narrow down a person.
+ */
+const NON_PERSONAL_PLACES = new Set([
+  'schweiz', 'suisse', 'svizzera', 'switzerland',
+  'deutschland', 'germany', 'österreich', 'oesterreich', 'austria',
+  'frankreich', 'france', 'italien', 'italy', 'liechtenstein',
+  'europa', 'europe', 'usa', 'amerika', 'america', 'asien', 'asia', 'afrika', 'africa'
+])
+
 /** Strip sub-word markers so a token can be located in the source text. */
 function tokenText(word: unknown): string {
   return String(word ?? '').replace(/^##/, '').replace(/^[▁\s]+/, '')
@@ -124,17 +146,22 @@ export function mergeTokens(tokens: any[], text: string): any[] {
   } | null = null
 
   const flush = () => {
-    if (current) {
+    if (!current) return
+    const original = text.slice(current.start, current.end)
+    const isNonPersonalPlace =
+      current.category === 'LOCATION' && NON_PERSONAL_PLACES.has(original.toLowerCase())
+
+    if (!isNonPersonalPlace) {
       entities.push({
         category: current.category,
-        original: text.slice(current.start, current.end),
+        original,
         start: current.start,
         end: current.end,
         confidence: Math.round(current.score * 100) / 100,
         source: 'ner'
       })
-      current = null
     }
+    current = null
   }
 
   for (let i = 0; i < aligned.length; i++) {
