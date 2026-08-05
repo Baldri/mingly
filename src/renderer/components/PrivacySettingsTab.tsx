@@ -91,7 +91,7 @@ const NERModelSection = memo(function NERModelSection() {
     <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
       <div className="flex items-center justify-between mb-2">
         <h4 className="text-sm font-semibold text-gray-900 dark:text-white">
-          Erweiterte PII-Erkennung (NER)
+          Personennamen-Erkennung (NER)
         </h4>
         <div className="flex items-center gap-2">
           <span className={`h-2 w-2 rounded-full ${config.color}`} />
@@ -100,40 +100,33 @@ const NERModelSection = memo(function NERModelSection() {
       </div>
 
       {/*
-        Copy states measured behaviour, not the model card's claims.
-        Measured 2026-08-05 against the local fp32 export (fs-instrumented:
-        onnx/model.onnx is the file actually loaded): across ten phrasings in
-        German and English the model returned ZERO GIVENNAME/SURNAME tokens
-        while returning 19 other PII tokens in the same run. Per-token
-        probabilities show this is not a threshold miss — O sits at
-        0.9985-0.9992 for name tokens, i.e. the model is confident. The label
-        set does contain I-GIVENNAME/I-SURNAME and the id2label mapping is
-        byte-identical to the upstream model's, so this is not a mapping
-        defect either. Upstream documents 93%/78% recall for those labels;
-        the ONNX export does not deliver it and the cause is not yet
-        isolated.
+        Copy states MEASURED behaviour, not the model card's claims — the
+        distinction is not pedantic here. Until 2026-08-05 this panel promised
+        name detection while the model in use delivered 2 of 20 name spans;
+        the claim came from a model card documenting 93%/78% recall that does
+        not reproduce outside its own test distribution.
 
-        PERSON entities can only originate here — regex-detector.ts and
-        swiss-detector.ts produce none — so shield mode does not replace
-        person names at all. Promising that it does would be a false
-        assurance in a privacy feature, which is why the heading no longer
-        says "Personennamen-Erkennung".
+        Current numbers, from `scripts/ner-eval/` against a 20-span
+        ground-truth battery in German and English (2026-08-05):
+          persons 19/20 · false positives 0 · locations 9/9 · ~12 ms · 712 MB
 
-        Size was stated as "~200 MB", which matches model_quantized.onnx
-        (317 MB); the code loads fp32 (1.15 GB, see ner-worker.ts).
+        Languages: the model card lists ten. Only German and English were
+        measured, so only those are named below.
 
-        Revert this copy once names are actually detected — verify with a
-        measurement, not with the model card.
+        Known gaps, deliberately not advertised away: a bare birth year
+        without a cue ("geboren 1980") is not detected — a cued date still is,
+        via the regex layer. Street names come back as LOC from the model, so
+        the Swiss pattern layer detects them explicitly (see
+        swiss-detector.ts) to keep the substitution plausible and to catch the
+        house number.
+
+        If the model is swapped again, re-run the battery and update these
+        numbers. Do not restore a capability claim from a model card.
       */}
-      <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-        piiranha-v1 ergänzt die Muster-Erkennung um Adressen, Orte und
-        Geburtsdaten (1.15 GB Download).
-      </p>
-
-      <p className="text-xs text-amber-700 dark:text-amber-500 mb-3">
-        Personennamen erkennt dieses Modell derzeit nicht — sie bleiben auch
-        im Shield-Modus unersetzt. E-Mail-Adressen, Telefonnummern, AHV und
-        IBAN deckt weiterhin die Muster-Erkennung ab.
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+        Erkennt Personennamen, Orte und Organisationen in Deutsch und Englisch
+        und ergänzt damit die Muster-Erkennung, die E-Mail, Telefon, AHV und
+        IBAN abdeckt (712 MB Download).
       </p>
 
       {nerStatus === 'downloading' && (

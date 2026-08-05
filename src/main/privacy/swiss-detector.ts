@@ -25,6 +25,26 @@ const CH_LANDLINE_PATTERN = /(?<=\s|^)(?:\+41\s?|0041\s?|0)(?:2[1-9]|3[1-4]|4[1-
 /** Swiss postal codes (1000-9999) followed by city name */
 const CH_PLZ_CITY_PATTERN = /\b([1-9]\d{3})\s+([A-ZÄÖÜ][a-zäöüéèê]+(?:\s[A-ZÄÖÜ][a-zäöüéèê]+)?)\b/g
 
+/**
+ * Street name with an optional house number.
+ *
+ * Layer 3 no longer emits STREET/BUILDINGNUM (see model-manager.ts): the
+ * current model returns a street as LOC, so shield mode substituted a CITY
+ * for it — "an der Bahnhofstrasse 12" became "an der Lausanne 12" — and left
+ * the number in the clear. German-language street names end in a small,
+ * closed set of suffixes, which makes them a pattern rather than a
+ * prediction; matching them here restores a plausible substitution and
+ * captures the number too.
+ *
+ * The leading part requires at least two lowercase letters before the
+ * suffix, which is what keeps a bare noun out: "Weg" has none, and
+ * "Bewegung" does not end on the suffix. A compound that merely ends in one
+ * of these ("Vorgehensweg") would match — over-redaction, which is the safe
+ * direction for a privacy filter, and rare in the texts this sees.
+ */
+const CH_STREET_PATTERN =
+  /\b[A-ZÄÖÜ][a-zäöüéèêß-]{2,}(?:strasse|straße|gasse|weg|platz|allee|ring|steig|damm|ufer)(?:\s+\d{1,4}\s?[a-zA-Z]?\b)?/g
+
 /** Swiss cantons (abbreviations) */
 const CANTONS = new Set([
   'AG', 'AI', 'AR', 'BE', 'BL', 'BS', 'FR', 'GE', 'GL', 'GR',
@@ -125,6 +145,28 @@ export function detectSwissPII(text: string): PIIEntity[] {
       confidence: 1.0,
       source: 'swiss',
       sensitivity: PII_SENSITIVITY.PHONE
+    })
+  }
+
+  // Street (+ house number)
+  //
+  // Confidence 1.0 like the other structural patterns here, and that value
+  // matters: deduplicateEntities resolves the overlap with the layer-3 LOC
+  // hit for the same street by confidence first, then by span. The model
+  // also reports 1.0, so the tie is broken by the longer span — which is the
+  // street *including* its number. A lower value here would silently hand
+  // the span back to LOC and undo the point of this pattern.
+  CH_STREET_PATTERN.lastIndex = 0
+  while ((match = CH_STREET_PATTERN.exec(text)) !== null) {
+    const original = match[0].trimEnd()
+    entities.push({
+      category: 'ADDRESS',
+      original,
+      start: match.index,
+      end: match.index + original.length,
+      confidence: 1.0,
+      source: 'swiss',
+      sensitivity: PII_SENSITIVITY.ADDRESS
     })
   }
 

@@ -36,82 +36,136 @@ async function detect(text: string, requestId: string): Promise<void> {
   }
 }
 
+/** Tokens the tokenizer adds; they have no counterpart in the source text. */
+const SPECIAL_TOKEN = /^\[(CLS|SEP|PAD|UNK|MASK)\]$/
+
+/** Strip sub-word markers so a token can be located in the source text. */
+function tokenText(word: unknown): string {
+  return String(word ?? '').replace(/^##/, '').replace(/^[▁\s]+/, '')
+}
+
+/** Drop the BIO prefix; `B-PER` and `I-PER` are the same label. */
+function stripBioPrefix(label: string): string {
+  return label.replace(/^[BI]-/, '')
+}
+
+interface AlignedToken {
+  label: string
+  rawLabel: string
+  /** True for `B-*`: forces a new entity even next to the same label. */
+  begin: boolean
+  start: number
+  end: number
+  score: number
+}
+
+/**
+ * Map each token back onto a character range of the ORIGINAL text.
+ *
+ * This replaces the previous approach of rebuilding the entity text from the
+ * token strings, which cannot work: the two tokenizers we have used mark
+ * sub-words in opposite ways, and a bare token means the opposite thing in
+ * each — WordPiece marks continuations with "##" (so a bare token starts a
+ * word), SentencePiece leaves continuations bare. Worse, even with the style
+ * known, WordPiece emits "-" as its own bare token, so any "bare token starts
+ * a word" rule turns "Zürcher-Gehrig AG" into "Zürcher - Gehrig AG" — a
+ * string that then cannot be found in the source at all.
+ *
+ * Walking the text with a cursor sidesteps the question entirely and yields
+ * exact offsets, so the entity text is a real substring rather than a
+ * reconstruction. Tokens that cannot be located (special tokens, `[UNK]`)
+ * return null and are dropped — the old `findInText` fallback returned
+ * `start: 0` for those, which would redact the wrong characters.
+ */
+function alignTokens(tokens: any[], text: string): (AlignedToken | null)[] {
+  let cursor = 0
+  return tokens.map((token) => {
+    const label = String(token.entity ?? token.entity_group ?? '')
+    const rawWord = String(token.word ?? '').trim()
+    const piece = tokenText(token.word)
+    if (!piece || SPECIAL_TOKEN.test(rawWord)) return null
+
+    let idx = text.indexOf(piece, cursor)
+    if (idx === -1) idx = text.toLowerCase().indexOf(piece.toLowerCase(), cursor)
+    if (idx === -1) return null
+
+    const end = idx + piece.length
+    cursor = end
+    return {
+      label,
+      rawLabel: stripBioPrefix(label),
+      begin: label.startsWith('B-'),
+      start: idx,
+      end,
+      score: typeof token.score === 'number' ? token.score : 1
+    }
+  })
+}
+
 /**
  * Merge adjacent sub-word tokens into full entities.
  *
- * piiranha-v1 specifics:
- * - Labels use I-* prefix only (I-GIVENNAME, I-SURNAME, I-CITY, etc.)
- * - start/end offsets may be null (ONNX models)
- * - Adjacent tokens with same/related label are merged
- * - word field contains sub-word tokens (may have leading space)
+ * Exported for tests: the fixtures in
+ * tests/unit/privacy-ner-token-alignment.test.ts are verbatim pipeline output
+ * from both tokenizer families.
  */
-function mergeTokens(tokens: any[], text: string): any[] {
+export function mergeTokens(tokens: any[], text: string): any[] {
+  const aligned = alignTokens(tokens, text)
   const entities: any[] = []
+
   let current: {
     category: string
     rawLabels: string[]
-    words: string[]
-    startIdx: number
-    endIdx: number
+    start: number
+    end: number
     score: number
-    start: number | null
-    end: number | null
+    /** Index in the token stream, to require contiguity when merging. */
+    tokenIdx: number
   } | null = null
 
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i]
-    const label = token.entity || token.entity_group || ''
-
-    // Skip O (Other) tokens
-    if (label === 'O') {
-      if (current) {
-        entities.push(finalizeEntity(current, text))
-        current = null
-      }
-      continue
+  const flush = () => {
+    if (current) {
+      entities.push({
+        category: current.category,
+        original: text.slice(current.start, current.end),
+        start: current.start,
+        end: current.end,
+        confidence: Math.round(current.score * 100) / 100,
+        source: 'ner'
+      })
+      current = null
     }
+  }
 
-    // Strip I- prefix to get raw label
-    const rawLabel = label.startsWith('I-') ? label.substring(2) : label
-    const category = mapLabel(rawLabel)
+  for (let i = 0; i < aligned.length; i++) {
+    const tok = aligned[i]
+    if (!tok || tok.label === 'O' || tok.label === '') { flush(); continue }
 
-    if (!category) {
-      if (current) {
-        entities.push(finalizeEntity(current, text))
-        current = null
-      }
-      continue
-    }
+    const category = mapLabel(tok.rawLabel)
+    if (!category) { flush(); continue }
 
-    // Should this token be merged with current entity?
-    const shouldMerge = current !== null &&
-      areMergeableLabels(current.rawLabels[0], rawLabel) &&
-      i === current.endIdx + 1
+    const contiguous = current !== null && i === current.tokenIdx + 1
+    const mergeable = current !== null && areMergeableLabels(current.rawLabels[0], tok.rawLabel)
 
-    if (shouldMerge && current) {
-      current.words.push(token.word)
-      current.rawLabels.push(rawLabel)
-      current.endIdx = i
-      current.score = Math.min(current.score, token.score)
-      if (token.end !== null && token.end !== undefined) {
-        current.end = token.end
-      }
+    if (current && contiguous && mergeable && !tok.begin) {
+      current.rawLabels.push(tok.rawLabel)
+      current.end = tok.end
+      current.score = Math.min(current.score, tok.score)
+      current.tokenIdx = i
     } else {
-      if (current) entities.push(finalizeEntity(current, text))
+      flush()
       current = {
         category,
-        rawLabels: [rawLabel],
-        words: [token.word],
-        startIdx: i,
-        endIdx: i,
-        score: token.score,
-        start: token.start,
-        end: token.end
+        rawLabels: [tok.rawLabel],
+        start: tok.start,
+        end: tok.end,
+        score: tok.score,
+        tokenIdx: i
       }
     }
   }
 
-  if (current) entities.push(finalizeEntity(current, text))
+  flush()
   return entities
 }
 
@@ -129,78 +183,23 @@ function areMergeableLabels(labelA: string, labelB: string): boolean {
   return false
 }
 
-function finalizeEntity(
-  e: {
-    category: string
-    rawLabels: string[]
-    words: string[]
-    score: number
-    start: number | null
-    end: number | null
-  },
-  text: string
-) {
-  // If GIVENNAME + SURNAME were merged, category is PERSON
-  const hasName = e.rawLabels.some(l => l === 'GIVENNAME' || l === 'SURNAME')
-  const category = hasName ? 'PERSON' : e.category
-
-  // Reconstruct text from word tokens
-  const reconstructed = e.words.join('').replace(/^\s+/, '')
-
-  // Try to find the reconstructed text in the original
-  let start = e.start
-  let end = e.end
-
-  if (start === null || start === undefined || end === null || end === undefined) {
-    // Offset reconstruction: find the token sequence in the original text
-    const searchResult = findInText(text, reconstructed)
-    start = searchResult.start
-    end = searchResult.end
-  }
-
-  return {
-    category,
-    original: reconstructed,
-    start: start ?? 0,
-    end: end ?? reconstructed.length,
-    confidence: Math.round(e.score * 100) / 100,
-    source: 'ner'
-  }
-}
-
 /**
- * Find a reconstructed token string in the original text.
- * Handles sub-word artifacts (partial matches, whitespace differences).
- */
-function findInText(text: string, needle: string): { start: number; end: number } {
-  // Direct search first
-  const idx = text.indexOf(needle)
-  if (idx !== -1) {
-    return { start: idx, end: idx + needle.length }
-  }
-
-  // Case-insensitive search
-  const lowerIdx = text.toLowerCase().indexOf(needle.toLowerCase())
-  if (lowerIdx !== -1) {
-    return { start: lowerIdx, end: lowerIdx + needle.length }
-  }
-
-  // Normalized search (collapse whitespace)
-  const normalized = needle.replace(/\s+/g, ' ').trim()
-  const normIdx = text.indexOf(normalized)
-  if (normIdx !== -1) {
-    return { start: normIdx, end: normIdx + normalized.length }
-  }
-
-  return { start: 0, end: needle.length }
-}
-
-/**
- * Map piiranha-v1 NER labels to PIICategory.
+ * Map NER labels to PIICategory. BIO prefixes are already stripped.
  *
- * piiranha labels: GIVENNAME, SURNAME, CITY, STREET, BUILDINGNUM,
- * ZIPCODE, EMAIL, TELEPHONENUM, DATEOFBIRTH, SOCIALNUM, CREDITCARDNUMBER,
- * ACCOUNTNUM, IDCARDNUM, DRIVERLICENSENUM, TAXNUM, PASSWORD, USERNAME
+ * ACTIVE MODEL — bert-base-multilingual-cased-ner-hrl: PER, ORG, LOC, DATE.
+ * PREVIOUS MODEL — piiranha-v1: GIVENNAME, SURNAME, CITY, STREET,
+ * BUILDINGNUM, ZIPCODE, EMAIL, TELEPHONENUM, DATEOFBIRTH, SOCIALNUM,
+ * CREDITCARDNUMBER, ACCOUNTNUM, IDCARDNUM, DRIVERLICENSENUM, TAXNUM,
+ * PASSWORD, USERNAME. Its labels stay mapped so a swap back needs no code
+ * change — see model-manager.ts for why the swap happened.
+ *
+ * DATE is deliberately NOT mapped. The active model tags every date, not
+ * only birth dates; routing them to DATE_OF_BIRTH would shift meeting dates
+ * and deadlines as if they were personal data. Birth dates keep their
+ * regex-layer coverage (`regex-detector.ts` matches a date with a cue such
+ * as "geboren am" or "DOB:"). Measured cost of dropping DATE: a bare year
+ * without a cue ("geboren 1980") is no longer detected — piiranha caught
+ * that one at confidence 0.69.
  */
 function mapLabel(label: string): string | null {
   const map: Record<string, string> = {

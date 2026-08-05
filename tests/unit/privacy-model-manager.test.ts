@@ -40,11 +40,17 @@ describe('NERModelManager', () => {
     expect(manager.getStatus()).toBe('ready')
   })
 
+  // The model id is asserted as a LITERAL on purpose, not read back from the
+  // manager — that would assert nothing. Swapping the model is a deliberate
+  // decision (see the rationale block in model-manager.ts), so it should
+  // require a deliberate edit here. Changed 2026-08-05 from
+  // 'onnx-community/piiranha-v1-detect-personal-information-ONNX' because
+  // that model detected 2 of 20 person spans while the settings panel
+  // promised name detection.
+  const MODEL_ID = 'Xenova/bert-base-multilingual-cased-ner-hrl'
+
   it('returns correct model directory path', () => {
-    const expected = path.join(
-      os.homedir(), '.mingly', 'models',
-      'onnx-community', 'piiranha-v1-detect-personal-information-ONNX'
-    )
+    const expected = path.join(os.homedir(), '.mingly', 'models', ...MODEL_ID.split('/'))
     expect(manager.getModelDir()).toBe(expected)
   })
 
@@ -53,15 +59,15 @@ describe('NERModelManager', () => {
     expect(manager.getCacheDir()).toBe(expected)
   })
 
-  it('getModelId returns piiranha model identifier', () => {
-    expect(manager.getModelId()).toBe('onnx-community/piiranha-v1-detect-personal-information-ONNX')
+  it('getModelId returns the configured model identifier', () => {
+    expect(manager.getModelId()).toBe(MODEL_ID)
   })
 
   it('delete removes model directory', () => {
     ;(fs.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(true)
     manager.deleteModel()
     expect(fs.rmSync).toHaveBeenCalledWith(
-      expect.stringContaining('piiranha-v1-detect-personal-information-ONNX'),
+      expect.stringContaining(MODEL_ID.split('/')[1]),
       { recursive: true, force: true }
     )
   })

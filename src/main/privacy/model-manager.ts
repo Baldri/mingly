@@ -4,7 +4,34 @@ import os from 'os'
 
 export type NERStatus = 'not_downloaded' | 'downloading' | 'ready' | 'error'
 
-const MODEL_ID = 'onnx-community/piiranha-v1-detect-personal-information-ONNX'
+/**
+ * Layer-3 NER model.
+ *
+ * Chosen 2026-08-05 BY MEASUREMENT against a 20-span ground-truth battery
+ * (`scripts/ner-eval/`), after the previous model was found unable to do the
+ * one job the privacy UI advertised. Numbers from that run:
+ *
+ *   model                                    persons  false  locations  ms   MB
+ *   bert-base-multilingual-cased-ner-hrl     19/20    0      9/9        12   712
+ *   distilbert-base-multilingual-…-ner-hrl   19/20    0      8/9         7   542
+ *   piiranha-v1 (previous)                    2/20    0      4/9        22  1483
+ *
+ * distilbert is smaller and faster but missed "Olten" — a Swiss town, which
+ * is exactly the population this product serves. The two are otherwise tied,
+ * including their single shared miss ("Dr. Jane Q. Public").
+ *
+ * The swap is a net gain on every axis that was measured EXCEPT two, named
+ * here so the cost is not hidden: this model has no BUILDINGNUM label, so a
+ * house number is no longer redacted (the street itself is — it comes back
+ * as LOC), and it has no DATEOFBIRTH label, so a bare year without a cue
+ * ("geboren 1980") is missed. Cued birth dates keep their regex coverage.
+ *
+ * Do not swap this back on a model card alone. piiranha's card documents
+ * 93%/78% recall for GIVENNAME/SURNAME; measured here it delivered 2 of 20,
+ * and its PyTorch original behaves identically — so the card describes its
+ * own test distribution, not this one.
+ */
+const MODEL_ID = 'Xenova/bert-base-multilingual-cased-ner-hrl'
 const DEFAULT_BASE_DIR = path.join(os.homedir(), '.mingly', 'models')
 
 export class NERModelManager {
@@ -53,19 +80,17 @@ export class NERModelManager {
       env.cacheDir = this.baseDir
       env.allowRemoteModels = true
 
-      // fp32 (non-quantized), ~1.15GB; inference is still <50ms.
+      // fp32 (non-quantized), ~712MB measured on disk; ~12ms per inference,
+      // well inside the latency class the settings panel states.
       //
-      // This comment used to justify fp32 with "full GIVENNAME/SURNAME
-      // detection quality — quantized model loses name recognition". Measured
-      // 2026-08-05: that claim does not hold for this export. Neither variant
-      // emits GIVENNAME/SURNAME at all — fp32 and model_quantized.onnx were
-      // A/B'd on the same sentences and behave identically on names, while
-      // both detect CITY/STREET/BUILDINGNUM/DATEOFBIRTH. So fp32 is not what
-      // buys name recognition; nothing currently does. Keeping fp32 for the
-      // categories that DO work, not for names.
-      //
-      // Do not restore the old rationale without re-measuring: it was the
-      // starting premise of an investigation and pointed it the wrong way.
+      // Historical note, kept because it cost a full investigation: this
+      // comment used to justify fp32 with "full GIVENNAME/SURNAME detection
+      // quality — quantized model loses name recognition", for the previous
+      // model. That was measurably wrong (fp32 and quantized behaved
+      // identically on names — neither detected any) and it sent the search
+      // for the cause in the wrong direction. A dtype choice is not a
+      // capability claim; if one is made here again, it needs a measurement
+      // next to it.
       const pipe = await pipeline('token-classification', MODEL_ID, {
         dtype: 'fp32',
         progress_callback: (progress: { status: string; loaded?: number; total?: number }) => {

@@ -49,19 +49,28 @@ describe.skipIf(SKIP)('PIIAnonymizer + rehydrate — real NER round trip', () =>
    * EMAIL match get collapsed away, so zero surviving NER entities is the
    * CORRECT outcome there. It therefore probes a separate text.
    *
-   * The probe text is not arbitrary. A bare person name ("Anna Meier arbeitet
-   * in Bern.") does NOT work as a control: piiranha-v1 as wired here returns []
-   * for it — measured directly against the worker, with three phrasings and in
-   * two languages. The probe below uses a sentence measured to yield ADDRESS
-   * and LOCATION entities that no regex or Swiss pattern produces, so a non-zero
-   * count can only come from a live NER layer.
+   * The probe asserts a PERSON specifically, not merely "some NER entity".
+   * Person detection is the capability this layer exists for since the model
+   * swap (see model-manager.ts), and no other layer can produce it — regex
+   * and Swiss detectors emit no PERSON. A weaker control would pass on a
+   * model that finds cities and nothing else, which is exactly the state the
+   * swap was meant to leave behind.
    */
   it(
-    'precondition: the real NER layer is actually live in this run',
+    'precondition: the real NER layer is live AND detects a person',
     async () => {
       const detection = await detectPII(
-        'Der Patient Hans Müller, geboren 1980, wohnt an der Bahnhofstrasse 12 in Zürich.'
+        'Der Patient Hans Müller wohnt an der Bahnhofstrasse 12 in Zürich.'
       )
+      const persons = detection.entities.filter(e => e.category === 'PERSON')
+      expect(
+        persons.map(p => p.original),
+        'No PERSON detected. Only the NER layer can produce one, so either the ' +
+        'layer is not running or the model cannot do names — the state that ' +
+        'prompted the 2026-08-05 model swap. Re-run scripts/ner-eval/ before ' +
+        'changing this expectation.'
+      ).toContain('Hans Müller')
+
       const nerEntities = detection.entities.filter(e => e.source === 'ner')
 
       expect(
