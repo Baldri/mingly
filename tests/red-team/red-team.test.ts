@@ -47,10 +47,34 @@ function loadCatalog(filename: string): TestCase[] {
   return parsed.tests ?? []
 }
 
+// --- Layer 3 OFF ---
+//
+// `setNERDetector(null)` does NOT disable NER. It clears the singleton, and
+// the next detectPII() constructs a REAL detector — which, whenever the model
+// is present on disk, spawns a worker thread and initialises an ONNX session.
+// The two helpers below called it before EVERY case, so the "2-Layer" mode
+// silently ran with layer 3 live and paid a model load per case.
+//
+// Measured 2026-08-05: the fork died partway through with "Worker exited
+// unexpectedly" after 25 of 143 cases on the pre-#14 tree and 40 on the
+// current one — non-deterministic, and in both cases the suite never
+// completed. The March baseline in results/ therefore could not be
+// reproduced at all; it was recorded when the model was not yet downloaded,
+// which is the only reason the same code measured a real 2-layer run then.
+//
+// Same class as the unit-test flake fixed on 2026-08-05: "reset to default"
+// and "off" are not the same thing, and the default here is expensive.
+const NER_OFF = {
+  isAvailable: () => false,
+  detect: async () => [],
+  shutdown: () => {},
+  getModelManager: () => undefined as any
+} as any
+
 // --- Detection Helper ---
 
 async function runDetection(input: string): Promise<string> {
-  setNERDetector(null)
+  setNERDetector(NER_OFF)
   const result = await detectPII(input)
   return JSON.stringify({
     detected: result.entities.length,
@@ -69,7 +93,7 @@ async function runDetection(input: string): Promise<string> {
 // --- Anonymization Helper ---
 
 async function runAnonymization(input: string, mode: 'shield' | 'vault' = 'shield'): Promise<string> {
-  setNERDetector(null)
+  setNERDetector(NER_OFF)
   const anonymizer = new PIIAnonymizer(`red-team-${Date.now()}`, mode)
   const result = await anonymizer.anonymize(input)
   const originalPII = result.replacements.map(r => r.entity.original)
@@ -109,7 +133,7 @@ const rehydrationSims: Record<string, { sim: LLMSim; mode: 'shield' | 'vault' }>
 }
 
 async function runRehydrationTest(input: string, simName: string): Promise<string> {
-  setNERDetector(null)
+  setNERDetector(NER_OFF)
   const { sim, mode } = rehydrationSims[simName] ?? rehydrationSims.passthrough
   const anonymizer = new PIIAnonymizer(`red-team-rehydration-${Date.now()}`, mode)
   const anonResult = await anonymizer.anonymize(input)
@@ -469,7 +493,9 @@ const run3Layer = process.env.RUN_3LAYER === '1'
   }, 60_000) // 60s timeout for model load
 
   afterAll(async () => {
-    setNERDetector(null)
+    // NER_OFF, not null: null would leave the next consumer to construct a
+    // real detector and load the model again.
+    setNERDetector(NER_OFF)
     if (nerDetector) await nerDetector.shutdown()
   })
 

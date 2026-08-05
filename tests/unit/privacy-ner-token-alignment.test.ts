@@ -113,6 +113,40 @@ describe('mergeTokens — SentencePiece (DeBERTa), bare token continues a word',
   })
 })
 
+describe('mergeTokens — countries are not personal data', () => {
+  /**
+   * The model tags countries and continents as LOC, which the anonymizer then
+   * substitutes with a Swiss CITY. Measured 2026-08-05 after the model swap:
+   *
+   *   "… das Wetter in der Schweiz."       -> "… das Wetter in der Luzern."
+   *   "… exportiert nach Deutschland …"    -> "… exportiert nach Luzern …"
+   *
+   * A country on its own does not identify a person, so redacting it buys no
+   * privacy while destroying the sentence the model downstream has to work
+   * with. The red-team catalog covers this as a critical-tier false-positive
+   * check ("no-pii-text"), which this regression broke.
+   */
+  const loc = (word: string, text: string) =>
+    mergeTokens(toTokens([['B-LOC', word]]), text).map(e => `${e.category}:${e.original}`)
+
+  it('drops countries and continents', () => {
+    expect(loc('Schweiz', 'Wetter in der Schweiz')).toEqual([])
+    expect(loc('Deutschland', 'Export nach Deutschland')).toEqual([])
+    expect(loc('Europa', 'Wetter in Europa')).toEqual([])
+  })
+
+  it('still reports cities and streets', () => {
+    expect(loc('Zürich', 'Der Zug nach Zürich')).toEqual(['LOCATION:Zürich'])
+    expect(loc('Boston', 'I live in Boston')).toEqual(['LOCATION:Boston'])
+  })
+
+  it('matches case-insensitively but only as a whole span', () => {
+    expect(loc('schweiz', 'ich wohne in schweiz')).toEqual([])
+    // "Schweizer" is not the country; it must survive as a location token.
+    expect(loc('Schweizerhof', 'Hotel Schweizerhof')).toEqual(['LOCATION:Schweizerhof'])
+  })
+})
+
 describe('mergeTokens — robustness', () => {
   it('returns nothing for an all-O stream', () => {
     expect(mergeTokens(toTokens([['O', 'Heute'], ['O', 'ist'], ['O', 'schön']]), 'Heute ist schön')).toEqual([])
