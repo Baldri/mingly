@@ -75,14 +75,24 @@ Datenschutz und kostet dem nachgelagerten Modell einen brauchbaren Satz.
 nur bei **Ganz-Span-Treffern**: «Schweizerhof» bleibt eine Location, Städte
 bleiben geschwärzt.
 
-## Offener Vorbefund, NICHT aus diesem Wechsel
+## Vorbefund, inzwischen behoben
 
 `Der Zug nach Zürich faellt aus.` → `Der Luzern nach Baden faellt aus.`
 
-Der Swiss-Detektor matcht die Stadt **Zug** im Wort «Zug». Homonym-Problem in
-`SWISS_CITIES`, unabhängig vom Modell und älter als dieser Lauf. Nicht
-angefasst, weil ausserhalb dieses Wechsels — gehört aber angesehen: Es trifft
-jeden Satz mit «Zug», «Baden», «Chur» in nicht-geografischer Bedeutung.
+Der Swiss-Detektor matchte die Stadt **Zug** im Wort «Zug» — Homonym-Problem
+in `SWISS_CITIES`, unabhängig vom Modell und älter als dieser Lauf.
+
+**Behoben am selben Tag.** Welche Namen betroffen sind, wurde gemessen statt
+angenommen: nur **Zug** und **Baden** feuerten in Nicht-Ort-Sätzen. Die hier
+zunächst ebenfalls genannte Stadt **«Chur» gehört NICHT dazu** — sie ist kein
+deutsches Wort; die Behauptung war ungeprüft und ist damit zurückgezogen.
+
+Beide Namen bleiben in der Liste (Layer 3 deckt sie nicht ab — «Ich wohne in
+Zug.» erzeugte *keine* NER-Entität) und brauchen jetzt einen vorangehenden
+Ortshinweis. Sprachlich trägt genau die Kontraktion die Unterscheidung:
+«in Zug» ist die Stadt, «im Zug» das Fahrzeug; «bei Baden» der Ort, «beim
+Baden» die Tätigkeit. Katalog-Score dadurch unverändert (kein Testfall deckt
+den Fall ab), volle Suite 1292 grün.
 
 ## Restliche rote Fälle (15, 3-Layer)
 
