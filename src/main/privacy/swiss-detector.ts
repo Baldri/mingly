@@ -45,6 +45,43 @@ const CH_PLZ_CITY_PATTERN = /\b([1-9]\d{3})\s+([A-ZÄÖÜ][a-zäöüéèê]+(?:\
 const CH_STREET_PATTERN =
   /\b[A-ZÄÖÜ][a-zäöüéèêß-]{2,}(?:strasse|straße|gasse|weg|platz|allee|ring|steig|damm|ufer)(?:\s+\d{1,4}\s?[a-zA-Z]?\b)?/g
 
+/**
+ * City names that are also ordinary German words.
+ *
+ * Matched as bare words, every "Zug" became a LOCATION and shield mode swapped
+ * a city in for it — measured 2026-08-05: "Der Zug nach Zürich faellt aus."
+ * became "Der Luzern nach Baden faellt aus."
+ *
+ * Membership is measured, not assumed. "Chur" was claimed to belong here and
+ * does not — it is no German word. Only these two fired in non-place
+ * sentences ("Er hat einen Zug gemacht", "Nach dem Baden gingen wir essen").
+ *
+ * They are not simply removed from SWISS_CITIES: layer 3 does not cover them
+ * either. "Ich wohne in Zug." produced no NER entity at all, only this Swiss
+ * match — dropping the name would lose a real city.
+ */
+const AMBIGUOUS_CITIES = new Set(['Zug', 'Baden'])
+
+/**
+ * A locative cue directly before an ambiguous name makes it a place.
+ *
+ * Anchored at the end of the text preceding the match. Deliberately narrow —
+ * a preposition, an administrative word, or a postal code. "Nach dem Baden"
+ * fails because the token before the name is "dem", not "nach".
+ *
+ * `im` and `beim` are deliberately NOT cues, and that is the sharpest signal
+ * German offers here: "in Zug" is the city, "im Zug" is the train; "bei
+ * Baden" is the town, "beim Baden" is the activity. The contracted form marks
+ * the common noun.
+ *
+ * Accepted cost: an ambiguous name at the start of a sentence
+ * ("Zug ist eine schöne Stadt.") has no cue and is missed. That is
+ * under-redaction of a city name — weak on its own — against mangling every
+ * sentence that mentions a train. A postal code still catches the address
+ * form via CH_PLZ_CITY_PATTERN.
+ */
+const LOCATIVE_CUE = /(?:\b(?:in|nach|aus|bei|von|zu|ab|über|ueber|via|um|Kanton|Stadt|Gemeinde|PLZ)\s+|\d{4}\s+)$/i
+
 /** Swiss cantons (abbreviations) */
 const CANTONS = new Set([
   'AG', 'AI', 'AR', 'BE', 'BL', 'BS', 'FR', 'GE', 'GL', 'GR',
@@ -194,7 +231,13 @@ export function detectSwissPII(text: string): PIIEntity[] {
       const alreadyCovered = entities.some(
         e => e.start <= match!.index && e.end >= match!.index + match![0].length
       )
-      if (!alreadyCovered) {
+
+      // Names that double as ordinary German words only count as a place when
+      // a locative cue precedes them — see AMBIGUOUS_CITIES / LOCATIVE_CUE.
+      const needsCue = AMBIGUOUS_CITIES.has(city)
+      const hasCue = !needsCue || LOCATIVE_CUE.test(text.slice(0, match.index))
+
+      if (!alreadyCovered && hasCue) {
         entities.push({
           category: 'LOCATION',
           original: match[0],
