@@ -21,3 +21,19 @@ describe('isPathSafe', () => {
     expect(isPathSafe('/a/photos/../etc/passwd', '/a/photos')).toBe(false)
   })
 })
+
+import { isPathWithinAllowedDirs } from '../../src/shared/file-access-types'
+describe('isPathWithinAllowedDirs', () => {
+  it('accepts a path inside one of the granted dirs', () => {
+    expect(isPathWithinAllowedDirs('/a/photos/x', ['/a/docs', '/a/photos'])).toBe(true)
+  })
+  it('rejects a path outside every granted dir', () => {
+    expect(isPathWithinAllowedDirs('/etc/passwd', ['/a/docs', '/a/photos'])).toBe(false)
+  })
+  it('rejects a sibling-prefix escape of a granted dir', () => {
+    expect(isPathWithinAllowedDirs('/a/photos-evil/x', ['/a/photos'])).toBe(false)
+  })
+  it('rejects everything when no directory is granted', () => {
+    expect(isPathWithinAllowedDirs('/a/photos/x', [])).toBe(false)
+  })
+})

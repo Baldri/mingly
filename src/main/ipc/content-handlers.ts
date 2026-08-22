@@ -9,6 +9,8 @@ import type { MessageAttachment } from '../../shared/types'
 import { ConversationModel } from '../database/models/conversation'
 import { MessageModel } from '../database/models/message'
 import { validateFilePath } from '../security/input-validator'
+import { getFileAccessManager } from '../file-access/file-access-manager'
+import { isPathWithinAllowedDirs } from '../../shared/file-access-types'
 import { wrapHandler, requireFeature } from './ipc-utils'
 
 export async function registerContentHandlers(): Promise<void> {
@@ -196,6 +198,13 @@ export async function registerContentHandlers(): Promise<void> {
       const pathValidation = validateFilePath(filePath)
       if (!pathValidation.valid) {
         return { success: false, error: pathValidation.error }
+      }
+      // Constrain reads to the granted-directory model — validateFilePath only
+      // blocks '..'/length, so without this any absolute path was readable
+      // (security audit 2026-08-21).
+      const allowedDirs = getFileAccessManager().getAllowedDirectories().map((d) => d.path)
+      if (!isPathWithinAllowedDirs(filePath, allowedDirs)) {
+        return { success: false, error: 'Access denied: file is not within a granted directory' }
       }
       const content = await fs.readFile(filePath, 'utf-8')
       return { success: true, content }
