@@ -94,6 +94,8 @@ export function isPathSafe(requestedPath: string, allowedDir: string): boolean {
   const resolved = path.resolve(requestedPath)
   const allowed = path.resolve(allowedDir)
 
-  // Path must be within allowed directory
-  return resolved.startsWith(allowed)
+  // Path must be the allowed directory itself or strictly inside it. The
+  // trailing separator prevents a sibling like /a/photos-evil from matching
+  // the grant for /a/photos (security audit 2026-08-21).
+  return resolved === allowed || resolved.startsWith(allowed + path.sep)
 }
