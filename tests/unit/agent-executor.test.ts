@@ -9,6 +9,22 @@ import type { AgentEvent } from '../../src/main/agent/agent-executor'
 import type { Message, ToolDefinition, AgentToolCall } from '../../src/shared/types'
 import type { ToolUseResponse } from '../../src/main/llm-clients/client-manager'
 
+// Isolate service-logic tests from the real security singletons: the pre-flight
+// guard is exercised by its own test (request-guard.test.ts); here it runs with
+// safe pass-through deps so it never blocks the logic under test.
+vi.mock('../../src/main/security/request-guard-deps', () => ({
+  getGuardDeps: () => ({
+    sanitize: () => ({ safe: true, riskScore: 0, warnings: [] }),
+    scanSensitive: () => ({ hasSensitiveData: false, matches: [], overallRiskLevel: 'none' }),
+    checkUploadPermission: async () => ({ decision: 'allowed', requiresUserConsent: false }),
+    checkBudget: () => ({ allowed: true }),
+    checkRouting: () => ({ allowed: true }),
+    isCloudProvider: () => false,
+    scanOutput: () => ({ violations: [] }),
+  }),
+}))
+
+
 // ── Mock setup ──────────────────────────────────────────────
 
 // Track mock call counts for LLM

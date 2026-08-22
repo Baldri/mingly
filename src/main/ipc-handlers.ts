@@ -7,23 +7,18 @@ import { MessageModel } from './database/models/message'
 import { getSystemPromptManager } from './prompts/system-prompt-manager'
 import { getCommandHandler } from './commands/command-handler'
 import { generateId } from './utils/id-generator'
-import { getSensitiveDataDetector } from './security/sensitive-data-detector'
-import { getUploadPermissionManager } from './security/upload-permission-manager'
+import { guardInput, guardDispatch } from './security/request-guard'
+import { getGuardDeps } from './security/request-guard-deps'
 import { getContextInjector } from './rag/context-injector'
 import { getMCPToolSelector } from './mcp/mcp-tool-selector'
-import { getBudgetManager } from './tracking/budget-manager'
 import { getTrackingEngine } from './tracking/tracking-engine'
-import { getInputSanitizer } from './security/input-sanitizer'
 import { getCircuitBreaker } from './security/circuit-breaker'
-import { getDataClassifier } from './security/data-classifier'
 import { getOutputGuardrails } from './security/output-guardrails'
 import { getCanaryTokenManager } from './security/canary-tokens'
 import { getFeatureGateManager } from './services/feature-gate-manager'
 import { getSessionManager } from './services/session-state'
 import { PromptTemplateModel } from './database/models/prompt-template'
 import { resolveTemplate } from './prompts/template-engine'
-import type { UploadPermissionRequest } from './security/upload-permission-manager'
-import crypto from 'crypto'
 
 // Modular IPC handler registration
 import { registerApiKeyHandlers } from './ipc/api-key-handlers'
@@ -50,8 +45,6 @@ function validateProvider(provider: string): provider is LLMProvider {
 const clientManager = getClientManager()
 const systemPromptManager = getSystemPromptManager()
 const commandHandler = getCommandHandler()
-const sensitiveDataDetector = getSensitiveDataDetector()
-const uploadPermissionManager = getUploadPermissionManager()
 const contextInjector = getContextInjector()
 const mcpToolSelector = getMCPToolSelector()
 const trackingEngine = getTrackingEngine()
@@ -96,88 +89,49 @@ export async function registerIPCHandlers(): Promise<void> {
 
         const userMessage = messages[messages.length - 1].content
 
-        // 0a. Prompt Injection Defense: Scan user input for injection patterns
-        const inputSanitizer = getInputSanitizer()
-        const sanitizationResult = inputSanitizer.sanitize(userMessage)
-        if (!sanitizationResult.safe) {
-          console.warn(
-            `[Security] Prompt injection risk detected (score: ${sanitizationResult.riskScore}, warnings: ${sanitizationResult.warnings.map(w => w.type).join(', ')})`
-          )
-          // Critical risk (score >= 80) — block the request
-          if (sanitizationResult.riskScore >= 80) {
-            event.sender.send('message:error', 'Message blocked: High-risk content detected. Please rephrase your message.')
-            return {
-              success: false,
-              error: 'Message blocked due to high-risk content patterns detected.',
-              injectionBlocked: true,
-              riskScore: sanitizationResult.riskScore,
-              warnings: sanitizationResult.warnings.map(w => ({ type: w.type, severity: w.severity }))
-            }
+        // 0. Input guards: prompt-injection scan + sensitive-data/upload consent.
+        //    Shared with the agent/comparison/HTTP paths (see request-guard.ts).
+        const inputGuard = await guardInput(
+          { texts: messages.map((m) => m.content), provider, model, conversationId },
+          getGuardDeps(),
+        )
+        if (inputGuard.kind === 'injection') {
+          console.warn(`[Security] Prompt injection risk detected (score: ${inputGuard.riskScore})`)
+          event.sender.send('message:error', 'Message blocked: High-risk content detected. Please rephrase your message.')
+          return {
+            success: false,
+            error: 'Message blocked due to high-risk content patterns detected.',
+            injectionBlocked: true,
+            riskScore: inputGuard.riskScore,
+            warnings: inputGuard.warnings.map((w) => ({ type: w.type, severity: w.severity }))
           }
-          // Medium risk (50-79) — warn but allow (defense in depth — LLM has its own safeguards)
         }
-
-        // 0b. Security Check: Scan for sensitive data before sending to cloud LLMs
-        const fullMessageContent = messages.map((m) => m.content).join('\n')
-
-        // Determine destination type
-        const isCloudProvider = provider === 'anthropic' || provider === 'openai' || provider === 'google'
-        const destination = isCloudProvider ? 'cloud' : 'local'
-
-        // Scan for sensitive data
-        const scanResult = sensitiveDataDetector.scan(fullMessageContent)
-
-        if (scanResult.hasSensitiveData && destination === 'cloud') {
-          console.log(
-            `⚠️ Sensitive data detected (${scanResult.matches.length} items, risk: ${scanResult.overallRiskLevel})`
-          )
-
-          // Create upload permission request
-          const fileId = crypto.createHash('sha256').update(fullMessageContent).digest('hex')
-          const request: UploadPermissionRequest = {
-            fileId,
-            filePath: '<message-content>',
-            directoryId: 'conversation',
-            destination,
-            provider,
-            scanResult,
-            timestamp: Date.now()
+        if (inputGuard.kind === 'sensitive-denied') {
+          console.log(`\u{1F6AB} Upload blocked: ${inputGuard.reason}`)
+          event.sender.send('message:error', inputGuard.reason)
+          return {
+            success: false,
+            error: inputGuard.reason,
+            sensitiveDataBlocked: true,
+            scanResult: inputGuard.scanResult
           }
-
-          // Check permission
-          const permissionResponse = await uploadPermissionManager.checkUploadPermission(request)
-
-          if (permissionResponse.decision === 'denied') {
-            // Blocked - sensitive data detected
-            console.log(`🚫 Upload blocked: ${permissionResponse.reason}`)
-            event.sender.send('message:error', permissionResponse.reason)
-            return {
-              success: false,
-              error: permissionResponse.reason,
-              sensitiveDataBlocked: true,
-              scanResult
-            }
-          }
-
-          if (permissionResponse.requiresUserConsent) {
-            // Need user consent - send request to renderer
-            console.log(`⏸️ User consent required for sensitive data upload`)
-            event.sender.send('message:permission-required', {
-              request,
-              response: permissionResponse,
-              matches: scanResult.matches.map((m) => ({
-                type: m.type,
-                value: m.value,
-                riskLevel: m.riskLevel
-              }))
-            })
-
-            return {
-              success: false,
-              pendingConsent: true,
-              request,
-              scanResult
-            }
+        }
+        if (inputGuard.kind === 'consent') {
+          console.log(`\u{23F8}\u{FE0F} User consent required for sensitive data upload`)
+          event.sender.send('message:permission-required', {
+            request: inputGuard.request,
+            response: inputGuard.response,
+            matches: inputGuard.scanResult.matches.map((m) => ({
+              type: m.type,
+              value: m.value,
+              riskLevel: m.riskLevel
+            }))
+          })
+          return {
+            success: false,
+            pendingConsent: true,
+            request: inputGuard.request,
+            scanResult: inputGuard.scanResult
           }
         }
 
@@ -207,51 +161,34 @@ export async function registerIPCHandlers(): Promise<void> {
         }
 
         // 2. Extract actual message (if mode modifier was used)
-        const actualMessage = commandHandler.extractMessage(userMessage, commandResult)
+        // Use the sanitiser's cleaned output (invisible chars removed, homoglyphs
+        // normalised) as what actually reaches the LLM — previously discarded
+        // (security audit 2026-08-21). inputGuard is narrowed to 'ok' here.
+        const cleanedUserMessage = inputGuard.sanitizedText ?? userMessage
+        const actualMessage = commandHandler.extractMessage(cleanedUserMessage, commandResult)
         const mode = commandHandler.getMode(commandResult)
 
-        // 3. Budget enforcement (MANDATORY) — check BEFORE expensive RAG/MCP operations
-        const budgetMgr = getBudgetManager()
-        const budgetCheck = budgetMgr.checkBudget(provider)
-        if (!budgetCheck.allowed) {
-          if (budgetCheck.fallbackProvider) {
-            // Silent fallback — switch provider and log the decision
-            const originalProvider = provider
-            provider = budgetCheck.fallbackProvider
-            console.log(
-              `[Budget] Provider switched: ${originalProvider} -> ${provider}. Reason: ${budgetCheck.reason}`
-            )
-          } else {
-            // No fallback available — block the request
-            const budgetError = budgetCheck.reason || 'Monthly budget exceeded for this provider.'
-            throw new Error(budgetError)
-          }
-        }
-
-        // 3a. Data Classification & Routing: Auto-classify content sensitivity
-        const dataClassifier = getDataClassifier()
-        const routingDecision = dataClassifier.checkRouting(
-          messages.map((m) => m.content).join('\n'),
-          provider
+        // 3. Dispatch guards: budget enforcement + sensitivity routing (shared).
+        const dispatch = guardDispatch(
+          { texts: messages.map((m) => m.content), provider, model, conversationId },
+          getGuardDeps(),
         )
-
-        if (!routingDecision.allowed) {
-          if (routingDecision.suggestedProvider) {
-            // Auto-fallback to safer provider
-            const originalProvider = provider
-            provider = routingDecision.suggestedProvider
-            console.log(
-              `[DataClassifier] Provider switched: ${originalProvider} -> ${provider} (sensitivity: ${routingDecision.classification.sensitivity})`
-            )
+        if (!dispatch.ok) {
+          // Budget/routing hard block — no safe fallback available.
+          throw new Error(dispatch.reason)
+        }
+        if (dispatch.provider !== provider) {
+          console.log(`[Guard] Provider switched: ${provider} -> ${dispatch.provider}`)
+          provider = dispatch.provider
+        }
+        for (const warning of dispatch.warnings) {
+          if (warning.type === 'routing_fallback') {
             event.sender.send('message:safety-warning', {
               type: 'fallback_triggered',
               level: 'warning',
-              message: `Content classified as "${routingDecision.classification.sensitivity}" — routed to ${provider}.`,
-              details: { provider, reasons: routingDecision.classification.reasons }
+              message: warning.message,
+              details: { provider, reasons: warning.reasons ?? [] }
             })
-          } else {
-            // No safe provider available — block
-            throw new Error(routingDecision.reason)
           }
         }
 

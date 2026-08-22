@@ -8,6 +8,8 @@
  * This does NOT replace ipc-handlers.ts — it wraps the same singleton
  * managers so both transports share one set of state.
  */
+import { preflightGuard } from '../security/request-guard'
+import { getGuardDeps } from '../security/request-guard-deps'
 
 import { getClientManager } from '../llm-clients/client-manager'
 import { getNetworkAIManager } from '../network/network-ai-manager'
@@ -83,10 +85,24 @@ export class ServiceLayer {
     request: ChatRequest,
     onEvent: (event: ChatStreamEvent) => void
   ): Promise<ChatResponse> {
-    const { conversationId, messages, provider, model, temperature = 1.0 } = request
+    const { conversationId, messages, model, temperature = 1.0 } = request
+    let provider = request.provider
 
     try {
       const userMessage = messages[messages.length - 1].content
+
+      // Pre-flight security guard — the HTTP/WS path reaches this shared
+      // pipeline without the chat-IPC guards (injection / sensitive-data
+      // consent / budget / routing). Fail closed if blocked.
+      const preflight = await preflightGuard(
+        { texts: messages.map((m) => m.content), provider, model, conversationId },
+        getGuardDeps(),
+      )
+      if (!preflight.ok) {
+        onEvent({ type: 'error', error: preflight.reason ?? 'Blocked by security guard' })
+        return { success: false, error: preflight.reason ?? 'Blocked by security guard' }
+      }
+      provider = preflight.provider
 
       // 1. Check for commands
       const commandResult = await this.commandHandler.handleCommand(userMessage)

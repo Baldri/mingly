@@ -1,4 +1,6 @@
 import { getClientManager } from '../llm-clients/client-manager'
+import { preflightGuard } from '../security/request-guard'
+import { getGuardDeps } from '../security/request-guard-deps'
 import { ComparisonModel } from '../database/models/comparison'
 import { generateId } from '../utils/id-generator'
 import type { Message } from '../../shared/types'
@@ -91,6 +93,17 @@ export class ComparisonService {
   ): Promise<ComparisonResult> {
     if (delayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
+
+    // Pre-flight security guard for this specific model. A comparison targets a
+    // chosen provider/model, so any block OR a routing/budget switch means this
+    // model must not receive the content — fail closed (allSettled records it).
+    const preflight = await preflightGuard(
+      { texts: messages.map((m) => m.content), provider: modelConfig.provider, model: modelConfig.model },
+      getGuardDeps(),
+    )
+    if (!preflight.ok) {
+      throw new Error(preflight.reason ?? 'Blocked by security guard for this model')
     }
 
     const startTime = Date.now()

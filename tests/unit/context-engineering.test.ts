@@ -16,6 +16,19 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 
+vi.mock('../../src/main/security/request-guard-deps', () => ({
+  getGuardDeps: () => ({
+    sanitize: () => ({ safe: true, riskScore: 0, warnings: [] }),
+    scanSensitive: () => ({ hasSensitiveData: false, matches: [], overallRiskLevel: 'none' }),
+    checkUploadPermission: async () => ({ decision: 'allowed', requiresUserConsent: false }),
+    checkBudget: () => ({ allowed: true }),
+    checkRouting: () => ({ allowed: true }),
+    isCloudProvider: () => false,
+    scanOutput: () => ({ violations: [] }),
+  }),
+}))
+
+
 // ── Mock setup ──────────────────────────────────────────────
 
 let llmCallCount = 0
