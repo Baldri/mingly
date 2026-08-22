@@ -160,3 +160,15 @@ describe('MCP Sanitizer', () => {
     })
   })
 })
+
+// Security regression (audit 2026-08-21): the basename allowlist was checked
+// BEFORE the safe-directory rule, so a renamed binary passed on basename alone.
+describe('validateCommand — path validated before basename allowlist', () => {
+  it('rejects an allowlisted basename in an UNSAFE absolute dir', () => {
+    expect(validateCommand('/tmp/evil/python3').valid).toBe(false)
+  })
+  it('rejects an allowlisted basename via a RELATIVE path', () => {
+    expect(validateCommand('./evil/python3').valid).toBe(false)
+    expect(validateCommand('evil/python3').valid).toBe(false)
+  })
+})

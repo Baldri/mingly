@@ -99,3 +99,11 @@ export function isPathSafe(requestedPath: string, allowedDir: string): boolean {
   // the grant for /a/photos (security audit 2026-08-21).
   return resolved === allowed || resolved.startsWith(allowed + path.sep)
 }
+
+/**
+ * Security: is the path inside ANY of the granted directories?
+ * Used to constrain raw file reads to the user's granted-directory model.
+ */
+export function isPathWithinAllowedDirs(requestedPath: string, allowedDirPaths: string[]): boolean {
+  return allowedDirPaths.some((dir) => isPathSafe(requestedPath, dir))
+}
