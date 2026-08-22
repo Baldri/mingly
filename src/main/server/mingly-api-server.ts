@@ -21,6 +21,7 @@ import { createServer, IncomingMessage, ServerResponse } from 'http'
 import { WebSocketServer, WebSocket } from 'ws'
 import { getServiceLayer, ChatStreamEvent } from '../services/service-layer'
 import type { MinglyServerConfig, APIServerInfo, APIHealthResponse, APIChatRequest } from '../../shared/deployment-types'
+import { checkApiAuth, applyCorsHeaders, assertAuthConfig } from './api-auth'
 import { generateId } from '../utils/id-generator'
 import { createLogger } from '../../shared/logger'
 
@@ -48,13 +49,14 @@ export class MinglyAPIServer {
    * Start the API server
    */
   async start(): Promise<void> {
+    assertAuthConfig(this.config)
     this.startTime = Date.now()
     const serviceLayer = getServiceLayer()
 
     // Create HTTP server
     this.httpServer = createServer(async (req, res) => {
       // CORS headers
-      this.setCORSHeaders(res)
+      this.setCORSHeaders(res, req)
 
       if (req.method === 'OPTIONS') {
         res.writeHead(204)
@@ -385,23 +387,11 @@ export class MinglyAPIServer {
   // ── Helpers ───────────────────────────────────────────────────
 
   private checkAuth(req: IncomingMessage): boolean {
-    if (!this.config.requireAuth || !this.config.apiKey) return true
-
-    const authHeader = req.headers['authorization']
-    if (!authHeader) return false
-
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader
-    return token === this.config.apiKey
+    return checkApiAuth(this.config, req)
   }
 
-  private setCORSHeaders(res: ServerResponse): void {
-    const origins = this.config.corsOrigins.length > 0
-      ? this.config.corsOrigins.join(', ')
-      : '*'
-
-    res.setHeader('Access-Control-Allow-Origin', origins)
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+  private setCORSHeaders(res: ServerResponse, req: IncomingMessage): void {
+    applyCorsHeaders(this.config, req, res)
   }
 
   private sendJSON(res: ServerResponse, status: number, data: any): void {
