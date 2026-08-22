@@ -11,21 +11,16 @@
  */
 
 import { app, safeStorage } from 'electron'
-import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
-
-// Legacy constants (for migration only)
-const LEGACY_ALGORITHM = 'aes-256-gcm'
-const LEGACY_IV_LENGTH = 16
-const LEGACY_AUTH_TAG_LENGTH = 16
-const LEGACY_KEY_LENGTH = 32
-const LEGACY_APP_SALT = 'mingly-secure-store-v1'
+import { gcmEncrypt, gcmDecrypt, deriveKeyFromPath, getOrCreateRandomKey } from './encrypted-store-crypto'
 
 interface LegacyEncryptedEntry {
   iv: string
   data: string
   tag: string
+  /** 'random' = new per-install fallback key; absent = legacy path-derived key. */
+  keyId?: 'random'
 }
 
 interface SafeStorageEntry {
@@ -46,6 +41,7 @@ export class EncryptedStore {
   private entries: Record<string, StoreEntry> = {}
   private useSafeStorage: boolean
   private legacyKey: Buffer | null = null
+  private fallbackKey: Buffer | null = null
 
   constructor(filename: string = 'secure-keys.enc.json') {
     const userDataPath = app.getPath('userData')
@@ -53,8 +49,11 @@ export class EncryptedStore {
     this.useSafeStorage = safeStorage.isEncryptionAvailable()
 
     if (!this.useSafeStorage) {
-      // Fallback: derive legacy key for environments without safeStorage
+      // Fallback (no OS keychain): use a persisted RANDOM key, not one derived
+      // from the predictable userData path. The path-derived key is kept only
+      // to read entries written by the old scheme.
       this.legacyKey = this.deriveLegacyKey(userDataPath)
+      this.fallbackKey = getOrCreateRandomKey(this.storePath + '.key')
       console.warn('[EncryptedStore] safeStorage unavailable — using AES-256-GCM fallback')
     }
 
@@ -64,13 +63,23 @@ export class EncryptedStore {
 
   /** Derive legacy encryption key (for migration and fallback) */
   private deriveLegacyKey(userDataPath: string): Buffer {
-    return crypto.pbkdf2Sync(
-      userDataPath,
-      LEGACY_APP_SALT,
-      100_000,
-      LEGACY_KEY_LENGTH,
-      'sha512'
-    )
+    return deriveKeyFromPath(userDataPath)
+  }
+
+  private ensureFallbackKey(): Buffer {
+    if (!this.fallbackKey) this.fallbackKey = getOrCreateRandomKey(this.storePath + '.key')
+    return this.fallbackKey
+  }
+
+  private ensurePathKey(): Buffer {
+    if (!this.legacyKey) this.legacyKey = deriveKeyFromPath(app.getPath('userData'))
+    return this.legacyKey
+  }
+
+  /** Pick the decryption key: random fallback key for current-scheme entries,
+   *  else the legacy path-derived key for old data. */
+  private keyFor(entry: LegacyEncryptedEntry): Buffer {
+    return entry.keyId === 'random' ? this.ensureFallbackKey() : this.ensurePathKey()
   }
 
   private loadFromDisk(): void {
@@ -103,17 +112,13 @@ export class EncryptedStore {
   private migrateToSafeStorage(): void {
     if (!this.useSafeStorage) return
 
-    // Need legacy key to decrypt old entries
-    const userDataPath = app.getPath('userData')
-    const legacyKey = this.deriveLegacyKey(userDataPath)
-
     let migrated = 0
     for (const [key, entry] of Object.entries(this.entries)) {
       if (isSafeStorageEntry(entry)) continue // Already migrated
 
       // Decrypt with legacy AES-256-GCM
       try {
-        const plaintext = this.decryptLegacy(entry as LegacyEncryptedEntry, legacyKey)
+        const plaintext = this.decryptLegacy(entry as LegacyEncryptedEntry)
         // Re-encrypt with safeStorage
         const encrypted = safeStorage.encryptString(plaintext)
         this.entries[key] = { encrypted: encrypted.toString('base64'), v: 2 }
@@ -129,44 +134,14 @@ export class EncryptedStore {
     }
   }
 
-  /** Decrypt a legacy AES-256-GCM entry */
-  private decryptLegacy(entry: LegacyEncryptedEntry, encryptionKey: Buffer): string {
-    const iv = Buffer.from(entry.iv, 'base64')
-    const data = Buffer.from(entry.data, 'base64')
-    const tag = Buffer.from(entry.tag, 'base64')
-
-    const decipher = crypto.createDecipheriv(LEGACY_ALGORITHM, encryptionKey, iv, {
-      authTagLength: LEGACY_AUTH_TAG_LENGTH
-    })
-    decipher.setAuthTag(tag)
-
-    const decrypted = Buffer.concat([
-      decipher.update(data),
-      decipher.final()
-    ])
-
-    return decrypted.toString('utf-8')
+  /** Decrypt an AES-256-GCM entry, picking the right key by its keyId. */
+  private decryptLegacy(entry: LegacyEncryptedEntry): string {
+    return gcmDecrypt(entry, this.keyFor(entry))
   }
 
-  /** Encrypt with legacy AES-256-GCM (fallback only) */
+  /** Encrypt with the random fallback key (used only when safeStorage is off). */
   private encryptLegacy(plaintext: string): LegacyEncryptedEntry {
-    if (!this.legacyKey) throw new Error('Legacy key not available')
-
-    const iv = crypto.randomBytes(LEGACY_IV_LENGTH)
-    const cipher = crypto.createCipheriv(LEGACY_ALGORITHM, this.legacyKey, iv, {
-      authTagLength: LEGACY_AUTH_TAG_LENGTH
-    })
-
-    const encrypted = Buffer.concat([
-      cipher.update(plaintext, 'utf-8'),
-      cipher.final()
-    ])
-
-    return {
-      iv: iv.toString('base64'),
-      data: encrypted.toString('base64'),
-      tag: cipher.getAuthTag().toString('base64')
-    }
+    return { ...gcmEncrypt(plaintext, this.ensureFallbackKey()), keyId: 'random' }
   }
 
   get(key: string): string | undefined {
@@ -179,15 +154,8 @@ export class EncryptedStore {
         return safeStorage.decryptString(buffer)
       }
 
-      // Legacy fallback
-      if (this.legacyKey) {
-        return this.decryptLegacy(entry as LegacyEncryptedEntry, this.legacyKey)
-      }
-
-      // safeStorage available but entry is legacy — should have been migrated
-      const userDataPath = app.getPath('userData')
-      const legacyKey = this.deriveLegacyKey(userDataPath)
-      return this.decryptLegacy(entry as LegacyEncryptedEntry, legacyKey)
+      // Legacy / fallback entry — keyFor picks the right key by keyId.
+      return this.decryptLegacy(entry as LegacyEncryptedEntry)
     } catch {
       // Decrypt failed — likely caused by adhoc re-signing after rebuild.
       // Remove the corrupted entry so the user can re-enter the key cleanly.
