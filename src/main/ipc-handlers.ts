@@ -161,7 +161,11 @@ export async function registerIPCHandlers(): Promise<void> {
         }
 
         // 2. Extract actual message (if mode modifier was used)
-        const actualMessage = commandHandler.extractMessage(userMessage, commandResult)
+        // Use the sanitiser's cleaned output (invisible chars removed, homoglyphs
+        // normalised) as what actually reaches the LLM — previously discarded
+        // (security audit 2026-08-21). inputGuard is narrowed to 'ok' here.
+        const cleanedUserMessage = inputGuard.sanitizedText ?? userMessage
+        const actualMessage = commandHandler.extractMessage(cleanedUserMessage, commandResult)
         const mode = commandHandler.getMode(commandResult)
 
         // 3. Dispatch guards: budget enforcement + sensitivity routing (shared).

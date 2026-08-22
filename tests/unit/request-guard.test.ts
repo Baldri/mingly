@@ -114,6 +114,11 @@ describe('guardInput (chat phase 1)', () => {
     const r = await guardInput(input({ provider: 'local' }), deps({ scanSensitive: () => { scanned = true; return { hasSensitiveData: true, matches: [], overallRiskLevel: 'high' } } }))
     expect(r.kind).toBe('ok'); expect(scanned).toBe(false)
   })
+  it('surfaces the sanitized (invisible/homoglyph-cleaned) last message on ok', async () => {
+    const r = await guardInput(input(), deps({ sanitize: () => ({ safe: true, riskScore: 0, warnings: [], sanitized: 'cleaned' }) }))
+    expect(r.kind).toBe('ok')
+    if (r.kind === 'ok') expect(r.sanitizedText).toBe('cleaned')
+  })
 })
 
 describe('guardDispatch (chat phase 2)', () => {

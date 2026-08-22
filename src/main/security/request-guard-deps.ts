@@ -14,7 +14,10 @@ const CLOUD_PROVIDERS = new Set(['anthropic', 'openai', 'google'])
 
 export function getGuardDeps(): GuardDeps {
   return {
-    sanitize: (text) => getInputSanitizer().sanitize(text),
+    sanitize: (text) => {
+      const r = getInputSanitizer().sanitize(text)
+      return { safe: r.safe, riskScore: r.riskScore, warnings: r.warnings, sanitized: r.sanitized }
+    },
     scanSensitive: (text) => getSensitiveDataDetector().scan(text) as unknown as SensitiveScan,
     checkUploadPermission: async ({ fullContent, provider, scan }) => {
       const request: UploadPermissionRequest = {

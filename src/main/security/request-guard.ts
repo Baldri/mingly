@@ -10,7 +10,7 @@
 // Pure orchestration, imports only types → unit-testable without the
 // Electron/model module graph (concrete components injected as GuardDeps).
 
-export interface SanitizeResult { safe: boolean; riskScore: number; warnings: { type: string; severity: string }[] }
+export interface SanitizeResult { safe: boolean; riskScore: number; warnings: { type: string; severity: string }[]; sanitized?: string }
 export interface SensitiveScan { hasSensitiveData: boolean; matches: { type: string; value: string; riskLevel: string }[]; overallRiskLevel: string }
 export interface UploadDecision { decision: string; reason?: string; requiresUserConsent?: boolean; request?: unknown }
 export interface BudgetCheck { allowed: boolean; fallbackProvider?: string; reason?: string }
@@ -40,7 +40,7 @@ const INJECTION_BLOCK_SCORE = 80
 // ── Phase 1: input guards (injection + sensitive-data/consent) ─────────
 
 export type InputGuardOutcome =
-  | { kind: 'ok' }
+  | { kind: 'ok'; sanitizedText?: string }
   | { kind: 'injection'; riskScore: number; warnings: { type: string; severity: string }[] }
   | { kind: 'sensitive-denied'; reason: string; scanResult: SensitiveScan }
   | { kind: 'consent'; scanResult: SensitiveScan; request: unknown; response: UploadDecision }
@@ -51,6 +51,7 @@ export async function guardInput(input: PreflightInput, deps: GuardDeps): Promis
   const last = texts[texts.length - 1] ?? ''
 
   const san = deps.sanitize(last)
+  const sanitizedText = san.sanitized
   if (!san.safe && san.riskScore >= INJECTION_BLOCK_SCORE) {
     return { kind: 'injection', riskScore: san.riskScore, warnings: san.warnings }
   }
@@ -68,7 +69,7 @@ export async function guardInput(input: PreflightInput, deps: GuardDeps): Promis
     }
   }
 
-  return { kind: 'ok' }
+  return { kind: 'ok', sanitizedText }
 }
 
 // ── Phase 2: dispatch guards (budget + routing) ────────────────────────
@@ -135,6 +136,7 @@ export interface PreflightResult {
   blockedKind?: BlockedKind
   reason?: string
   requiresConsent?: boolean
+  sanitizedText?: string
   warnings: { type: string; message?: string }[]
 }
 
@@ -162,6 +164,7 @@ export async function preflightGuard(input: PreflightInput, deps: GuardDeps): Pr
     provider: disp.provider,
     blockedKind: disp.blockedKind,
     reason: disp.reason,
+    sanitizedText: inGuard.sanitizedText,
     warnings: disp.warnings.map((w) => ({ type: w.type, message: w.message })),
   }
 }
