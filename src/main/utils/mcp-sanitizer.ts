@@ -63,19 +63,23 @@ export function validateCommand(command: string): SanitizeResult {
 
   // Extract base command name (handle paths like /usr/bin/python3)
   const baseName = trimmed.split('/').pop()?.split('\\').pop() || ''
+  const isPath = trimmed.includes('/') || trimmed.includes('\\')
 
-  // Allow whitelisted commands
-  if (ALLOWED_COMMANDS.has(baseName)) {
+  // The basename allowlist applies ONLY to bare command names. A PATH must be
+  // validated as a path — a renamed binary in an unsafe directory
+  // (e.g. /tmp/evil/python3, ./evil/python3) must not pass just because its
+  // basename is allowlisted (security audit 2026-08-21).
+  if (!isPath && ALLOWED_COMMANDS.has(baseName)) {
     return { valid: true }
   }
 
-  // Allow absolute paths only from safe directories
-  if (trimmed.startsWith('/') || trimmed.startsWith('~') || /^[A-Z]:\\/.test(trimmed)) {
-    const resolved = trimmed.startsWith('~')
-      ? trimmed // tilde paths resolve at spawn time; validate structure only
-      : trimmed
-    const inSafeDir = SAFE_COMMAND_DIRS.some(dir => resolved.startsWith(dir))
-    if (!inSafeDir && !trimmed.startsWith('~')) {
+  // Allow absolute paths only from safe directories.
+  if (isPath && (trimmed.startsWith('/') || trimmed.startsWith('~') || /^[A-Z]:\\/.test(trimmed))) {
+    if (trimmed.startsWith('~')) {
+      return { valid: true } // tilde resolves at spawn time; validate structure only
+    }
+    const inSafeDir = SAFE_COMMAND_DIRS.some(dir => trimmed.startsWith(dir))
+    if (!inSafeDir) {
       return {
         valid: false,
         error: `Absolute path "${trimmed}" is outside safe directories. Allowed: ${SAFE_COMMAND_DIRS.join(', ')}`
