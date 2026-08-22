@@ -28,7 +28,9 @@ export function getGuardDeps(): GuardDeps {
         timestamp: Date.now(),
       }
       const res = await getUploadPermissionManager().checkUploadPermission(request)
-      return { decision: res.decision, reason: res.reason, requiresUserConsent: res.requiresUserConsent }
+      // Return the full response (decision/reason/requiresUserConsent/policy/…)
+      // plus the request, so the chat consent event is byte-identical to before.
+      return { ...res, request }
     },
     checkBudget: (provider) => getBudgetManager().checkBudget(provider),
     checkRouting: (text, provider) => getDataClassifier().checkRouting(text, provider),
