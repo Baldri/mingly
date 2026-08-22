@@ -43,6 +43,22 @@ vi.mock('../../src/main/utils/id-generator', () => ({
 
 import { ComparisonService, getComparisonService } from '../../src/main/services/comparison-service'
 
+// Isolate service-logic tests from the real security singletons: the pre-flight
+// guard is exercised by its own test (request-guard.test.ts); here it runs with
+// safe pass-through deps so it never blocks the logic under test.
+vi.mock('../../src/main/security/request-guard-deps', () => ({
+  getGuardDeps: () => ({
+    sanitize: () => ({ safe: true, riskScore: 0, warnings: [] }),
+    scanSensitive: () => ({ hasSensitiveData: false, matches: [], overallRiskLevel: 'none' }),
+    checkUploadPermission: async () => ({ decision: 'allowed', requiresUserConsent: false }),
+    checkBudget: () => ({ allowed: true }),
+    checkRouting: () => ({ allowed: true }),
+    isCloudProvider: () => false,
+    scanOutput: () => ({ violations: [] }),
+  }),
+}))
+
+
 describe('ComparisonService', () => {
   let service: ComparisonService
 

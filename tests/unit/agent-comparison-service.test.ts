@@ -91,6 +91,22 @@ vi.mock('../../src/main/agent/agent-executor', () => {
 // Import after mock
 import { AgentComparisonService } from '../../src/main/services/agent-comparison-service'
 
+// Isolate service-logic tests from the real security singletons: the pre-flight
+// guard is exercised by its own test (request-guard.test.ts); here it runs with
+// safe pass-through deps so it never blocks the logic under test.
+vi.mock('../../src/main/security/request-guard-deps', () => ({
+  getGuardDeps: () => ({
+    sanitize: () => ({ safe: true, riskScore: 0, warnings: [] }),
+    scanSensitive: () => ({ hasSensitiveData: false, matches: [], overallRiskLevel: 'none' }),
+    checkUploadPermission: async () => ({ decision: 'allowed', requiresUserConsent: false }),
+    checkBudget: () => ({ allowed: true }),
+    checkRouting: () => ({ allowed: true }),
+    isCloudProvider: () => false,
+    scanOutput: () => ({ violations: [] }),
+  }),
+}))
+
+
 describe('AgentComparisonService', () => {
   let service: AgentComparisonService
 

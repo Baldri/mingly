@@ -15,6 +15,8 @@
  * - Cancellation via AbortController
  * - Step-by-step event emission for UI tracking
  */
+import { preflightGuard } from '../security/request-guard'
+import { getGuardDeps } from '../security/request-guard-deps'
 
 import { nanoid } from 'nanoid'
 import { getToolRegistry, type ToolRegistry } from './tool-registry'
@@ -157,6 +159,21 @@ export class AgentExecutor {
       this.emit({ type: 'run_complete', runId, run })
       return run
     }
+
+    // Pre-flight security guard — the agent path calls the LLM directly and
+    // otherwise bypasses the chat guards. Fail closed: end the run if blocked.
+    const preflight = await preflightGuard(
+      { texts: [...conversationHistory.map((m) => m.content), task], provider, model, conversationId: run.conversationId },
+      getGuardDeps(),
+    )
+    if (!preflight.ok) {
+      run.status = 'failed'
+      run.error = preflight.reason ?? 'Blocked by security guard'
+      run.durationMs = Date.now() - startTime
+      this.emit({ type: 'run_complete', runId, run })
+      return run
+    }
+    provider = preflight.provider
 
     // Run timeout
     const runTimeout = setTimeout(() => {
