@@ -121,8 +121,26 @@ Die Desktop-App unterscheidet sich an genau einer Stelle: Layer 3 laeuft ebenfal
 Der Web-Modus darf **nicht** behaupten «Ihre Daten verlassen Ihr Geraet nie» — Layer 3 laeuft
 serverseitig. Belegbar ist:
 
-> Strukturierte Kennzeichen — AHV, IBAN, Telefon, E-Mail, Adresse — verlassen Ihr Geraet nie.
-> Alles Uebrige verlaesst die Schweiz nie.
+> AHV, IBAN, Telefon, E-Mail und Schweizer Adressen verlassen Ihr Geraet nie.
+> Namen und uebrige Ortsangaben werden im Schweizer Gateway ersetzt und verlassen die Schweiz nie.
+
+Praeziser Zuschnitt, gemessen an den Detektoren (26.08.2026):
+
+| Schicht | Kategorien | im Browser |
+|---|---|---|
+| 1 — Regex (`regex-detector.ts`) | `EMAIL` `PHONE` `CREDIT_CARD` `IP_ADDRESS` `DATE_OF_BIRTH` `AGE` `URL` | ja |
+| 2 — Schweiz (`swiss-detector.ts`) | `AHV` `IBAN` `PHONE` `ADDRESS` `LOCATION` | ja |
+| 3 — NER (`ner-worker.ts`) | `PERSON` `ORGANIZATION` `LOCATION` | nein (676 MB) |
+
+Layer 2 erkennt Adressen nur in **Schweizer** Form: `CH_STREET_PATTERN` verlangt eine deutsche
+Strassenendung, `CH_PLZ_CITY_PATTERN` eine vierstellige Schweizer Postleitzahl. Eine
+auslaendische Adresse faellt an Layer 3 und wird dort als `LOCATION` erkannt, nicht als
+`ADDRESS`. Personennamen kommen ausschliesslich aus Layer 3.
+
+**Daraus folgt die Stufung, und zwar belegbar statt behauptet:** im Web bleiben die
+strukturierten Kennzeichen und Schweizer Adressen auf dem Geraet, Namen werden im Gateway
+ersetzt. In der App bleiben auch die Namen auf dem Geraet. Das ist der Mehrwert der
+Haertungsstufe, in einem Satz und nachpruefbar.
 
 Das ist zugleich die technische Begruendung dafuer, warum die App bei erhoehtem Schutzbedarf die
 Empfehlung ist, statt eine vertriebliche Behauptung zu sein.
