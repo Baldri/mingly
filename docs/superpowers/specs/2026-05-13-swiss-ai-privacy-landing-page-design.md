@@ -1,5 +1,16 @@
 # /swiss-ai-privacy Landing-Page — Design Spec
 
+> **[KORREKTUR 2026-08-26] Die Modellangaben in diesem Dokument sind ueberholt.**
+> Dieses Dokument nennt `piiranha-v1` (45 MB SLM) als Layer-3-Modell und fuehrt
+> "94% Precision, 91% Recall (Stand 2026-04)" als Verkaufsargument. Beides darf so
+> nicht mehr verwendet werden: piiranha-v1 wurde am 2026-08-05 ausgetauscht, nachdem
+> es in der 20-Span-Ground-Truth-Batterie dieses Repos 2 von 20 Personen erkannte
+> (Messung und Begruendung: `src/main/privacy/model-manager.ts`). Aktives Modell ist
+> `Xenova/bert-base-multilingual-cased-ner-hrl` (ONNX fp32, ~676 MB gemessen).
+> Die Precision-/Recall-Zahlen wurden gegen das aktive Modell **nicht** neu erhoben
+> und sind damit unbelegt. Der Rest des Dokuments (Positionierung, Struktur,
+> Internal Linking) bleibt gueltig.
+
 **Status:** Draft
 **Datum:** 2026-05-13
 **Author:** Claude (Link-Research Session)

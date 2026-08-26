@@ -64,7 +64,7 @@ Yes, your messages are sent to the respective AI provider (e.g., Anthropic, Open
 
 Mingly includes features for GDPR and Swiss nDSG compliance:
 
-- **PII anonymization**: Personal data detected and protected on-device (piiranha-v1, 400M ONNX model)
+- **PII anonymization**: Personal data detected and protected on-device (three layers: regex, Swiss patterns, and the NER model `Xenova/bert-base-multilingual-cased-ner-hrl`, ONNX fp32)
 - **Data export**: Export all your data as a file
 - **Data deletion**: Completely remove all your data
 - **No telemetry**: No usage data is collected
