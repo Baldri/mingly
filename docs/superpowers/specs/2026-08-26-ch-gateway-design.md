@@ -101,6 +101,33 @@ gefiltert hat, kann ein mandanteneigener Schluessel keinen unzulaessigen Anbiete
 Wer diese drei Schritte vertauscht, macht BYOK zum Umgehungsweg — das ist der Grund, warum die
 Reihenfolge eine Invariante ist und kein Implementierungsdetail.
 
+**Invariante I3 — die Herkunftsschicht einer PII-Entitaet ist Teil des Befunds, nicht Metadatum.**
+`PIIEntity.source` existiert bereits (`DetectionSource = 'regex' ｜ 'ner' ｜ 'swiss' ｜ 'custom'`,
+`src/main/privacy/pii-types.ts:28`) und wird von allen drei Detektoren gesetzt — ausgewertet wird es
+heute aber nur fuer die Dedup-Prioritaet (`detector-pipeline.ts:166–179`). Im Gateway bekommt es
+eine zweite Aufgabe.
+
+Der Grund: dieselbe Kategorie kommt aus Schichten mit unterschiedlicher Reichweite **und
+unterschiedlichem Verarbeitungsort**. `ADDRESS` etwa liefert Layer 2 nur fuer Schweizer Formen,
+Layer 3 allgemein. Wer nur die Kategorie prueft, haelt beide fuer gleichwertig — und genau daran
+haengt die Zusage aus §4.4.
+
+Bindende Zuordnung im Web-Betrieb:
+
+| `source` | Ersetzt wo | Zaehlt fuer die Zusage «verlaesst Ihr Geraet nie» |
+|---|---|---|
+| `regex` | Browser | ja |
+| `swiss` | Browser | ja |
+| `ner` | Gateway (CH) | nein — «verlaesst die Schweiz nie» |
+| `custom` | je nach Regeldefinition, im Zweifel Gateway | nein, bis geprueft |
+
+Daraus folgt zweierlei. **Erstens:** der Audit-Eintrag fuehrt die Trefferzahl je `source`, nicht nur
+je Kategorie — sonst ist die Zusage architektonisch behauptet statt pro Anfrage belegt. **Zweitens:**
+in der Desktop-App verschiebt sich die Spalte «Ersetzt wo» fuer `ner` auf «Geraet», ohne dass sich
+Detektor oder Kategorie aendern. Der Verarbeitungsort ist damit eine Eigenschaft der
+**Ausfuehrungsumgebung mal Schicht**, nicht des Befunds allein — und gehoert entsprechend als
+Wertepaar ins Log, nicht als abgeleitete Vermutung.
+
 **Invariante I2 — Residenz wird von uns gesetzt, nie vom Mandanten.** Mingly erlaubt heute
 mandanteneigene Custom-Provider mit frei gewaehlter `apiBase`
 (`createCustomProvider` in `src/shared/provider-types.ts`). Im Gateway darf ein selbst
@@ -291,6 +318,9 @@ Marktplatz, Handelsspanne auf Inferenz, eigenes Modelltraining.
 
 - **Policy-Engine:** Tabellengetriebene Tests. Zu jeder Regel ein Fall, der greift, **und** einer,
   der nicht greifen darf. Ein Guard, der nur die Treffer prueft, ist nicht geprueft.
+- **I3:** eine Anfrage, die in einer Kategorie sowohl einen `swiss`- als auch einen `ner`-Treffer
+  erzeugt, muss im Audit **beide** Herkuenfte getrennt ausweisen. Ein Test, der nur die Kategorie
+  prueft, wuerde die Verwechslung nicht bemerken — das ist der Fehler, den I3 verhindert.
 - **Invarianten I1 und I2 haben eigene Tests.** I1: eine sensible Anfrage mit gueltigem
   mandanteneigenem Frontier-Schluessel muss **abgelehnt** werden, nicht ausgeliefert. I2: ein
   mandantenseitig eingetragener Endpunkt, der `residency: CH` behauptet, darf keine sensible
