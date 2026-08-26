@@ -92,6 +92,24 @@ Nie umgekehrt — sonst entscheidet Qualitaet ueber Zulaessigkeit, und das ist e
 erklaerbar. Nebenwirkung: der `|| 0.5`-Fallback des Routers verschwindet, weil jeder Registry-
 Eintrag seine Faehigkeiten mitbringt.
 
+**Invariante I1 — der Credential-Resolver laeuft NACH der Policy.** Residenz ist eine Eigenschaft
+des Endpunkts, das Vertragsmodell eine des Schluessels. Zwei getrennte Achsen: ein gemieteter
+CH-Endpunkt wird nicht von uns betrieben und liegt trotzdem in der Schweiz; ein Frontier-Modell
+liegt ausserhalb, ob ueber Pooling oder BYOK. **BYOK ist damit keine Residenz-Ausnahme, sondern
+nur eine andere Auftragsverarbeitungskette.** Weil der Resolver erst laeuft, wenn die Policy
+gefiltert hat, kann ein mandanteneigener Schluessel keinen unzulaessigen Anbieter erreichen.
+Wer diese drei Schritte vertauscht, macht BYOK zum Umgehungsweg — das ist der Grund, warum die
+Reihenfolge eine Invariante ist und kein Implementierungsdetail.
+
+**Invariante I2 — Residenz wird von uns gesetzt, nie vom Mandanten.** Mingly erlaubt heute
+mandanteneigene Custom-Provider mit frei gewaehlter `apiBase`
+(`createCustomProvider` in `src/shared/provider-types.ts`). Im Gateway darf ein selbst
+eingetragener Endpunkt **nicht** `residency: CH` behaupten koennen. Er bekommt
+`residency: unknown` und ist damit fuer jede Klasse oberhalb des niedrigsten Schutzbedarfs
+ausgeschlossen, bis wir die Herkunft geprueft und den Eintrag freigegeben haben. Sonst genuegt
+ein falsch beschrifteter Endpunkt, um das gesamte Versprechen auszuhebeln — und der Audit-Trail
+wuerde die Verletzung als regelkonform protokollieren.
+
 ### 4.3 Datenfluss
 
 ```
@@ -122,7 +140,15 @@ Der Web-Modus darf **nicht** behaupten «Ihre Daten verlassen Ihr Geraet nie» �
 serverseitig. Belegbar ist:
 
 > AHV, IBAN, Telefon, E-Mail und Schweizer Adressen verlassen Ihr Geraet nie.
-> Namen und uebrige Ortsangaben werden im Schweizer Gateway ersetzt und verlassen die Schweiz nie.
+> Namen werden im Schweizer Gateway ersetzt.
+> Was danach an ein Modell geht, ist der anonymisierte Text — und wohin er geht, entscheidet
+> die Policy: als sensibel klassifizierte Anfragen bleiben auf Schweizer Endpunkten.
+
+**Was diese Zusage ausdruecklich nicht sagt:** dass nichts die Schweiz verlaesst. Nicht-sensible
+Anfragen duerfen laut Policy an Frontier-Modelle gehen, und die stehen ausserhalb. Zugesichert ist,
+dass die **erkannten Personendaten** vorher ersetzt sind und die Zuordnungstabelle nicht mitgeht —
+nicht, dass der uebrige Text im Land bleibt. Wer mehr verspricht, verspricht das Local-Only-Modell,
+und das ist ein anderes Produkt.
 
 Praeziser Zuschnitt, gemessen an den Detektoren (26.08.2026):
 
@@ -265,6 +291,11 @@ Marktplatz, Handelsspanne auf Inferenz, eigenes Modelltraining.
 
 - **Policy-Engine:** Tabellengetriebene Tests. Zu jeder Regel ein Fall, der greift, **und** einer,
   der nicht greifen darf. Ein Guard, der nur die Treffer prueft, ist nicht geprueft.
+- **Invarianten I1 und I2 haben eigene Tests.** I1: eine sensible Anfrage mit gueltigem
+  mandanteneigenem Frontier-Schluessel muss **abgelehnt** werden, nicht ausgeliefert. I2: ein
+  mandantenseitig eingetragener Endpunkt, der `residency: CH` behauptet, darf keine sensible
+  Anfrage erhalten. Beide sind Umgehungswege, keine Randfaelle — sie gehoeren in dieselbe Suite
+  wie die Policy-Regeln.
 - **Klassifikator:** gegen einen Satz Beispieltexte mit erwarteter Klasse; Fehlklassifikation nach
   unten (zu niedriger Schutzbedarf) ist ein harter Fehler, nach oben eine Warnung.
 - **Ledger:** Nebenlaeufigkeit explizit — parallele Streams gegen dasselbe Guthaben duerfen nicht
