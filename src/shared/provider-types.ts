@@ -199,8 +199,15 @@ export const CUSTOM_PROVIDER_TEMPLATES = {
   )
 }
 
-/** Where a provider's inference physically runs. Set by us, never by a tenant (I2). */
-export type Residency = 'CH' | 'EU' | 'US' | 'unknown'
+/**
+ * Where a provider's inference physically runs. Set by us, never by a tenant (I2).
+ *
+ * `on-device` is not a country: inference happens on the user's own machine,
+ * wherever that machine is. It is the strictest case — nothing leaves the
+ * device — but recording it as a country would put a claim into the audit log
+ * that nobody can stand behind.
+ */
+export type Residency = 'CH' | 'EU' | 'US' | 'on-device' | 'unknown'
 
 /** How the endpoint is operated. */
 export type HostingMode = 'rented' | 'self-hosted' | 'local'
@@ -208,8 +215,14 @@ export type HostingMode = 'rented' | 'self-hosted' | 'local'
 /** Whether the model weights are openly licensed. */
 export type WeightsLicense = 'open' | 'closed'
 
-/** State of the data processing agreement covering this endpoint. */
-export type DpaStatus = 'signed' | 'byok-tenant' | 'none'
+/**
+ * State of the data processing agreement covering this endpoint.
+ *
+ * `not-applicable` is for endpoints where no third party processes anything —
+ * on-device execution — so there is no agreement to have signed. That is a
+ * different statement from `none`, which means an agreement is missing.
+ */
+export type DpaStatus = 'signed' | 'byok-tenant' | 'not-applicable' | 'none'
 
 /** Origin of a provider — the axis the policy engine decides on. */
 export interface ProviderOrigin {

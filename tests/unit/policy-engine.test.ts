@@ -87,3 +87,30 @@ describe('evaluate', () => {
     expect(decision.allowed).toEqual([])
   })
 })
+
+describe('on-device execution', () => {
+  const ON_DEVICE = candidate('ollama', 'on-device')
+
+  it('permits on-device execution for the most sensitive requests', () => {
+    // Running on the user's own machine is the strictest case, not a special
+    // case: nothing leaves the device. A rule that keeps sensitive data in
+    // Switzerland must not exclude it.
+    const decision = evaluate(DEFAULT_POLICY, classification('critical'), [
+      ON_DEVICE,
+      candidate('anthropic', 'US')
+    ])
+
+    expect(decision.allowed).toEqual(['ollama'])
+  })
+
+  it('still permits on-device execution at medium sensitivity', () => {
+    const decision = evaluate(DEFAULT_POLICY, classification('medium'), [
+      ON_DEVICE,
+      candidate('anthropic', 'US'),
+      candidate('tenant', 'unknown')
+    ])
+
+    expect(decision.allowed).toContain('ollama')
+    expect(decision.allowed).not.toContain('tenant')
+  })
+})
