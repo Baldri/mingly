@@ -61,6 +61,15 @@ describe('evaluate', () => {
     expect(decision.allowed).toContain('anthropic')
   })
 
+  it('permits an unverified tenant endpoint only at the lowest level', () => {
+    const lowDecision = evaluate(DEFAULT_POLICY, classification('low'), CANDIDATES)
+    expect(lowDecision.allowed).toContain('tenant')
+    expect(lowDecision.appliedRule).toBe(null)
+
+    const mediumDecision = evaluate(DEFAULT_POLICY, classification('medium'), CANDIDATES)
+    expect(mediumDecision.allowed).not.toContain('tenant')
+  })
+
   it('names the rule that applied', () => {
     const decision = evaluate(DEFAULT_POLICY, classification('high'), CANDIDATES)
     expect(decision.appliedRule).toBe('sensitive-stays-ch')
