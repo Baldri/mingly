@@ -23,6 +23,12 @@ import { MessageModel } from '../database/models/message'
 import { generateId } from '../utils/id-generator'
 import type { Message, LLMProvider } from '../../shared/types'
 import type { StreamChunk } from '../llm-clients/base-client'
+import { classify } from '../policy/sensitivity-classifier'
+import { evaluate, DEFAULT_POLICY } from '../policy/policy-engine'
+import { getProviderRegistry } from '../routing/provider-registry'
+import { logRoutingDecision } from '../policy/audit-writer'
+import type { PIIEntity, PIISensitivity } from '../privacy/pii-types'
+import type { RoutingResult } from '../routing/intelligent-router'
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -76,6 +82,39 @@ export class ServiceLayer {
   private commandHandler = getCommandHandler()
   private contextInjector = getContextInjector()
   private trackingEngine = getTrackingEngine()
+
+  /**
+   * Classify, filter by policy, then route — in that order (invariant I1).
+   *
+   * The router is handed the permitted set and can only narrow it further.
+   * Reordering these three calls turns the policy into a suggestion.
+   */
+  async routeWithPolicy(
+    message: string,
+    entities: PIIEntity[],
+    workspaceClass: PIISensitivity,
+    actorId: string,
+    conversationId: string
+  ): Promise<RoutingResult> {
+    const classification = classify(entities, workspaceClass)
+    const decision = evaluate(DEFAULT_POLICY, classification, getProviderRegistry().all())
+    const result = await this.router.route(message, decision.allowed)
+
+    logRoutingDecision({
+      actorId,
+      conversationId,
+      level: classification.level,
+      reason: classification.reason,
+      bySource: classification.bySource,
+      policyVersion: decision.policyVersion,
+      appliedRule: decision.appliedRule,
+      allowedProviders: decision.allowed,
+      chosenProvider: result.suggestedProvider,
+      residency: getProviderRegistry().get(result.suggestedProvider)?.origin.residency ?? 'unknown'
+    })
+
+    return result
+  }
 
   /**
    * Send a chat message with streaming via callback.
