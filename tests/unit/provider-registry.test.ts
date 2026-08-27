@@ -3,7 +3,7 @@
  * Deckt Invariante I2 ab: Residenz setzen wir, nie der Mandant.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { ProviderRegistry, seedSwissProviders } from '../../src/main/routing/provider-registry'
 import type { ProviderConfig } from '../../src/shared/provider-types'
 
@@ -116,6 +116,24 @@ describe('Swiss providers', () => {
     seedSwissProviders(registry, undefined)
 
     expect(registry.get('infomaniak')).toBeUndefined()
+  })
+
+  it('warns and still registers nothing when the product id is missing (silent-absence fix)', () => {
+    const registry = new ProviderRegistry()
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    try {
+      seedSwissProviders(registry, undefined)
+
+      // No-op guarantee: absence of the product id must not register any entry.
+      expect(registry.all()).toEqual([])
+      expect(registry.get('infomaniak')).toBeUndefined()
+
+      // Audible guarantee: the early return is no longer silent.
+      expect(warnSpy).toHaveBeenCalled()
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 
   it('does not claim a task-fitness score it has not measured', () => {

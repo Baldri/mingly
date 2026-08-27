@@ -13,6 +13,9 @@ import type {
   ProviderCapabilities
 } from '../../shared/provider-types'
 import { BUILT_IN_PROVIDERS } from '../../shared/provider-types'
+import { createLogger } from '../../shared/logger'
+
+const logger = createLogger('ProviderRegistry')
 
 export interface RegistryEntry {
   config: ProviderConfig
@@ -96,7 +99,14 @@ export function seedSwissProviders(
   registry: ProviderRegistry,
   infomaniakProductId: string | undefined
 ): void {
-  if (!infomaniakProductId) return
+  if (!infomaniakProductId) {
+    logger.warn(
+      'No Swiss endpoint registered: INFOMANIAK_PRODUCT_ID is not set. ' +
+        'Any policy rule that requires Swiss residency will be evaluated ' +
+        'without Infomaniak as a candidate.'
+    )
+    return
+  }
 
   registry.registerVerified(
     {

@@ -38,9 +38,13 @@ export function evaluate(
   candidates: RegistryEntry[]
 ): PolicyDecision {
   // Of the rules that apply, the one with the highest threshold wins — that
-  // is the strictest. Never resolve this by list order or by counting
-  // allowedResidency entries; both make the outcome depend on how the rule
-  // set happens to be written.
+  // is the strictest. Never resolve this by counting allowedResidency
+  // entries; that would make the outcome depend on how the rule set happens
+  // to be written. Note the `>` below is strict: two rules sharing the same
+  // minSensitivity ARE resolved by list order (the first one encountered
+  // wins). That is not a supported way to express a policy — a rule set
+  // with such a tie is an authoring error, not a case this function
+  // arbitrates meaningfully.
   const rule = policy.rules
     .filter((candidate) => atLeast(classification.level, candidate.minSensitivity))
     .reduce<PolicyRule | null>(

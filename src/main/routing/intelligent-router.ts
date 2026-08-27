@@ -148,11 +148,16 @@ Respond with ONLY the category name (code/creative/analysis/conversation) and no
   }
 
   /**
-   * Select the best provider from an already-permitted set.
+   * Select the best provider from the set it is handed — it never widens
+   * that set, only narrows or reorders it.
    *
-   * The caller has run the policy first (invariant I1) — this method must
-   * never widen the set it was handed. Capabilities come from the registry,
-   * so adding a European model is a registry entry, not a code change.
+   * This method does NOT apply policy itself. Whether the set was actually
+   * policy-filtered is the caller's responsibility: `ServiceLayer.routeWithPolicy`
+   * filters via `evaluate()` before calling `route()`, but `HybridOrchestrator`
+   * (via `decomposeMessage`) and `getSuggestion` below call `route()` directly
+   * with whatever provider list they were given, unfiltered. Capabilities come
+   * from the registry, so adding a European model is a registry entry, not a
+   * code change.
    */
   private selectProvider(
     category: RequestCategory,
