@@ -14,6 +14,7 @@ vi.mock('ollama', () => ({
 }))
 
 import { IntelligentRouter } from '../../src/main/routing/intelligent-router'
+import { ProviderRegistry, setProviderRegistry } from '../../src/main/routing/provider-registry'
 
 describe('IntelligentRouter', () => {
   let router: IntelligentRouter
@@ -108,6 +109,60 @@ describe('IntelligentRouter', () => {
       // Anthropic has higher conversation score (0.95 vs 0.90), so switch is suggested
       expect(result.shouldSwitch).toBe(true)
       expect(result.suggestion?.suggestedProvider).toBe('anthropic')
+    })
+  })
+
+  describe('capabilities from the registry', () => {
+    it('scores a registered custom provider by its declared capabilities', async () => {
+      const registry = new ProviderRegistry()
+      registry.registerVerified(
+        {
+          id: 'infomaniak',
+          name: 'Infomaniak',
+          type: 'custom',
+          apiBase: 'https://example.invalid/v1',
+          apiKeyRequired: true,
+          supportsStreaming: true,
+          models: []
+        },
+        {
+          residency: 'CH',
+          operator: 'Infomaniak SA',
+          weightsLicense: 'open',
+          hostingMode: 'rented',
+          dpaStatus: 'signed'
+        },
+        { code: 0.95, creative: 0.2, analysis: 0.4, conversation: 0.4 }
+      )
+      registry.registerVerified(
+        {
+          id: 'other',
+          name: 'Other',
+          type: 'custom',
+          apiBase: 'https://example.invalid/v2',
+          apiKeyRequired: true,
+          supportsStreaming: true,
+          models: []
+        },
+        {
+          residency: 'CH',
+          operator: 'Other',
+          weightsLicense: 'open',
+          hostingMode: 'rented',
+          dpaStatus: 'signed'
+        },
+        { code: 0.1, creative: 0.9, analysis: 0.4, conversation: 0.4 }
+      )
+      setProviderRegistry(registry)
+
+      const router = new IntelligentRouter()
+      const result = await router.route('Bitte diese Funktion refactoren und den Bug fixen', [
+        'infomaniak',
+        'other'
+      ])
+
+      expect(result.suggestedProvider).toBe('infomaniak')
+      setProviderRegistry(null)
     })
   })
 })

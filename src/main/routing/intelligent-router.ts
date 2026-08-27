@@ -1,5 +1,6 @@
 import { Ollama } from 'ollama'
 import type { LLMProvider } from '../llm-clients/client-manager'
+import { getProviderRegistry } from './provider-registry'
 
 export type RequestCategory = 'code' | 'creative' | 'analysis' | 'general' | 'conversation'
 
@@ -51,28 +52,6 @@ function inferModelCapabilities(modelName: string): ProviderCapabilities {
     if (pattern.test(modelName)) return capabilities
   }
   return DEFAULT_MODEL_CAPABILITIES
-}
-
-// Provider capability matrix (based on benchmarks and real-world usage)
-const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
-  anthropic: {
-    code: 0.95, // Excellent code generation
-    creative: 0.85, // Good creative writing
-    analysis: 0.90, // Strong analytical reasoning
-    conversation: 0.95 // Best conversational quality
-  },
-  openai: {
-    code: 0.85,
-    creative: 0.95, // Best creative writing
-    analysis: 0.85,
-    conversation: 0.90
-  },
-  google: {
-    code: 0.80,
-    creative: 0.75,
-    analysis: 0.95, // Best for long-context analysis
-    conversation: 0.80
-  }
 }
 
 export class IntelligentRouter {
@@ -169,39 +148,51 @@ Respond with ONLY the category name (code/creative/analysis/conversation) and no
   }
 
   /**
-   * Select best provider based on category and availability
+   * Select the best provider from an already-permitted set.
+   *
+   * The caller has run the policy first (invariant I1) — this method must
+   * never widen the set it was handed. Capabilities come from the registry,
+   * so adding a European model is a registry entry, not a code change.
    */
   private selectProvider(
     category: RequestCategory,
     availableProviders: LLMProvider[],
     method: string
   ): RoutingResult {
-    // If only one provider available, use it
+    if (availableProviders.length === 0) {
+      return {
+        category,
+        suggestedProvider: '',
+        confidence: 0,
+        reasoning: `No provider permitted for this request (classified as: ${category} via ${method})`
+      }
+    }
+
     if (availableProviders.length === 1) {
       return {
         category,
         suggestedProvider: availableProviders[0],
         confidence: 0.5,
-        reasoning: `Only provider available (classified as: ${category} via ${method})`
+        reasoning: `Only permitted provider (classified as: ${category} via ${method})`
       }
     }
 
-    // Score each available provider for this category
+    const registry = getProviderRegistry()
+    const key = category === 'general' ? 'conversation' : category
+
     const scores = availableProviders.map((provider) => ({
       provider,
-      score: PROVIDER_CAPABILITIES[provider][category as keyof ProviderCapabilities] || 0.5
+      score: registry.get(provider)?.capabilities[key] ?? 0
     }))
 
-    // Sort by score descending
     scores.sort((a, b) => b.score - a.score)
-
     const best = scores[0]
 
     return {
       category,
       suggestedProvider: best.provider,
       confidence: best.score,
-      reasoning: `Best for ${category} tasks (classified via ${method})`
+      reasoning: `Best permitted provider for ${category} (classified via ${method})`
     }
   }
 

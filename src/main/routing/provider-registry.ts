@@ -12,6 +12,7 @@ import type {
   ProviderOrigin,
   ProviderCapabilities
 } from '../../shared/provider-types'
+import { BUILT_IN_PROVIDERS } from '../../shared/provider-types'
 
 export interface RegistryEntry {
   config: ProviderConfig
@@ -71,11 +72,49 @@ export class ProviderRegistry {
   }
 }
 
+/** Origin and measured fitness of the providers we ship with. */
+export function seedBuiltInProviders(registry: ProviderRegistry): void {
+  const closedUs = {
+    weightsLicense: 'closed' as const,
+    hostingMode: 'rented' as const,
+    dpaStatus: 'signed' as const,
+    residency: 'US' as const
+  }
+
+  registry.registerVerified(
+    BUILT_IN_PROVIDERS.anthropic,
+    { ...closedUs, operator: 'Anthropic PBC' },
+    { code: 0.95, creative: 0.85, analysis: 0.9, conversation: 0.95 }
+  )
+  registry.registerVerified(
+    BUILT_IN_PROVIDERS.openai,
+    { ...closedUs, operator: 'OpenAI' },
+    { code: 0.85, creative: 0.95, analysis: 0.85, conversation: 0.9 }
+  )
+  registry.registerVerified(
+    BUILT_IN_PROVIDERS.google,
+    { ...closedUs, operator: 'Google LLC' },
+    { code: 0.8, creative: 0.75, analysis: 0.95, conversation: 0.8 }
+  )
+  registry.registerVerified(
+    BUILT_IN_PROVIDERS.ollama,
+    {
+      residency: 'CH',
+      operator: 'on-device',
+      weightsLicense: 'open',
+      hostingMode: 'local',
+      dpaStatus: 'signed'
+    },
+    { code: 0.6, creative: 0.6, analysis: 0.6, conversation: 0.65 }
+  )
+}
+
 let registryInstance: ProviderRegistry | null = null
 
 export function getProviderRegistry(): ProviderRegistry {
   if (!registryInstance) {
     registryInstance = new ProviderRegistry()
+    seedBuiltInProviders(registryInstance)
   }
   return registryInstance
 }
