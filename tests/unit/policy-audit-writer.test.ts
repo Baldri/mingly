@@ -73,5 +73,20 @@ describe('logRoutingDecision', () => {
     const serialised = JSON.stringify(params)
     expect(serialised).not.toContain('content')
     expect(serialised).not.toContain('prompt')
+
+    const details = JSON.parse(params[6] as string)
+    const actualKeys = Object.keys(details).sort()
+    const expectedKeys = [
+      'allowedProviders',
+      'appliedRule',
+      'bySource',
+      'chosenProvider',
+      'level',
+      'model',
+      'policyVersion',
+      'reason',
+      'residency'
+    ].sort()
+    expect(actualKeys).toEqual(expectedKeys)
   })
 })
