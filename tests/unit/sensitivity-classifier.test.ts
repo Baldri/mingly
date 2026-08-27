@@ -66,4 +66,15 @@ describe('classify', () => {
     const result = classify([entity({ sensitivity: 'critical', category: 'AHV' })], 'low')
     expect(result.reason).toContain('AHV')
   })
+
+  it('never puts the detected text into the reason (audit safety)', () => {
+    const distinctiveNumber = '756.9999.8888.77'
+    const result = classify(
+      [entity({ original: distinctiveNumber, source: 'swiss', category: 'AHV', sensitivity: 'critical' })],
+      'low'
+    )
+
+    expect(result.reason).not.toContain(distinctiveNumber)
+    expect(result.reason).toContain('AHV')
+  })
 })
