@@ -1360,20 +1360,35 @@ An `tests/unit/provider-registry.test.ts` anfuegen:
 
 ```typescript
 describe('Swiss providers', () => {
+  it('builds the account-specific base URL from the product id', () => {
+    const registry = new ProviderRegistry()
+    seedSwissProviders(registry, '12345')
+
+    expect(registry.get('infomaniak')?.config.apiBase).toBe(
+      'https://api.infomaniak.com/2/ai/12345/openai/v1'
+    )
+  })
+
   it('registers Infomaniak with Swiss residency and open weights', () => {
     const registry = new ProviderRegistry()
-    seedSwissProviders(registry)
+    seedSwissProviders(registry, '12345')
 
     const entry = registry.get('infomaniak')
     expect(entry?.origin.residency).toBe('CH')
     expect(entry?.origin.weightsLicense).toBe('open')
     expect(entry?.origin.hostingMode).toBe('rented')
-    expect(entry?.config.apiBase).toMatch(/^https:\/\//)
+  })
+
+  it('registers nothing when no product id is configured', () => {
+    const registry = new ProviderRegistry()
+    seedSwissProviders(registry, undefined)
+
+    expect(registry.get('infomaniak')).toBeUndefined()
   })
 
   it('does not claim a task-fitness score it has not measured', () => {
     const registry = new ProviderRegistry()
-    seedSwissProviders(registry)
+    seedSwissProviders(registry, '12345')
 
     const caps = registry.get('infomaniak')?.capabilities
     expect(caps).toEqual({ code: 0.5, creative: 0.5, analysis: 0.5, conversation: 0.5 })
@@ -1394,19 +1409,36 @@ In `src/main/routing/provider-registry.ts` anfuegen:
 
 ```typescript
 /**
- * Swiss endpoints. Capabilities are deliberately left at the unmeasured
- * default: no published benchmark figures exist for Apertus 1.5, and the
- * eval-framework suitability run (`examples/modell_eignungspruefung.py`) has
- * not been run against these endpoints yet. Claiming a score here would be
- * an assertion where the offering promises a measurement.
+ * Swiss endpoints.
+ *
+ * The base URL is account-specific: Infomaniak exposes one AI product per
+ * organisation and the product id is part of the path
+ * (`/2/ai/{product_id}/openai/v1`, verified against the developer portal on
+ * 2026-08-26). It is therefore configuration, never a constant — without a
+ * configured id we register nothing rather than a URL that cannot answer.
+ *
+ * `models` stays empty on purpose. Which models the account actually serves
+ * is answered by `GET /models` against that endpoint; the claim that Apertus
+ * is among them comes from a secondary source and is unverified.
+ *
+ * Capabilities stay at the unmeasured default: no published benchmark
+ * figures exist for Apertus 1.5, and the eval-framework suitability run
+ * (`examples/modell_eignungspruefung.py`) has not been run against this
+ * endpoint. Claiming a score here would be an assertion where the offering
+ * promises a measurement.
  */
-export function seedSwissProviders(registry: ProviderRegistry): void {
+export function seedSwissProviders(
+  registry: ProviderRegistry,
+  infomaniakProductId: string | undefined
+): void {
+  if (!infomaniakProductId) return
+
   registry.registerVerified(
     {
       id: 'infomaniak',
       name: 'Infomaniak (CH)',
       type: 'custom',
-      apiBase: 'https://api.infomaniak.com/1/ai/v1',
+      apiBase: `https://api.infomaniak.com/2/ai/${infomaniakProductId}/openai/v1`,
       apiKeyRequired: true,
       supportsStreaming: true,
       supportsFunctionCalling: true,
@@ -1430,13 +1462,13 @@ Und in `getProviderRegistry()` nach `seedBuiltInProviders` aufrufen:
 
 ```typescript
     seedBuiltInProviders(registryInstance)
-    seedSwissProviders(registryInstance)
+    seedSwissProviders(registryInstance, process.env.INFOMANIAK_PRODUCT_ID)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `npm test -- tests/unit/provider-registry.test.ts`
-Expected: PASS, 7 Tests
+Expected: PASS, 9 Tests
 
 - [ ] **Step 5: Run the full suite and commit**
 
