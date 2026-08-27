@@ -7,6 +7,33 @@ import { getDeploymentManager } from './server/deployment-manager'
 import { getLocalAIBridge } from './network/local-ai-bridge'
 import { getDocMindIntegration } from './integrations/docmind-integration'
 import { getAutoUpdater } from './updater/auto-updater'
+import { applyEnvFile } from './config/env-file'
+import { createLogger } from '../shared/logger'
+
+const logger = createLogger('Main')
+
+/**
+ * Load configuration from a .env file before anything reads process.env.
+ *
+ * A packaged app deliberately does NOT look at the working directory — that
+ * is whatever the OS happened to launch it from, and reading a stray file
+ * found there would make the app's configuration depend on how it was
+ * started. Only the app's own userData directory counts. In development the
+ * project root is the file a developer expects to be used.
+ *
+ * Variables already present in the environment always win (see applyEnvFile).
+ */
+function loadEnvironmentFile(): void {
+  const userDataEnv = join(app.getPath('userData'), '.env')
+  const candidates = app.isPackaged ? [userDataEnv] : [join(process.cwd(), '.env'), userDataEnv]
+
+  const applied = applyEnvFile(candidates)
+  if (applied) {
+    logger.info('Loaded environment file', { path: applied })
+  }
+}
+
+loadEnvironmentFile()
 
 let mainWindow: BrowserWindow | null = null
 

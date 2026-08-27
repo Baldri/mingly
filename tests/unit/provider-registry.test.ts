@@ -4,7 +4,11 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { ProviderRegistry, seedSwissProviders } from '../../src/main/routing/provider-registry'
+import {
+  ProviderRegistry,
+  seedBuiltInProviders,
+  seedSwissProviders
+} from '../../src/main/routing/provider-registry'
 import type { ProviderConfig } from '../../src/shared/provider-types'
 
 const chConfig: ProviderConfig = {
@@ -142,5 +146,38 @@ describe('Swiss providers', () => {
 
     const caps = registry.get('infomaniak')?.capabilities
     expect(caps).toEqual({ code: 0.5, creative: 0.5, analysis: 0.5, conversation: 0.5 })
+  })
+})
+
+describe('built-in provider origin', () => {
+  it('declares local execution as on-device, not as Swiss residency', () => {
+    const registry = new ProviderRegistry()
+    seedBuiltInProviders(registry)
+
+    const ollama = registry.get('ollama')
+    // Inference on the user's own machine happens wherever that machine is.
+    // Recording 'CH' would put a claim about a location into the audit log
+    // that nobody can stand behind — and that log is the document a customer
+    // hands to a supervisory authority.
+    expect(ollama?.origin.residency).toBe('on-device')
+    expect(ollama?.origin.hostingMode).toBe('local')
+  })
+
+  it('does not claim a data processing agreement for the user\'s own machine', () => {
+    const registry = new ProviderRegistry()
+    seedBuiltInProviders(registry)
+
+    // There is no third party processing anything here, so there is no
+    // agreement to have signed.
+    expect(registry.get('ollama')?.origin.dpaStatus).toBe('not-applicable')
+  })
+
+  it('keeps the frontier providers on their declared residency', () => {
+    const registry = new ProviderRegistry()
+    seedBuiltInProviders(registry)
+
+    expect(registry.get('anthropic')?.origin.residency).toBe('US')
+    expect(registry.get('openai')?.origin.residency).toBe('US')
+    expect(registry.get('google')?.origin.residency).toBe('US')
   })
 })

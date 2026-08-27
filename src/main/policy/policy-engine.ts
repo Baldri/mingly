@@ -22,12 +22,12 @@ export const DEFAULT_POLICY: PolicySet = {
     {
       id: 'sensitive-stays-ch',
       minSensitivity: 'high',
-      allowedResidency: ['CH']
+      allowedResidency: ['CH', 'on-device']
     },
     {
       id: 'no-unverified-endpoints',
       minSensitivity: 'medium',
-      allowedResidency: ['CH', 'EU', 'US']
+      allowedResidency: ['CH', 'on-device', 'EU', 'US']
     }
   ]
 }

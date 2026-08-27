@@ -159,11 +159,11 @@ export function seedBuiltInProviders(registry: ProviderRegistry): void {
   registry.registerVerified(
     BUILT_IN_PROVIDERS.ollama,
     {
-      residency: 'CH',
+      residency: 'on-device',
       operator: 'on-device',
       weightsLicense: 'open',
       hostingMode: 'local',
-      dpaStatus: 'signed'
+      dpaStatus: 'not-applicable'
     },
     { code: 0.6, creative: 0.6, analysis: 0.6, conversation: 0.65 }
   )
