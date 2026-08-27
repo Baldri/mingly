@@ -198,3 +198,32 @@ export const CUSTOM_PROVIDER_TEMPLATES = {
     true
   )
 }
+
+/** Where a provider's inference physically runs. Set by us, never by a tenant (I2). */
+export type Residency = 'CH' | 'EU' | 'US' | 'unknown'
+
+/** How the endpoint is operated. */
+export type HostingMode = 'rented' | 'self-hosted' | 'local'
+
+/** Whether the model weights are openly licensed. */
+export type WeightsLicense = 'open' | 'closed'
+
+/** State of the data processing agreement covering this endpoint. */
+export type DpaStatus = 'signed' | 'byok-tenant' | 'none'
+
+/** Origin of a provider — the axis the policy engine decides on. */
+export interface ProviderOrigin {
+  residency: Residency
+  operator: string
+  weightsLicense: WeightsLicense
+  hostingMode: HostingMode
+  dpaStatus: DpaStatus
+}
+
+/** Task-fitness scores, 0..1. Read from the registry, never hardwired. */
+export interface ProviderCapabilities {
+  code: number
+  creative: number
+  analysis: number
+  conversation: number
+}
