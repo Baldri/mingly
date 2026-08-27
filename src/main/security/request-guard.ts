@@ -22,7 +22,9 @@ export interface GuardDeps {
   scanSensitive(text: string): SensitiveScan
   checkUploadPermission(args: { fullContent: string; provider: string; scan: SensitiveScan }): Promise<UploadDecision>
   checkBudget(provider: string): BudgetCheck
-  checkRouting(text: string, provider: string): RoutingDecision
+  /** conversationId is optional so existing test doubles keep type-checking; the
+   *  real implementation needs it for the audit entry. */
+  checkRouting(text: string, provider: string, conversationId?: string): RoutingDecision
   isCloudProvider(provider: string): boolean
   scanOutput(output: string, systemPrompt: string): OutputScan
 }
@@ -107,7 +109,7 @@ export function guardDispatch(input: PreflightInput, deps: GuardDeps): DispatchR
     }
   }
 
-  const routing = deps.checkRouting(full, provider)
+  const routing = deps.checkRouting(full, provider, input.conversationId)
   if (!routing.allowed) {
     if (routing.suggestedProvider) {
       provider = routing.suggestedProvider

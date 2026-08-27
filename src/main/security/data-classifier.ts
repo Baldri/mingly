@@ -83,8 +83,17 @@ const RESTRICTED_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
 export class DataClassifier {
   /**
    * Classify the sensitivity of message content.
+   *
+   * `trustOf` / `knownProviders` only affect `allowedProviders` — the set a
+   * caller may fall back to. They are injected for the same reason as in
+   * checkRouting: the real resolver reads the provider registry, and importing
+   * it here would close a module cycle.
    */
-  classify(content: string): ClassificationResult {
+  classify(
+    content: string,
+    trustOf: (p: string) => DataSensitivity = (p) => PROVIDER_TRUST[p] ?? DataSensitivity.PUBLIC,
+    knownProviders: string[] = Object.keys(PROVIDER_TRUST)
+  ): ClassificationResult {
     const reasons: string[] = []
     let sensitivity = DataSensitivity.PUBLIC
 
@@ -129,7 +138,7 @@ export class DataClassifier {
     }
 
     // 4. Determine allowed providers based on sensitivity
-    const allowedProviders = this.getAllowedProviders(sensitivity)
+    const allowedProviders = this.getAllowedProviders(sensitivity, trustOf, knownProviders)
 
     return { sensitivity, reasons, scanResult, allowedProviders }
   }
@@ -138,9 +147,25 @@ export class DataClassifier {
    * Check if a specific provider is allowed for the given content.
    * Returns a routing decision with fallback suggestion.
    */
-  checkRouting(content: string, provider: string): RoutingDecision {
-    const classification = this.classify(content)
-    const providerTrust = PROVIDER_TRUST[provider] ?? DataSensitivity.PUBLIC
+  /**
+   * Check if a specific provider is allowed for the given content.
+   *
+   * `trustOf` and `knownProviders` are injected rather than imported: the real
+   * resolver consults the provider registry, and importing it here would close
+   * a cycle (registry -> policy -> this module). Injecting also keeps the
+   * defaults — the hardcoded table — usable on their own in tests.
+   *
+   * Without them, any provider outside the table falls to PUBLIC, which is how
+   * a verified Swiss endpoint ended up treated like an invented provider name.
+   */
+  checkRouting(
+    content: string,
+    provider: string,
+    trustOf: (p: string) => DataSensitivity = (p) => PROVIDER_TRUST[p] ?? DataSensitivity.PUBLIC,
+    knownProviders: string[] = Object.keys(PROVIDER_TRUST)
+  ): RoutingDecision {
+    const classification = this.classify(content, trustOf, knownProviders)
+    const providerTrust = trustOf(provider)
 
     // Check: provider trust level must be >= content sensitivity
     const providerRank = SENSITIVITY_RANK[providerTrust]
@@ -164,12 +189,14 @@ export class DataClassifier {
   /**
    * Get list of providers that can handle content at the given sensitivity level.
    */
-  private getAllowedProviders(sensitivity: DataSensitivity): string[] {
+  private getAllowedProviders(
+    sensitivity: DataSensitivity,
+    trustOf: (p: string) => DataSensitivity,
+    knownProviders: string[]
+  ): string[] {
     const requiredRank = SENSITIVITY_RANK[sensitivity]
 
-    return Object.entries(PROVIDER_TRUST)
-      .filter(([, trust]) => SENSITIVITY_RANK[trust] >= requiredRank)
-      .map(([provider]) => provider)
+    return knownProviders.filter((provider) => SENSITIVITY_RANK[trustOf(provider)] >= requiredRank)
   }
 }
 
