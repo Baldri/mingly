@@ -9,6 +9,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { generateId } from '../../src/renderer/utils/id-generator'
 import { validateMCPConfig } from '../../src/main/utils/mcp-sanitizer'
 
@@ -471,17 +473,99 @@ describe('Data Privacy Compliance', () => {
 
 // ─── Code Splitting Verification ─────────────────────────────────
 describe('Code Splitting', () => {
-  it('should have lazy-loadable components defined as dynamic imports', async () => {
-    // Verify that the dynamic import pattern works
-    const lazyModules = [
-      () => import('../../src/renderer/components/MarkdownRenderer'),
-    ]
+  // The requirement: heavy renderer components must be reached through
+  // React.lazy(() => import(...)) so they land in their own chunk instead of
+  // the initial bundle, and every such target must be able to satisfy
+  // React.lazy at runtime — a default export, or the
+  // .then(m => ({ default: m.X })) adapter naming an export that exists.
+  //
+  // This is checked against the source, not by importing the modules.
+  // The previous version awaited a real dynamic import of MarkdownRenderer,
+  // which pulls react-markdown and react-syntax-highlighter through Vite's
+  // transform. That cost is wall-clock: 576 ms on an idle machine, over the
+  // 5 s default timeout with four suites in flight (measured 2026-08-27,
+  // reproduced 4 of 4). It also could not fail if a component stopped being
+  // code-split, because it never looked at how the app imports it — it only
+  // proved that the test runner can import a file.
+  const RENDERER_ROOT = resolve(process.cwd(), 'src/renderer')
 
-    for (const loader of lazyModules) {
-      // Dynamic import should resolve to a module with a default export
-      const mod = await loader()
-      expect(mod).toBeDefined()
-      expect(mod.default || mod.MarkdownRenderer).toBeDefined()
+  interface LazySite {
+    file: string
+    specifier: string
+    namedExport?: string
+  }
+
+  function sourceFiles(dir: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) return sourceFiles(full)
+      return /\.tsx?$/.test(entry.name) ? [full] : []
+    })
+  }
+
+  function collectLazySites(): LazySite[] {
+    const pattern =
+      /lazy\(\s*\(\)\s*=>\s*import\(\s*['"]([^'"]+)['"]\s*\)(?:\s*\.then\(\s*\w+\s*=>\s*\(\{\s*default:\s*\w+\.(\w+)\s*\}\)\s*\))?/g
+    const sites: LazySite[] = []
+    for (const file of sourceFiles(RENDERER_ROOT)) {
+      const source = readFileSync(file, 'utf8')
+      for (const match of source.matchAll(pattern)) {
+        sites.push({ file, specifier: match[1], namedExport: match[2] })
+      }
+    }
+    return sites
+  }
+
+  function resolveTarget(fromFile: string, specifier: string): string | null {
+    const base = resolve(dirname(fromFile), specifier)
+    for (const candidate of [`${base}.tsx`, `${base}.ts`, join(base, 'index.tsx'), join(base, 'index.ts')]) {
+      if (existsSync(candidate)) return candidate
+    }
+    return null
+  }
+
+  const lazySites = collectLazySites()
+
+  it('finds the lazy import sites it is meant to guard', () => {
+    // Without this the suite below would pass vacuously on an empty set.
+    expect(lazySites.length).toBeGreaterThan(0)
+    expect(lazySites.map((site) => site.specifier)).toContain('./MarkdownRenderer')
+  })
+
+  it('loads every heavy component through a lazy import, not a static one', () => {
+    // MarkdownRenderer drags in react-markdown and react-syntax-highlighter.
+    // Importing it statically would pull both into the initial bundle.
+    const markdownSite = lazySites.find((site) => site.specifier.endsWith('MarkdownRenderer'))
+    expect(markdownSite).toBeDefined()
+
+    const importer = readFileSync(markdownSite!.file, 'utf8')
+    expect(
+      /^import\s[^\n]*MarkdownRenderer/m.test(importer),
+      `${markdownSite!.file} imports MarkdownRenderer statically — that defeats the split`
+    ).toBe(false)
+  })
+
+  it('every lazily imported module can satisfy React.lazy', () => {
+    for (const site of lazySites) {
+      const target = resolveTarget(site.file, site.specifier)
+      expect(target, `${site.specifier} (from ${site.file}) resolves to no file`).not.toBeNull()
+
+      const source = readFileSync(target as string, 'utf8')
+      if (site.namedExport) {
+        const named = new RegExp(
+          `export\\s+(?:const|let|function|class|abstract\\s+class)\\s+${site.namedExport}\\b` +
+            `|export\\s*\\{[^}]*\\b${site.namedExport}\\b`
+        )
+        expect(
+          named.test(source),
+          `${site.specifier} is adapted to default via m.${site.namedExport}, but exports no such name`
+        ).toBe(true)
+      } else {
+        expect(
+          /export\s+default\b/.test(source),
+          `${site.specifier} is lazy-loaded without an adapter, so it needs a default export`
+        ).toBe(true)
+      }
     }
   })
 })
