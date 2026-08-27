@@ -16,67 +16,24 @@
  */
 
 import { getClientManager } from '../llm-clients/client-manager'
-import { getRouter, type RequestCategory } from './intelligent-router'
+import { getRouter } from './intelligent-router'
+import type {
+  RequestCategory,
+  SubTask,
+  DelegationProposal,
+  DelegationResult,
+  OrchestratorConfig
+} from '../../shared/orchestrator-types'
+
+// Re-exported so existing importers keep working; the definitions moved to
+// shared because the renderer needs them (see that file's header).
+export type { SubTask, DelegationProposal, DelegationResult, OrchestratorConfig }
 import { generateId } from '../utils/id-generator'
+import { preflightGuard } from '../security/request-guard'
+import { getGuardDeps } from '../security/request-guard-deps'
 import type { Message } from '../../shared/types'
 
 // ── Types ───────────────────────────────────────────────────────
-
-export interface SubTask {
-  id: string
-  description: string
-  category: RequestCategory
-  content: string
-  suggestedProvider: string
-  suggestedModel: string
-  confidence: number
-  reasoning: string
-}
-
-export interface DelegationProposal {
-  id: string
-  /** The original user message */
-  originalMessage: string
-  /** The primary LLM's analysis of why delegation helps */
-  analysis: string
-  /** Sub-tasks to delegate */
-  subTasks: SubTask[]
-  /** Total estimated cost if delegated */
-  estimatedCost: number
-  /** Status */
-  status: 'pending' | 'approved' | 'denied' | 'completed' | 'failed'
-  /** Timestamp */
-  createdAt: number
-}
-
-export interface DelegationResult {
-  proposalId: string
-  subTaskResults: Array<{
-    subTaskId: string
-    provider: string
-    model: string
-    response: string
-    tokens?: number
-    cost?: number
-    latencyMs: number
-  }>
-  composedResponse: string
-  totalCost: number
-  totalLatencyMs: number
-}
-
-export interface OrchestratorConfig {
-  /** Enable hybrid orchestration */
-  enabled: boolean
-  /** Minimum confidence to suggest delegation (0-1) */
-  delegationThreshold: number
-  /** Auto-delegate below this cost threshold (USD) without user approval */
-  autoApproveThreshold: number
-  /** Maximum sub-tasks per delegation */
-  maxSubTasks: number
-  /** Preferred models for each category */
-  preferredModels: Partial<Record<RequestCategory, { provider: string; model: string }>>
-}
 
 export const DEFAULT_ORCHESTRATOR_CONFIG: OrchestratorConfig = {
   enabled: true,
@@ -125,9 +82,15 @@ export class HybridOrchestrator {
 
     const clientManager = getClientManager()
 
-    // Get available cloud providers
+    // Candidates for delegation: everything with credentials except the
+    // provider the user is already talking to — there is nothing to delegate
+    // to yourself.
+    //
+    // Local providers used to be filtered out here as well, which meant a
+    // sub-task the policy only permits on-device had nowhere to go. They are
+    // candidates now; the guard in executeDelegation still has the last word.
     const availableProviders = clientManager.getProvidersWithApiKeys()
-      .filter(p => p !== 'ollama' && p !== 'local' && p !== currentProvider)
+      .filter(p => p !== currentProvider)
 
     if (availableProviders.length === 0) return null
 
@@ -276,8 +239,38 @@ export class HybridOrchestrator {
           }
         ]
 
+        // Delegation sends the user's own text to another provider, so it runs
+        // the same guard as every other path that does: injection scan,
+        // sensitive-data consent, budget, trust routing and residency policy.
+        // Until this was here, the licence check in the IPC handler was the
+        // only gate — and that gates the feature, not the content.
+        //
+        // The guard may settle on a DIFFERENT provider than the proposal
+        // named. What it settles on is what receives the sub-task and what
+        // gets recorded, or the two would disagree in the cost and audit
+        // trail.
+        const preflight = await preflightGuard(
+          {
+            texts: [subTask.content],
+            provider: subTask.suggestedProvider,
+            model: subTask.suggestedModel
+          },
+          getGuardDeps()
+        )
+
+        if (!preflight.ok) {
+          results.push({
+            subTaskId: subTask.id,
+            provider: subTask.suggestedProvider,
+            model: subTask.suggestedModel,
+            response: `[Delegation refused: ${preflight.reason ?? 'blocked by security guard'}]`,
+            latencyMs: Date.now() - taskStartTime
+          })
+          continue
+        }
+
         const response = await clientManager.sendMessageNonStreaming(
-          subTask.suggestedProvider,
+          preflight.provider,
           messages,
           subTask.suggestedModel,
           0.7
@@ -285,7 +278,7 @@ export class HybridOrchestrator {
 
         results.push({
           subTaskId: subTask.id,
-          provider: subTask.suggestedProvider,
+          provider: preflight.provider,
           model: subTask.suggestedModel,
           response,
           latencyMs: Date.now() - taskStartTime
