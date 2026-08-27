@@ -70,4 +70,23 @@ describe('ProviderRegistry', () => {
 
     expect(registry.all().map((e) => e.config.id).sort()).toEqual(['a', 'b'])
   })
+
+  it('protects tenant origin from mutation through read reference', () => {
+    registry.registerTenant({ ...chConfig, id: 'tenant' })
+
+    const entry = registry.get('tenant')
+    expect(entry).toBeDefined()
+
+    // Attempt to mutate the origin. In strict mode this throws; in sloppy mode it
+    // silently no-ops on a frozen object. Either way, the mutation must not stick.
+    try {
+      entry!.origin.residency = 'CH'
+    } catch {
+      // Silent no-op in sloppy mode, or throws in strict mode. Both are ok.
+    }
+
+    // Fresh read proves the mutation did not stick.
+    const fresh = registry.get('tenant')
+    expect(fresh?.origin.residency).toBe('unknown')
+  })
 })

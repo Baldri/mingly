@@ -45,7 +45,10 @@ export class ProviderRegistry {
     origin: ProviderOrigin,
     capabilities: ProviderCapabilities
   ): void {
-    this.entries.set(config.id, { config, origin, capabilities })
+    const frozenOrigin = Object.freeze({ ...origin })
+    const frozenCapabilities = Object.freeze({ ...capabilities })
+    const entry: RegistryEntry = { config, origin: frozenOrigin, capabilities: frozenCapabilities }
+    this.entries.set(config.id, Object.freeze(entry))
   }
 
   /**
@@ -53,11 +56,10 @@ export class ProviderRegistry {
    * on the incoming config is discarded, not merged.
    */
   registerTenant(config: ProviderConfig): void {
-    this.entries.set(config.id, {
-      config,
-      origin: { ...TENANT_ORIGIN },
-      capabilities: { ...UNMEASURED_CAPABILITIES }
-    })
+    const frozenOrigin = Object.freeze({ ...TENANT_ORIGIN })
+    const frozenCapabilities = Object.freeze({ ...UNMEASURED_CAPABILITIES })
+    const entry: RegistryEntry = { config, origin: frozenOrigin, capabilities: frozenCapabilities }
+    this.entries.set(config.id, Object.freeze(entry))
   }
 
   get(id: string): RegistryEntry | undefined {
