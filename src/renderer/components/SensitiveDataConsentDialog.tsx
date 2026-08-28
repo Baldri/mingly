@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import type { RiskLevel } from '../../main/security/sensitive-data-detector'
-import type { UploadPermissionRequest } from '../../main/security/upload-permission-manager'
+import type { RiskLevel } from '../../shared/privacy-types'
+import type { UploadPermissionRequest } from '../../shared/privacy-types'
 
 interface SensitiveDataConsentDialogProps {
   isOpen: boolean

@@ -1,8 +1,8 @@
 import { create } from 'zustand'
 import type { Conversation, Message, MessageAttachment } from '../../shared/types'
 import { generateId } from '../utils/id-generator'
-import type { UploadPermissionRequest } from '../../main/security/upload-permission-manager'
-import type { RiskLevel } from '../../main/security/sensitive-data-detector'
+import type { UploadPermissionRequest } from '../../shared/privacy-types'
+import type { RiskLevel } from '../../shared/privacy-types'
 import { usePrivacyStore } from './privacy-store'
 
 interface SensitiveDataConsentState {
