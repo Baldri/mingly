@@ -6,6 +6,7 @@ import { ipcMain } from 'electron'
 import { getRateLimiter } from '../security/rate-limiter'
 import { getRBACManager } from '../security/rbac-manager'
 import { getFeatureGateManager } from '../services/feature-gate-manager'
+import { getProviderRegistry } from '../routing/provider-registry'
 
 /**
  * Wrap an IPC handler with consistent error handling + rate limiting.
@@ -53,6 +54,26 @@ export function requireFeature(feature: string): void {
 }
 
 /** Validate provider string is valid LLMProvider */
+/** Built-ins are explicit so a registry change cannot lock a user out of them. */
+const BUILT_IN_PROVIDERS = ['anthropic', 'openai', 'google', 'local']
+
+/**
+ * May this provider hold credentials?
+ *
+ * This gates both saving an API key and loading one back at startup. It used
+ * to be the four names above and nothing else, so a provider the user had
+ * just configured — the Swiss endpoint, say — could not hold a token, and the
+ * settings field for it failed silently.
+ *
+ * The rule is now earned rather than enumerated: a provider qualifies by
+ * being in the provider registry. That covers endpoints we registered and
+ * endpoints a tenant added (bring-your-own-key is the point of those), while
+ * an arbitrary string still cannot reach the keychain. Invariant I2 governs
+ * what such an endpoint may CLAIM about its residency — a separate question
+ * from whether the user may store a key for it.
+ */
 export function validateProvider(provider: string): boolean {
-  return ['anthropic', 'openai', 'google', 'local'].includes(provider)
+  if (BUILT_IN_PROVIDERS.includes(provider)) return true
+  if (!provider) return false
+  return getProviderRegistry().get(provider) !== undefined
 }

@@ -8,6 +8,8 @@ import { getLocalAIBridge } from './network/local-ai-bridge'
 import { getDocMindIntegration } from './integrations/docmind-integration'
 import { getAutoUpdater } from './updater/auto-updater'
 import { applyEnvFile } from './config/env-file'
+import { applyInfomaniakConfig, resolveInfomaniakProductId } from './config/infomaniak-config'
+import { SimpleStore } from './utils/simple-store'
 import { createLogger } from '../shared/logger'
 
 const logger = createLogger('Main')
@@ -120,6 +122,16 @@ app.whenReady().then(async () => {
 
   // Register all IPC handlers
   await registerIPCHandlers()
+
+  // Register the Swiss endpoint from the stored settings (falling back to the
+  // environment). Without this the registry would only ever see the env var,
+  // which a packaged app does not have.
+  try {
+    const stored = SimpleStore.create().get('settings') as { infomaniakProductId?: string } | undefined
+    applyInfomaniakConfig(resolveInfomaniakProductId(() => stored?.infomaniakProductId))
+  } catch (error) {
+    logger.warn('Could not apply the Infomaniak configuration', { error: String(error) })
+  }
 
   // Initialize deployment manager (auto-starts server if in server mode)
   try {

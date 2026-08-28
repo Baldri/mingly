@@ -32,15 +32,17 @@ import { registerMCPHandlers } from './ipc/mcp-handlers'
 import { registerRAGHandlers } from './ipc/rag-handlers'
 import { registerPrivacyHandlers } from './ipc/privacy-handlers'
 import { registerAgentHandlers } from './ipc/agent-handlers'
+// Same rule as the one gating credential storage: a provider qualifies by
+// being built in or registered. Two copies of this check with two different
+// lists is how a configured endpoint ends up able to hold a key and unable to
+// receive a message.
+import { validateProvider } from './ipc/ipc-utils'
 
 // ============================================================
 // Helpers (only needed for SEND_MESSAGE orchestration)
 // ============================================================
 
 /** Validate provider string is valid LLMProvider */
-function validateProvider(provider: string): provider is LLMProvider {
-  return ['anthropic', 'openai', 'google', 'local'].includes(provider)
-}
 
 const clientManager = getClientManager()
 const systemPromptManager = getSystemPromptManager()
