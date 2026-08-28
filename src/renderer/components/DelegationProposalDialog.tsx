@@ -1,5 +1,5 @@
 import { memo, useState, useCallback } from 'react'
-import type { DelegationProposal } from '../../main/routing/hybrid-orchestrator'
+import type { DelegationProposal } from '../../shared/orchestrator-types'
 
 interface DelegationProposalDialogProps {
   isOpen: boolean

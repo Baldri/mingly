@@ -2,7 +2,8 @@ import { Ollama } from 'ollama'
 import type { LLMProvider } from '../llm-clients/client-manager'
 import { getProviderRegistry } from './provider-registry'
 
-export type RequestCategory = 'code' | 'creative' | 'analysis' | 'general' | 'conversation'
+import type { RequestCategory } from '../../shared/orchestrator-types'
+export type { RequestCategory }
 
 export interface RoutingResult {
   category: RequestCategory

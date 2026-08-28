@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { DelegationProposal, DelegationResult, OrchestratorConfig } from '../../main/routing/hybrid-orchestrator'
+import type { DelegationProposal, DelegationResult, OrchestratorConfig } from '../../shared/orchestrator-types'
 
 interface OrchestratorState {
   /** Whether orchestrator is enabled */
