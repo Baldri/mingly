@@ -1,6 +1,7 @@
 import { useState, useEffect, memo, useCallback } from 'react'
 import { usePrivacyStore } from '../stores/privacy-store'
 import { useChatStore } from '../stores/chat-store'
+import { useSettingsStore } from '../stores/settings-store'
 
 type PrivacyMode = 'shield' | 'vault' | 'transparent' | 'local_only'
 
@@ -10,6 +11,109 @@ const PRIVACY_MODES: { mode: PrivacyMode; label: string; description: string; co
   { mode: 'transparent', label: 'Transparent', description: 'PII wird erkannt aber nicht verändert', color: 'border-yellow-500 bg-yellow-50 dark:bg-yellow-900/20' },
   { mode: 'local_only', label: 'Local Only', description: 'Nachrichten nur an lokale LLMs senden', color: 'border-purple-500 bg-purple-50 dark:bg-purple-900/20' }
 ]
+
+/**
+ * Swiss endpoint (Infomaniak).
+ *
+ * Two inputs, not one: the base URL is account-specific — Infomaniak exposes
+ * one AI product per organisation and its id is part of the path — so the id
+ * is configuration, not a constant. Without it nothing is registered, and the
+ * policy has no Swiss endpoint to route sensitive requests to.
+ */
+const SwissEndpointSection = memo(function SwissEndpointSection() {
+  const settings = useSettingsStore((s) => s.settings)
+  const updateSettings = useSettingsStore((s) => s.updateSettings)
+  const saveAPIKey = useSettingsStore((s) => s.saveAPIKey)
+  const checkAPIKeys = useSettingsStore((s) => s.checkAPIKeys)
+  const apiKeysConfigured = useSettingsStore((s) => s.apiKeysConfigured)
+
+  const [productId, setProductId] = useState('')
+  const [token, setToken] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setProductId(settings?.infomaniakProductId ?? '')
+  }, [settings?.infomaniakProductId])
+
+  const configured = Boolean(settings?.infomaniakProductId)
+  const hasToken = Boolean(apiKeysConfigured?.infomaniak)
+
+  const handleSave = useCallback(async () => {
+    setSaving(true)
+    try {
+      await updateSettings({ infomaniakProductId: productId.trim() })
+      if (token.trim()) {
+        await saveAPIKey('infomaniak', token.trim())
+        setToken('')
+        await checkAPIKeys()
+      }
+    } finally {
+      setSaving(false)
+    }
+  }, [productId, token, updateSettings, saveAPIKey, checkAPIKeys])
+
+  return (
+    <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+      <div className="mb-1 flex items-center justify-between">
+        <h4 className="text-sm font-semibold text-gray-900 dark:text-white">
+          Schweizer Endpunkt (Infomaniak)
+        </h4>
+        <span
+          className={`rounded px-2 py-0.5 text-xs font-medium ${
+            configured
+              ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300'
+              : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+          }`}
+        >
+          {configured ? 'registriert' : 'nicht eingerichtet'}
+        </span>
+      </div>
+
+      <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+        Ohne Produkt-ID wird kein Schweizer Endpunkt registriert — Anfragen mit
+        hohem Schutzbedarf bleiben dann auf dem lokalen Modell oder werden
+        abgelehnt. Die ID steht im Infomaniak Manager beim Produkt «AI Tools».
+      </p>
+
+      <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
+        Produkt-ID
+      </label>
+      <input
+        type="text"
+        value={productId}
+        onChange={(e) => setProductId(e.target.value)}
+        placeholder="z. B. 110908"
+        className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+      />
+
+      <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
+        API-Token {hasToken && <span className="text-green-600 dark:text-green-400">· hinterlegt</span>}
+      </label>
+      <input
+        type="password"
+        value={token}
+        onChange={(e) => setToken(e.target.value)}
+        placeholder={hasToken ? 'Zum Ersetzen neuen Token eingeben' : 'Token aus dem Infomaniak Manager'}
+        className="mb-3 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+      />
+
+      <button
+        onClick={handleSave}
+        disabled={saving}
+        className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+      >
+        {saving ? 'Speichern…' : 'Speichern'}
+      </button>
+
+      {configured && !hasToken && (
+        <p className="mt-3 text-xs text-amber-600 dark:text-amber-400">
+          Produkt-ID gesetzt, aber kein Token hinterlegt — der Endpunkt ist
+          registriert und wird Anfragen nicht beantworten koennen.
+        </p>
+      )}
+    </div>
+  )
+})
 
 /** PII Privacy Mode Switcher */
 const PrivacyModeSwitcher = memo(function PrivacyModeSwitcher() {
@@ -281,6 +385,9 @@ export function PrivacySettingsTab() {
 
       {/* NER Model Management */}
       <NERModelSection />
+
+      {/* Swiss endpoint */}
+      <SwissEndpointSection />
 
       {/* Statistics */}
       {stats && (

@@ -9,6 +9,7 @@ import { MessageModel } from '../database/models/message'
 import { SimpleStore } from '../utils/simple-store'
 import { getFeatureGateManager } from '../services/feature-gate-manager'
 import { wrapHandler, requirePermission, requireFeature } from './ipc-utils'
+import { applyInfomaniakConfig, resolveInfomaniakProductId } from '../config/infomaniak-config'
 
 export function registerConversationHandlers(): void {
   const store = SimpleStore.create()
@@ -88,6 +89,11 @@ export function registerConversationHandlers(): void {
     const currentSettings = (store.get('settings') || {}) as AppSettings
     const merged = { ...currentSettings, ...settings }
     store.set('settings', merged)
+
+    // Bring the provider registry in line immediately: entering — or clearing
+    // — the product id must take effect without restarting the app.
+    applyInfomaniakConfig(resolveInfomaniakProductId(() => merged.infomaniakProductId))
+
     return { success: true, settings: merged }
   })
 }

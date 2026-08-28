@@ -328,6 +328,13 @@ export interface AppSettings {
   routingMode?: 'manual' | 'auto'
   /** Custom display name for the external RAG server (default: "RAG-Wissen") */
   ragServerName?: string
+  /**
+   * Infomaniak AI product id. The Swiss endpoint's base URL contains it
+   * (`/2/ai/{id}/openai/v1`), so it is account-specific configuration, not a
+   * constant. Empty means no Swiss endpoint is registered — see
+   * `src/main/config/infomaniak-config.ts`.
+   */
+  infomaniakProductId?: string
 }
 
 // Prompt Template Types

@@ -70,6 +70,18 @@ export class ProviderRegistry {
     return this.entries.get(id)
   }
 
+  /**
+   * Forget a provider.
+   *
+   * Needed because configuration can be withdrawn: when a user clears the
+   * Infomaniak product id, the entry must go. Leaving it would keep an
+   * endpoint claiming Swiss residency for a URL nobody stands behind any
+   * more, and the policy would keep routing sensitive requests to it.
+   */
+  remove(id: string): void {
+    this.entries.delete(id)
+  }
+
   all(): RegistryEntry[] {
     return Array.from(this.entries.values())
   }
