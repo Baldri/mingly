@@ -8,36 +8,16 @@
  * - User-configurable patterns
  * - Privacy-first: Better false positives than data leaks
  */
+import type {
+  SensitiveDataType,
+  RiskLevel,
+  SensitiveDataMatch,
+  SensitiveDataScanResult
+} from '../../shared/privacy-types'
 
-export type SensitiveDataType =
-  | 'email'
-  | 'phone'
-  | 'ssn'
-  | 'credit-card'
-  | 'api-key'
-  | 'password'
-  | 'ip-address'
-  | 'file-path'
-  | 'url'
-  | 'custom'
-
-export type RiskLevel = 'low' | 'medium' | 'high' | 'critical'
-
-export interface SensitiveDataMatch {
-  type: SensitiveDataType
-  value: string // Partially redacted for display
-  fullValue: string
-  position: { start: number; end: number }
-  riskLevel: RiskLevel
-  confidence: number // 0-1
-}
-
-export interface SensitiveDataScanResult {
-  hasSensitiveData: boolean
-  matches: SensitiveDataMatch[]
-  overallRiskLevel: RiskLevel
-  recommendation: 'allow' | 'warn' | 'block'
-}
+// Re-exported so main-process importers stay unchanged; the definitions moved
+// to shared because the renderer needs them (see that file's header).
+export type { SensitiveDataType, RiskLevel, SensitiveDataMatch, SensitiveDataScanResult }
 
 /**
  * Detection patterns with risk levels

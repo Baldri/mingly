@@ -12,19 +12,14 @@
 
 import { SimpleStore } from '../utils/simple-store'
 import type { SensitiveDataScanResult } from './sensitive-data-detector'
+import type { UploadPermissionRequest } from '../../shared/privacy-types'
+
+// Re-exported so existing importers stay unchanged; the definition moved to
+// shared because the renderer needs it (see that file's header).
+export type { UploadPermissionRequest }
 
 export type UploadPolicy = 'always-allow' | 'always-block' | 'ask-each-time'
 export type UploadDecision = 'allowed' | 'denied' | 'pending'
-
-export interface UploadPermissionRequest {
-  fileId: string // Unique file identifier (hash or path)
-  filePath: string
-  directoryId: string
-  destination: 'local' | 'cloud'
-  provider: string // 'anthropic', 'openai', 'google', 'ollama', etc.
-  scanResult: SensitiveDataScanResult
-  timestamp: number
-}
 
 export interface UploadPermissionResponse {
   decision: UploadDecision
