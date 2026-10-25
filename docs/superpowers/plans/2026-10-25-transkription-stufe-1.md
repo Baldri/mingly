@@ -75,7 +75,7 @@ pruefen wuerde. Jede Zeile hat ihren Test im zugehoerigen Task.
 ### Task 1: Mandanten-Kennung im Datenmodell
 
 **Files:**
-- Modify: `src/main/database/index.ts` (Migration auf `schema_version` 2)
+- Modify: `src/main/database/index.ts` (Migration auf `schema_version` **11** — korrigiert 2026-10-25: das Schema stand bereits bei 10)
 - Test: `tests/unit/database-tenant-migration.test.ts`
 
 **Interfaces:**
@@ -112,7 +112,7 @@ it('erhoeht schema_version auf 2', () => {
 Run: `npx vitest run tests/unit/database-tenant-migration.test.ts`
 Expected: FAIL — `tenant_id` nicht in `table_info`
 
-- [ ] **Step 3: Migration auf Version 2 in `runMigrations` ergaenzen**
+- [ ] **Step 3: Migration auf Version 11 in `runMigrations` ergaenzen**
 
 `ALTER TABLE … ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'` je Tabelle,
 dem bestehenden Versionsschema folgend. `DEFAULT 'default'` ist der Grund, dass
@@ -136,7 +136,7 @@ git commit -m "feat(db): Mandanten-Kennung auf allen Tabellen"
 
 **Files:**
 - Create: `src/main/database/models/transcription.ts`
-- Modify: `src/main/database/index.ts` (Migration auf `schema_version` 3)
+- Modify: `src/main/database/index.ts` (Migration auf `schema_version` **12**)
 - Test: `tests/unit/transcription-model.test.ts`
 
 **Interfaces:**
@@ -146,7 +146,7 @@ git commit -m "feat(db): Mandanten-Kennung auf allen Tabellen"
   export type TranscriptionJobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
   export interface TranscriptionJob {
     id: string; tenantId: string; workspaceId: string; audioPath: string
-    state: TranscriptionJobState; progress: number; targetId: string
+    state: TranscriptionJobState; progress: number /* 0..1, Ruling 6 */; targetId: string
     error?: string; createdAt: number; updatedAt: number
   }
   export interface TranscriptionSegment {
@@ -177,7 +177,7 @@ it('setzt bei failed eine Fehlermeldung', () => { … })
 
 - [ ] **Step 2: Run tests to verify they fail** — Run: `npx vitest run tests/unit/transcription-model.test.ts` · Expected: FAIL (Modul fehlt)
 
-- [ ] **Step 3: Modell und Migration auf Version 3 implementieren**
+- [ ] **Step 3: Modell und Migration auf Version 12 implementieren**
 
 Tabellen `transcription_jobs` und `transcription_segments`, beide mit `tenant_id`.
 Fremdschluessel `transcription_segments.job_id → transcription_jobs.id`
@@ -502,6 +502,10 @@ Run: `npm run typecheck` · Expected: Exit 0
 it('loescht Audiodatei, Job und Segmente, aber NICHT den Audit-Eintrag', () => {
   // Spec Abschnitt 8: "Loeschen muss loeschen" - Audio, Transkript,
   // Zwischendateien. Der Audit-Eintrag bleibt, er enthaelt kein Transkript.
+  // ACHTUNG (Ruling 5, gemessen 2026-10-25): ON DELETE CASCADE wirkt hier NICHT.
+  // sql.js setzt PRAGMA foreign_keys bei jedem db.export() auf 0, und
+  // saveDatabase() exportiert nach jeder Schreiboperation. Die Segmente muessen
+  // EXPLIZIT geloescht werden, sonst bleiben Transkripttexte als Waisen liegen.
   deleteJob(job.id, 'tenant-a')
   expect(fs.existsSync(audioPath)).toBe(false)
   expect(TranscriptionModel.getSegments(job.id, 'tenant-a')).toHaveLength(0)
@@ -526,8 +530,11 @@ it('purgeExpired loescht nur Abgelaufenes und zaehlt es', () => { … })
 
 - [ ] **Step 3: Implementieren**
 
-Fristen pro Arbeitsbereich in `settings` (traegt seit Task 1 `tenant_id`), **nicht**
-global — ein Betrieb hat je Kunde andere Fristen, und eine globale Einstellung
+Fristen in einer **eigenen Tabelle** `transcription_retention (tenant_id,
+workspace_id, audio_days, transcript_days)`, PRIMARY KEY `(tenant_id, workspace_id)`
+— **nicht** in `settings`: dessen `key` ist globaler PRIMARY KEY, eine
+`tenant_id`-Spalte macht ihn nicht pro Mandant eindeutig (Ruling 4 vom 2026-10-25).
+Fristen gehoeren pro Arbeitsbereich, **nicht** global — ein Betrieb hat je Kunde andere Fristen, und eine globale Einstellung
 muesste in Stufe 2 zerlegt werden (Stufenplan Punkt 4).
 
 - [ ] **Step 4: Run tests and typecheck** — Expected: PASS / Exit 0
@@ -567,5 +574,25 @@ muesste in Stufe 2 zerlegt werden (Stufenplan Punkt 4).
   Fuer "ohne IT-Abteilung" (Spec Abschnitt 2) braucht es den Kindprozess — das ist
   ein neues Muster im Repo und eine Entscheidung fuer den Umsetzer, nicht fuer
   diesen Plan.
+- **Apple Silicon laeuft auf CPU, nicht auf Metal** (aus Task 3, Ruling 10): der
+  Dienst nutzt `whisperx` ohne den `mlx_whisper`-Zweig, den TranscriboZH fuer MPS
+  hat. Gemessen wurden 11,4x Echtzeit **mit** Metal und 1,5x ohne — eine
+  Sitzungsstunde braucht damit 40 Minuten statt 5. Fuer die lokale App ist das der
+  Unterschied zwischen brauchbar und unbenutzbar, und es ist **vor jeder
+  Produktzusage zu schliessen**. Nicht in Task 3, weil dort nicht gefordert und hier
+  nicht testbar.
+- **Betriebsvoraussetzung Python 3.12 oder 3.13** (Ruling 11): `torch` 2.5.1
+  veroeffentlicht Wheels nur fuer cp39 bis cp313. Auf Python 3.14 laeuft der Dienst
+  nicht.
+- **Vor Task 5/6** (Ruling 9): die TypeScript-Seite kopiert die Aufnahme in
+  `TRANSCRIPTION_SPOOL_DIR`, bevor sie einen Job einstellt — der Dienst akzeptiert
+  aus Sicherheitsgruenden nur Pfade innerhalb dieses Verzeichnisses.
 - **Zielbranche** (offener Entscheid 5): beeinflusst nur die Oberflaeche, keinen
   Task hier.
+- **Fuer Stufe 2, nicht fuer diesen Plan** (aus dem Review von Task 1): die
+  bestehenden Writer von `activity_log` setzen `tenant_id` nicht explizit, sondern
+  verlassen sich auf den Spalten-Default. In Stufe 1 mit einem Mandanten pro
+  Installation ist das korrekt. Sobald eine Installation mehrere Mandanten traegt,
+  muessen diese Writer den Mandanten beim Schreiben uebergeben — `NOT NULL DEFAULT`
+  kann sie dazu nicht zwingen. Die neuen Transkriptions-Eintraege aus Task 6
+  Schritt 4 setzen ihn bereits explizit.
