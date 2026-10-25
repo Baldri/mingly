@@ -1,6 +1,12 @@
 # Dependencies
 node_modules/
 
+# Python virtualenvs and bytecode caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
 # Build output
 dist/
 dist-electron/

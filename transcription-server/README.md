@@ -1,0 +1,127 @@
+# Mingly Transcription Server
+
+Transkription mit Sprechertrennung. Audio rein, Segmente mit Sprechern und
+Zeitstempeln raus — ueber HTTP, nach demselben Muster wie `rag-server`.
+
+Policy, Mandanten, Audit, Job-Tabelle und Oberflaeche bleiben auf der
+TypeScript-Seite. Dieser Dienst ist nur die Maschine.
+
+## Herkunft und Lizenz
+
+Die Pipeline ist aus **TranscriboZH** uebernommen
+(<https://github.com/machinelearningZH/audio-transcription>, MIT, Kanton
+Zuerich). Uebernommen wurden `src/transcription.py`, die `data_leaks`-Liste aus
+`data/const.py` und der `get_prompt`-Patch aus `worker.py`. Der
+MIT-Copyright-Hinweis steht im Kopf von `pipeline.py` und `const.py`.
+
+**Nicht** uebernommen: das NiceGUI-Frontend (Mingly hat React), die
+Qwen-Zusammenfassung (Mingly hat seine eigene LLM-Schicht mit Residenz-Policy)
+und die dateisystembasierte Warteschlange `data/in` / `data/out` (Mingly hat
+SQLite).
+
+## Warum der `get_prompt`-Patch nicht optional ist
+
+faster-whisper gibt das vorherige Segment immer als Kontext weiter. Auf langem
+Audio laeuft Whisper damit in Wiederholungsschleifen: gemessen bis zu **58 %
+des Materials verloren** und eine Wortfehlerrate um **46 %**. Mit
+unterdrucktem Kontext: **5,96 %**
+(`docs/superpowers/specs/2026-10-25-whisper-messung.md`, Abschnitt 4.1).
+
+Der Patch ist genau diese Unterdrueckung. TranscriboZH hat denselben Befund
+unabhaengig gefunden. Wer ihn entfernt, macht den Dienst unbrauchbar.
+
+## Endpunkte
+
+| Methode | Pfad | Antwort |
+|---|---|---|
+| `POST` | `/transcribe` | `{ "job_id": str }` |
+| `GET` | `/jobs/{job_id}` | `{ "state": str, "progress": float, "segments": [...], "error": str \| null }` |
+| `GET` | `/health` | `{ "status": str, "model_loaded": bool, "device": str }` |
+
+`POST /transcribe` nimmt `{ "audio_path": str, "num_speakers": int \| null,
+"language": str }`. `num_speakers` weglassen heisst: erkennen lassen.
+
+Ein Segment ist `{ "start_ms": int, "end_ms": int, "speaker": str, "text": str }`.
+
+`progress` ist ein Bruch von **0 bis 1**, nicht 0 bis 100.
+
+Zustaende: `queued | running | done | failed`. Abbrechen kennt dieser Dienst
+nicht — das liegt beim Job-Runner auf der TypeScript-Seite.
+
+Fehlerfaelle: `400` bei fehlender oder leerer Audiodatei, `404` bei unbekannter
+Job-Kennung, `503` solange kein Modell geladen ist.
+
+## Betriebsregeln
+
+- **Modelle werden einmal beim Start geladen**, nicht pro Anfrage.
+- **Genau ein Worker pro Prozess.** Mehr als einer sprengt das VRAM — das
+  README von TranscriboZH sagt das ausdruecklich. Die Kapazitaetsgrenze einer
+  Installation ist damit *ein Worker pro GPU*, nicht der Durchsatz.
+- **Jobs liegen im Speicher und werden hier absichtlich nicht persistiert.**
+  Ein Neustart verliert die Warteschlange; die Wiederaufnahme ist Aufgabe des
+  Job-Runners in Mingly (Spec 6.2).
+- Der Dienst bindet standardmaessig auf `127.0.0.1`. Ein Container in der
+  Private Cloud des Kunden setzt `TRANSCRIPTION_HOST=0.0.0.0` bewusst.
+
+## Konfiguration
+
+| Variable | Standard | Bedeutung |
+|---|---|---|
+| `TRANSCRIPTION_HOST` | `127.0.0.1` | Bind-Adresse |
+| `TRANSCRIPTION_PORT` | `8765` | Port (`rag-server` belegt 8001) |
+| `TRANSCRIPTION_DEVICE` | `cpu` | `cpu`, `cuda` oder `mps` |
+| `TRANSCRIPTION_MODEL` | `large-v3` | Whisper-Modellgroesse |
+| `TRANSCRIPTION_DIARIZATION_MODEL` | `pyannote/speaker-diarization` | Diarisationsmodell |
+| `TRANSCRIPTION_BATCH_SIZE` | `4` | 4 bei 8 GB VRAM, 32 bei 16 GB |
+| `TRANSCRIPTION_MODEL_ROOT` | — | Ablage der Whisper-Gewichte (offline) |
+| `TRANSCRIPTION_LOG_LEVEL` | `INFO` | Log-Stufe |
+| `HF_AUTH_TOKEN` | — | Hugging-Face-Token fuer die Diarisation |
+
+Auf Apple Silicon laeuft das Whisper-Modell zwingend auf der CPU — ctranslate2,
+die Laufzeit von faster-whisper, hat kein Metal-Backend. `mps` gilt nur fuer
+pyannote. Laut dem README von TranscriboZH ist CPU-Transkription
+**"extremely slow"**; eigene Messung: 1,5x Echtzeit auf CPU.
+
+## Offene Punkte, die eine Entscheidung brauchen
+
+1. **Die Diarisationsgewichte sind zugangsbeschraenkt.** `pyannote` verlangt
+   einen Hugging-Face-Token und akzeptierte Modellbedingungen. Das Akzeptieren
+   ist eine Vertragsannahme und damit eine Handlung des Produktverantwortlichen
+   (Spec 10.3). Ohne Token startet der Dienst, meldet `model_loaded: false` und
+   weist Jobs mit `503` ab. Welches Modell ausgeliefert wird, ist deshalb
+   konfigurierbar und hier nicht entschieden.
+2. **Beschleunigung auf Apple Silicon.** TranscriboZH nutzt dafuer
+   `mlx_whisper` mit `mlx-community/whisper-large-v3-mlx`. Dieser Zweig ist
+   hier **absichtlich nicht uebernommen** (zusaetzlicher Modellstapel,
+   zusaetzliche Abhaengigkeit). Solange er fehlt, ist die lokale Transkription
+   auf dem Mac CPU-langsam. Das ist eine Produktentscheidung.
+3. **Python-Version.** `torch==2.5.1` veroeffentlicht Wheels nur fuer
+   cp39–cp313 (gegen PyPI geprueft am 2026-10-25). Ein echter Betrieb braucht
+   **Python 3.12 oder 3.13**; upstream pinnt 3.12.7. Python 3.14 funktioniert
+   nicht.
+
+## Installation und Start
+
+```bash
+# Betrieb: Python 3.12 oder 3.13, NICHT 3.14
+python3.12 -m venv .venv
+.venv/bin/pip install torch           # passend zum Beschleuniger, siehe requirements.txt
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python server.py
+```
+
+## Tests
+
+```bash
+transcription-server/.venv/bin/python -m pytest transcription-server/tests/ -v
+```
+
+Die Tests laufen **ohne Modelle, ohne GPU und ohne Hugging-Face-Konto**. Das
+ist der Grund fuer die Importaufteilung in `pipeline.py`: `whisperx`, `torch`,
+`pandas` und `pyannote` werden erst *innerhalb* der Funktionen importiert, die
+sie brauchen. `get_prompt` und `clean_segments` bleiben damit pruefbar. **Diese
+Aufteilung nicht rueckbauen.**
+
+Nicht von Tests abgedeckt und nur mit Modellen pruefbar: die vier
+Pipeline-Stufen selbst (Transkription, Alignment, Diarisation,
+Sprecherzuordnung) und damit `transcribe`, `load_models` und `_assign_speakers`.
