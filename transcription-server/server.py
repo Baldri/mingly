@@ -29,13 +29,15 @@ import threading
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator, Literal
+from typing import Annotated, AsyncIterator, Literal
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 import pipeline
+import security
 from pipeline import Segment
 
 logging.basicConfig(
@@ -46,10 +48,22 @@ logging.basicConfig(
 logger = logging.getLogger("transcription-server")
 
 # Audio is the most sensitive payload Mingly handles, so the service binds to
-# localhost unless the operator says otherwise. A container in the customer's
-# private cloud sets TRANSCRIPTION_HOST=0.0.0.0 knowingly.
+# localhost by default. Binding anywhere else requires an API key, and the
+# service refuses to start without one — see security.assert_auth_config.
 HOST: str = os.getenv("TRANSCRIPTION_HOST", "127.0.0.1")
 PORT: int = int(os.getenv("TRANSCRIPTION_PORT", "8765"))
+
+# Authentication, following Mingly's own server (MINGLY_REQUIRE_AUTH /
+# MINGLY_API_KEY in src/server/index.ts). Off by default, which is safe only
+# because the default bind is loopback; any other bind forces it on.
+REQUIRE_AUTH: bool = os.getenv("TRANSCRIPTION_REQUIRE_AUTH", "").lower() == "true"
+API_KEY: str | None = os.getenv("TRANSCRIPTION_API_KEY") or None
+
+# Submitted audio must resolve inside this directory. Without that, POST
+# /transcribe plus GET /jobs/{id} would read back any audio file on the host.
+SPOOL_DIR: Path = Path(
+    os.getenv("TRANSCRIPTION_SPOOL_DIR") or Path(__file__).resolve().parent / "spool"
+)
 
 DEVICE: str = os.getenv("TRANSCRIPTION_DEVICE", "cpu")
 MODEL_SIZE: str = os.getenv("TRANSCRIPTION_MODEL", "large-v3")
@@ -155,8 +169,23 @@ class JobStore:
             job.error = error
 
 
+class QueuedJob(BaseModel):
+    """What the worker needs, with an already validated path.
+
+    The path here has been through security.resolve_spool_path; the worker
+    never sees the string the caller submitted.
+    """
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    job_id: str
+    audio_path: Path
+    num_speakers: int | None
+    language: str
+
+
 _jobs = JobStore()
-_work_queue: "queue.Queue[tuple[str, TranscribeRequest]]" = queue.Queue()
+_work_queue: "queue.Queue[QueuedJob]" = queue.Queue()
 
 
 def _worker_loop() -> None:
@@ -167,13 +196,14 @@ def _worker_loop() -> None:
     job would hang forever.
     """
     while True:
-        job_id, request = _work_queue.get()
+        queued = _work_queue.get()
+        job_id = queued.job_id
         try:
             _jobs.set_running(job_id)
             segments = pipeline.transcribe(
-                request.audio_path,
-                request.num_speakers,
-                request.language,
+                str(queued.audio_path),
+                queued.num_speakers,
+                queued.language,
                 on_progress=lambda progress, bound_id=job_id: _jobs.set_progress(
                     bound_id, progress
                 ),
@@ -187,6 +217,28 @@ def _worker_loop() -> None:
             _work_queue.task_done()
 
 
+async def require_api_key(
+    authorization: Annotated[str | None, Header()] = None,
+) -> None:
+    """Reject a request that does not carry the configured bearer token.
+
+    Applied to every endpoint except /health, which has to stay reachable
+    unauthenticated so the TypeScript client can tell "service down" from
+    "service up but misconfigured".
+    """
+    if security.check_api_key(
+        authorization,
+        configured=API_KEY,
+        require_auth=security.auth_required(HOST, REQUIRE_AUTH),
+    ):
+        return
+    raise HTTPException(
+        status_code=401,
+        detail="Unauthorized.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Load the models, then start the single worker.
@@ -196,7 +248,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     on /health and refuses jobs with 503. That beats exiting, because the
     TypeScript side can then show the operator what is wrong instead of only
     seeing a connection error.
+
+    A missing API key on a non-loopback bind is the one condition that is NOT
+    survivable: it would serve the transcription capability to the network
+    unauthenticated, so it raises and startup aborts.
     """
+    security.assert_auth_config(host=HOST, require_auth=REQUIRE_AUTH, api_key=API_KEY)
+    SPOOL_DIR.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        "Auth: %s | spool: %s",
+        "required" if security.auth_required(HOST, REQUIRE_AUTH) else "disabled (loopback)",
+        SPOOL_DIR,
+    )
+
     try:
         pipeline.load_models(
             device=DEVICE,
@@ -223,6 +287,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# A Host allowlist is what defeats DNS rebinding: a browser can be steered to
+# 127.0.0.1, but it still sends the attacker's hostname in the Host header.
+# Deliberately no CORS middleware — unlike rag-server, which allows "*".
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=security.allowed_hosts(HOST))
+
 
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
@@ -234,7 +303,11 @@ async def health() -> HealthResponse:
     )
 
 
-@app.post("/transcribe", response_model=TranscribeResponse)
+@app.post(
+    "/transcribe",
+    response_model=TranscribeResponse,
+    dependencies=[Depends(require_api_key)],
+)
 async def submit_transcription(request: TranscribeRequest) -> TranscribeResponse:
     if not pipeline.models_loaded():
         raise HTTPException(
@@ -242,23 +315,38 @@ async def submit_transcription(request: TranscribeRequest) -> TranscribeResponse
             detail="Models are not loaded; the service cannot accept jobs.",
         )
 
-    path = Path(request.audio_path)
-    if not path.is_file():
-        raise HTTPException(status_code=400, detail=f"Audio file not found: {request.audio_path}")
-    if path.stat().st_size == 0:
-        raise HTTPException(status_code=400, detail=f"Audio file is empty: {request.audio_path}")
+    try:
+        audio_path = security.resolve_spool_path(request.audio_path, SPOOL_DIR)
+    except security.AudioPathRejected as rejected:
+        # The reason goes to the log, never to the caller: which check tripped,
+        # and whether some path exists, is not theirs to probe for.
+        logger.warning("Rejected audio path: %s", rejected)
+        raise HTTPException(status_code=400, detail="Audio file is not usable.") from None
 
     job = _jobs.create()
-    _work_queue.put((job.job_id, request))
-    logger.info("Job %s queued for %s", job.job_id, request.audio_path)
+    # The RESOLVED path is what the worker gets, so it transcribes exactly what
+    # was validated.
+    _work_queue.put(
+        QueuedJob(
+            job_id=job.job_id,
+            audio_path=audio_path,
+            num_speakers=request.num_speakers,
+            language=request.language,
+        )
+    )
+    logger.info("Job %s queued for %s", job.job_id, audio_path)
     return TranscribeResponse(job_id=job.job_id)
 
 
-@app.get("/jobs/{job_id}", response_model=JobStatusResponse)
+@app.get(
+    "/jobs/{job_id}",
+    response_model=JobStatusResponse,
+    dependencies=[Depends(require_api_key)],
+)
 async def get_job(job_id: str) -> JobStatusResponse:
     job = _jobs.get(job_id)
     if job is None:
-        raise HTTPException(status_code=404, detail=f"Unknown job: {job_id}")
+        raise HTTPException(status_code=404, detail="Unknown job.")
     return JobStatusResponse(
         state=job.state,
         progress=job.progress,

@@ -48,8 +48,13 @@ Ein Segment ist `{ "start_ms": int, "end_ms": int, "speaker": str, "text": str }
 Zustaende: `queued | running | done | failed`. Abbrechen kennt dieser Dienst
 nicht — das liegt beim Job-Runner auf der TypeScript-Seite.
 
-Fehlerfaelle: `400` bei fehlender oder leerer Audiodatei, `404` bei unbekannter
-Job-Kennung, `503` solange kein Modell geladen ist.
+`/health` ist der einzige Endpunkt ohne Token — damit der Client "Dienst aus"
+von "Dienst laeuft, aber falsch konfiguriert" unterscheiden kann.
+
+Fehlerfaelle: `401` ohne oder mit falschem Token, `400` wenn das Audio nicht
+nutzbar ist (absichtlich ohne Angabe, *warum*), `404` bei unbekannter
+Job-Kennung, `422` bei ungueltigem Anfragekoerper, `503` solange kein Modell
+geladen ist.
 
 ## Betriebsregeln
 
@@ -60,8 +65,41 @@ Job-Kennung, `503` solange kein Modell geladen ist.
 - **Jobs liegen im Speicher und werden hier absichtlich nicht persistiert.**
   Ein Neustart verliert die Warteschlange; die Wiederaufnahme ist Aufgabe des
   Job-Runners in Mingly (Spec 6.2).
-- Der Dienst bindet standardmaessig auf `127.0.0.1`. Ein Container in der
-  Private Cloud des Kunden setzt `TRANSCRIPTION_HOST=0.0.0.0` bewusst.
+- Der Dienst bindet standardmaessig auf `127.0.0.1`. Fuer jede andere Bindung
+  gilt der naechste Abschnitt — ohne API-Schluessel **startet er dann nicht**.
+
+## Sicherheit
+
+Zwei Dinge haengen zusammen und ergeben sonst einen Exfiltrationsweg:
+`POST /transcribe` nimmt einen **Pfad**, und `GET /jobs/{id}` gibt den
+**Text** zurueck. Ohne Schranken transkribiert dieses Paar jede Audiodatei auf
+dem Host und liefert das Transkript aus — und ein Dienst auf localhost ist von
+einer Webseite aus per DNS-Rebinding erreichbar. Deshalb:
+
+1. **Pfad-Einschraenkung.** Eingereichte Pfade muessen **innerhalb von
+   `TRANSCRIPTION_SPOOL_DIR`** aufgeloest werden. Verglichen wird mit
+   `Path.resolve()` und `is_relative_to`, nicht per Zeichenketten-Praefix
+   (sonst passiert `/spool-evil` die Pruefung fuer `/spool`). Symlinks werden
+   grundsaetzlich abgewiesen, auch solche, die nach innen zeigen.
+2. **Bearer-Token** auf allen Endpunkten **ausser `/health`**, verglichen mit
+   `hmac.compare_digest` (konstante Zeit). Faellt **geschlossen** aus: ist Auth
+   verlangt, aber kein Schluessel gesetzt, wird abgewiesen, nicht erlaubt.
+3. **Auth ist auf jeder Nicht-Loopback-Bindung erzwungen**, unabhaengig von
+   `TRANSCRIPTION_REQUIRE_AUTH`. Wer auf eine Netzwerkschnittstelle bindet,
+   kann Authentisierung nicht abwaehlen — und **ohne Schluessel startet der
+   Dienst dann nicht** (keine Warnung, Abbruch).
+4. **`TrustedHostMiddleware`** mit der konfigurierten Adresse plus
+   `127.0.0.1` und `localhost`. Das ist die Schranke gegen DNS-Rebinding: ein
+   Browser laesst sich auf 127.0.0.1 lenken, schickt aber weiterhin den
+   fremden Namen im `Host`-Header. **Kein CORS** — anders als `rag-server`,
+   das `allow_origins=["*"]` setzt.
+5. **Generische Fehlermeldungen.** Ein `400` sagt nur "Audio file is not
+   usable" und gibt den eingereichten Pfad nicht zurueck; welche Pruefung
+   angesprochen hat und ob ein Pfad existiert, steht nur im Dienst-Log.
+
+Auf `127.0.0.1` ohne Schluessel bleibt der Dienst absichtlich offen: das ist
+der `on-device`-Fall, in dem nur lokale Prozesse ihn erreichen. Die
+Pfad-Einschraenkung gilt auch dort.
 
 ## Konfiguration
 
@@ -69,6 +107,9 @@ Job-Kennung, `503` solange kein Modell geladen ist.
 |---|---|---|
 | `TRANSCRIPTION_HOST` | `127.0.0.1` | Bind-Adresse |
 | `TRANSCRIPTION_PORT` | `8765` | Port (`rag-server` belegt 8001) |
+| `TRANSCRIPTION_SPOOL_DIR` | `<dienst>/spool` | **Einziges** erlaubtes Verzeichnis fuer Audio |
+| `TRANSCRIPTION_REQUIRE_AUTH` | `false` | `true` erzwingt den Token auch auf Loopback |
+| `TRANSCRIPTION_API_KEY` | — | Bearer-Token; **Pflicht** bei Nicht-Loopback-Bindung |
 | `TRANSCRIPTION_DEVICE` | `cpu` | `cpu`, `cuda` oder `mps` |
 | `TRANSCRIPTION_MODEL` | `large-v3` | Whisper-Modellgroesse |
 | `TRANSCRIPTION_DIARIZATION_MODEL` | `pyannote/speaker-diarization` | Diarisationsmodell |
@@ -115,6 +156,12 @@ python3.12 -m venv .venv
 ```bash
 transcription-server/.venv/bin/python -m pytest transcription-server/tests/ -v
 ```
+
+25 Tests in zwei Dateien: `test_pipeline.py` fuer `get_prompt` und
+`clean_segments`, `test_security.py` fuer Token-Pruefung, Pfad-Einschraenkung
+und Startverweigerung. Die HTTP-Tests fahren einen echten uvicorn-Server in
+einem Thread und sprechen ihn ueber `urllib` an — `fastapi.testclient` braucht
+`httpx`, das hier absichtlich nicht installiert ist.
 
 Die Tests laufen **ohne Modelle, ohne GPU und ohne Hugging-Face-Konto**. Das
 ist der Grund fuer die Importaufteilung in `pipeline.py`: `whisperx`, `torch`,
