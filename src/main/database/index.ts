@@ -5,6 +5,13 @@ import { createLogger } from '../../shared/logger'
 
 const log = createLogger('Database')
 
+/**
+ * Tenant that owns all data of a single-tenant installation.
+ * Migration 11 stores this value as the column default of every tenant_id,
+ * so it must never change once a database has been migrated.
+ */
+export const DEFAULT_TENANT_ID = 'default'
+
 let db: SqlJsDatabase | null = null
 let dbPath: string = ''
 let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -185,7 +192,7 @@ export function dbGet(sql: string, params: any[] = []): Record<string, any> | nu
 
 // ── Migrations ───────────────────────────────────────────────────
 
-function getSchemaVersion(database: SqlJsDatabase): number {
+export function getSchemaVersion(database: SqlJsDatabase): number {
   // Use a metadata table instead of PRAGMA user_version (more reliable in sql.js)
   try {
     const stmt = database.prepare('SELECT value FROM _meta WHERE key = ?')
@@ -280,6 +287,12 @@ function runMigrations(database: SqlJsDatabase): void {
     log.info('Running migration 10: Add project_id and rag_collection_name to conversations')
     migration10(database)
     setSchemaVersion(database, 10)
+  }
+
+  if (version < 11) {
+    log.info('Running migration 11: Add tenant_id to all tables')
+    migration11(database)
+    setSchemaVersion(database, 11)
   }
 }
 
@@ -568,4 +581,32 @@ function migration10(database: SqlJsDatabase): void {
   `)
 
   log.info('Migration 10 completed: project_id and rag_collection_name added to conversations')
+}
+
+function migration11(database: SqlJsDatabase): void {
+  // Every row belongs to a tenant so the product can later run multi-tenant
+  // without a data migration per customer. `_meta` is excluded on purpose:
+  // it holds schema metadata, not user data.
+  const tenantTables = [
+    'conversations',
+    'messages',
+    'settings',
+    'tracking_events',
+    'message_attachments',
+    'prompt_templates',
+    'comparison_sessions',
+    'comparison_results',
+    'conversation_sessions',
+    'activity_log'
+  ]
+
+  // The column default (not NULL) assigns existing rows to the default tenant,
+  // so legacy data never ends up without an owner or with a foreign one.
+  for (const table of tenantTables) {
+    database.run(`
+      ALTER TABLE ${table} ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT_ID}'
+    `)
+  }
+
+  log.info('Migration 11 completed: tenant_id column added to all tables')
 }
