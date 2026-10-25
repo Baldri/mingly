@@ -111,6 +111,26 @@ einer Webseite aus per DNS-Rebinding erreichbar. Deshalb:
    gebaut: der ASGI-Kontext enthaelt die Bind-Adresse **nicht**
    (`scope["server"]` ist die lokale Adresse der einzelnen Verbindung), die
    Gegenstelle dagegen schon.
+8. **Kein vorgelagerter Proxy. Niemals mit Proxy-Headern betreiben.** Die
+   Adresse des Aufrufers ist nur so lange echter Transportzustand, wie sie
+   niemand ueberschreibt. `uvicorn.Config` hat `proxy_headers=True` als
+   **Standard**, und `ProxyHeadersMiddleware` ersetzt die Gegenstelle dann
+   durch den Wert aus `X-Forwarded-For`, sobald der Transport-Peer als
+   vertrauenswuerdig gilt — und `FORWARDED_ALLOW_IPS=*`, das in vielen
+   Container-Anleitungen steht, vertraut jedem. Ein entfernter Angreifer
+   koennte sich damit als `127.0.0.1` ausgeben. Darum zwei Schichten:
+   `server.py` uebergibt **`proxy_headers=False`**, und zusaetzlich gilt jede
+   Anfrage mit `X-Forwarded-For` oder `Forwarded` als **nicht direkt** und
+   braucht einen Token — der **Wert** dieser Header wird nie gelesen, nur
+   ihr Vorhandensein. Gemessen: selbst mit `proxy_headers=True` **und**
+   `FORWARDED_ALLOW_IPS=*` wird eine Anfrage mit gefaelschtem
+   `X-Forwarded-For: 127.0.0.1` mit `401` abgewiesen.
+   **Verhaltensaenderung, bitte beachten:** ein lokaler Aufrufer, der
+   `X-Forwarded-For` mitschickt, bekommt jetzt `401`, wo er vorher bedient
+   wurde. Der Electron-Client spricht direkt mit dem Dienst und ist nicht
+   betroffen. Wer den Dienst wirklich hinter einen Proxy stellt, muss einen
+   `TRANSCRIPTION_API_KEY` setzen — die Gegenstelle ist dann kein Ersatz fuer
+   Authentisierung mehr.
 
 Auf `127.0.0.1` ohne Schluessel bleibt der Dienst absichtlich offen: das ist
 der `on-device`-Fall, in dem nur lokale Prozesse ihn erreichen. Die
@@ -172,7 +192,7 @@ python3.12 -m venv .venv
 transcription-server/.venv/bin/python -m pytest transcription-server/tests/ -v
 ```
 
-39 Tests in zwei Dateien: `test_pipeline.py` fuer `get_prompt` und
+45 Tests in zwei Dateien: `test_pipeline.py` fuer `get_prompt` und
 `clean_segments`, `test_security.py` fuer Token-Pruefung, Pfad-Einschraenkung,
 die angebotene Endpunkt-Oberflaeche und die Startverweigerung. Die HTTP-Tests
 fahren einen echten uvicorn-Server in einem Thread und sprechen ihn ueber

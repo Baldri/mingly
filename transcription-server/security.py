@@ -20,11 +20,17 @@ Two things this file exists to prevent:
 import hmac
 import ipaddress
 import logging
+from collections.abc import Iterable
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _BEARER_PREFIX = "Bearer "
+
+# Headers that mean something forwarded this request. Their presence alone
+# disqualifies the peer address as evidence of an on-box caller; the values are
+# never read. Add to this tuple to cover a further proxy convention.
+FORWARDING_HEADERS = ("x-forwarded-for", "forwarded")
 
 
 class AudioPathRejected(Exception):
@@ -62,8 +68,19 @@ def auth_required(host: str, require_auth: bool) -> bool:
     return require_auth or not is_loopback_host(host)
 
 
+def has_forwarding_header(header_names: Iterable[str]) -> bool:
+    """Whether any proxy-forwarding header is present.
+
+    Takes the header NAMES only, deliberately: the value of an
+    `X-Forwarded-For` is supplied by whoever sent it, and the one thing this
+    service must never do is believe it. Presence is the whole signal.
+    """
+    lowered = {name.lower() for name in header_names}
+    return any(header in lowered for header in FORWARDING_HEADERS)
+
+
 def auth_required_for_request(
-    client_host: str | None, host: str, require_auth: bool
+    client_host: str | None, host: str, require_auth: bool, via_proxy: bool = False
 ) -> bool:
     """Whether THIS request has to present a key, judged from real state.
 
@@ -79,8 +96,20 @@ def auth_required_for_request(
     0.0.0.0. The peer address is therefore the available evidence, and a
     non-loopback peer is proof that the service is reachable off the box,
     whatever the configuration claims.
+
+    The peer is only genuine transport state while nothing rewrites it.
+    uvicorn's Config defaults to `proxy_headers=True`, and its
+    ProxyHeadersMiddleware replaces `scope["client"]` with the address from
+    `X-Forwarded-For` whenever the transport peer is trusted — and
+    `FORWARDED_ALLOW_IPS=*`, which container guides hand out freely, trusts
+    everyone. The service therefore passes `proxy_headers=False`, AND treats
+    `via_proxy` (a forwarding header being present at all) as "not a direct
+    on-box caller", so the guarantee does not rest on that one flag.
     """
     if auth_required(host, require_auth):
+        return True
+    if via_proxy:
+        # Something forwarded this; the peer address is not evidence any more.
         return True
     if client_host is None:
         # No peer information: treat as remote rather than guess local.

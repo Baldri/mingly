@@ -221,6 +221,36 @@ def test_auth_haengt_am_echten_gegenueber_nicht_nur_an_der_konfiguration() -> No
     )
 
 
+def test_erkennt_weiterleitungs_header_ohne_den_wert_zu_lesen() -> None:
+    """Only the NAMES are passed in, so the value cannot be trusted by accident.
+
+    uvicorn ships `proxy_headers=True`, and its ProxyHeadersMiddleware
+    overwrites `scope["client"]` from `X-Forwarded-For` when the transport
+    peer is trusted (verified in the installed uvicorn 0.54.0:
+    `middleware/proxy_headers.py` line 61, with `trusted_hosts="*"` trusting
+    everyone). With `FORWARDED_ALLOW_IPS=*` the peer therefore becomes
+    attacker-controlled, so the mere presence of such a header means the peer
+    is no longer genuine transport state.
+    """
+    assert security.has_forwarding_header(["x-forwarded-for"])
+    assert security.has_forwarding_header(["X-Forwarded-For"])
+    assert security.has_forwarding_header(["Forwarded"])
+    assert security.has_forwarding_header(["host", "accept", "X-FORWARDED-FOR"])
+    assert not security.has_forwarding_header(["host", "accept", "authorization"])
+    assert not security.has_forwarding_header([])
+
+
+def test_auth_verlangt_sobald_ein_weiterleitungs_header_dabei_ist() -> None:
+    """A loopback peer is only proof of an on-box caller without a proxy in between."""
+    assert security.auth_required_for_request(
+        client_host="127.0.0.1", host="127.0.0.1", require_auth=False, via_proxy=True
+    )
+    # The same request without the header stays the on-device default.
+    assert not security.auth_required_for_request(
+        client_host="127.0.0.1", host="127.0.0.1", require_auth=False, via_proxy=False
+    )
+
+
 def test_startpruefung_lehnt_netzbindung_ohne_schluessel_ab() -> None:
     with pytest.raises(RuntimeError, match="TRANSCRIPTION_API_KEY"):
         security.assert_auth_config(host="0.0.0.0", require_auth=False, api_key=None)
@@ -524,6 +554,7 @@ def _asgi_call(
     body: dict | None = None,
     token: str | None = None,
     client: tuple[str, int] | None = LOCAL_CLIENT,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[int, object]:
     """Call the ASGI app directly, choosing the peer address.
 
@@ -538,6 +569,8 @@ def _asgi_call(
         headers.append((b"content-length", str(len(payload)).encode()))
     if token is not None:
         headers.append((b"authorization", token.encode()))
+    for name, value in (extra_headers or {}).items():
+        headers.append((name.lower().encode(), value.encode()))
 
     scope = {
         "type": "http",
@@ -586,10 +619,100 @@ def test_entfernter_aufrufer_wird_ohne_schluessel_abgewiesen(
     status, _ = _asgi_call(
         "/transcribe", "POST", {"audio_path": "x.wav"}, client=REMOTE_CLIENT
     )
-    assert status in (401, 503), f"remote caller was served with {status}"
+    assert status == 401, f"remote caller was served with {status}"
 
     status, _ = _asgi_call("/jobs/whatever", client=REMOTE_CLIENT)
-    assert status in (401, 503)
+    assert status == 401
+
+
+def test_entfernter_aufrufer_erfaehrt_nicht_dass_kein_schluessel_gesetzt_ist(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An outsider gets the same 401 as for a wrong token.
+
+    "Service is misconfigured" told an unauthenticated stranger that no key is
+    set, while the path checks were deliberately kept generic. The distinction
+    belongs in the log, not in the response.
+    """
+    monkeypatch.setattr(server, "HOST", "127.0.0.1")
+    monkeypatch.setattr(server, "REQUIRE_AUTH", False)
+    monkeypatch.setattr(server, "API_KEY", None)
+    monkeypatch.setattr(server, "SPOOL_DIR", tmp_path)
+
+    status, payload = _asgi_call("/jobs/whatever", client=REMOTE_CLIENT)
+    assert status == 401
+    detail = payload["detail"] if isinstance(payload, dict) else ""
+    assert "misconfigured" not in detail.lower()
+    assert "key" not in detail.lower()
+
+    # Indistinguishable from the wrong-token answer on a configured service.
+    monkeypatch.setattr(server, "API_KEY", TEST_KEY)
+    monkeypatch.setattr(server, "REQUIRE_AUTH", True)
+    wrong_status, wrong_payload = _asgi_call(
+        "/jobs/whatever", token="Bearer wrong", client=REMOTE_CLIENT
+    )
+    assert (wrong_status, wrong_payload) == (status, payload)
+
+
+def test_weitergeleiteter_aufrufer_wird_abgewiesen(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """N1: a loopback peer plus a forwarding header is not an on-box caller.
+
+    Under `FORWARDED_ALLOW_IPS=*` uvicorn rewrites the peer from
+    `X-Forwarded-For`, so a remote attacker can present himself as 127.0.0.1.
+    Auth must therefore be required as soon as such a header is present, and
+    the header's VALUE must not be consulted — here it claims loopback.
+    """
+    monkeypatch.setattr(server, "HOST", "127.0.0.1")
+    monkeypatch.setattr(server, "REQUIRE_AUTH", False)
+    monkeypatch.setattr(server, "API_KEY", None)
+    monkeypatch.setattr(server, "SPOOL_DIR", tmp_path)
+
+    for header in ("X-Forwarded-For", "Forwarded"):
+        status, _ = _asgi_call(
+            "/jobs/whatever",
+            client=LOCAL_CLIENT,
+            extra_headers={header: "127.0.0.1"},
+        )
+        assert status == 401, f"{header} caller was served with {status}"
+
+
+def test_weitergeleiteter_aufrufer_mit_schluessel_wird_bedient(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Positive control: a real proxy deployment with a key still works."""
+    monkeypatch.setattr(server, "HOST", "127.0.0.1")
+    monkeypatch.setattr(server, "REQUIRE_AUTH", False)
+    monkeypatch.setattr(server, "API_KEY", TEST_KEY)
+    monkeypatch.setattr(server, "SPOOL_DIR", tmp_path)
+    monkeypatch.setattr(pipeline, "_models", None)
+
+    status, _ = _asgi_call(
+        "/jobs/unknown-job",
+        token=f"Bearer {TEST_KEY}",
+        client=LOCAL_CLIENT,
+        extra_headers={"X-Forwarded-For": "203.0.113.7"},
+    )
+    assert status == 404
+
+
+def test_uvicorn_wird_ohne_proxy_header_auswertung_gestartet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half of N1: uvicorn must not rewrite the peer at all.
+
+    `proxy_headers` defaults to True in uvicorn.Config, so this has to be
+    passed explicitly or the peer we base the decision on is header-derivable.
+    """
+    captured: dict[str, object] = {}
+
+    def fake_run(app: object, **kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(server.uvicorn, "run", fake_run)
+    server.main()
+    assert captured["proxy_headers"] is False
 
 
 def test_entfernter_aufrufer_mit_gueltigem_schluessel_wird_bedient(

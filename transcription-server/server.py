@@ -238,22 +238,32 @@ async def require_api_key(
     security.auth_required_for_request.
     """
     client_host = request.client.host if request.client else None
-    required = security.auth_required_for_request(client_host, HOST, REQUIRE_AUTH)
+    via_proxy = security.has_forwarding_header(request.headers.keys())
+    required = security.auth_required_for_request(
+        client_host, HOST, REQUIRE_AUTH, via_proxy=via_proxy
+    )
 
     if required and not API_KEY:
-        # Reachable but keyless. check_api_key would already deny, but say so
-        # distinctly: this is our misconfiguration, not a bad token.
+        # Reachable but keyless. The operator needs to know precisely that;
+        # the caller gets the same 401 as for a wrong token, because telling an
+        # unauthenticated stranger that no key is set is itself a disclosure.
         logger.error(
-            "Refusing request from %s: authentication is required for this "
+            "Refusing request from %s%s: authentication is required for this "
             "binding, but TRANSCRIPTION_API_KEY is not set",
             client_host,
+            " (forwarded)" if via_proxy else "",
         )
-        raise HTTPException(status_code=503, detail="Service is misconfigured.")
+        raise _unauthorized()
 
     if security.check_api_key(authorization, configured=API_KEY, require_auth=required):
         return
 
-    raise HTTPException(
+    raise _unauthorized()
+
+
+def _unauthorized() -> HTTPException:
+    """One single answer for every auth failure, so none of them is a hint."""
+    return HTTPException(
         status_code=401,
         detail="Unauthorized.",
         headers={"WWW-Authenticate": "Bearer"},
@@ -393,7 +403,26 @@ async def get_job(job_id: str) -> JobStatusResponse:
     )
 
 
+def main() -> None:
+    """Run the service.
+
+    One process, one worker thread, one set of models. Raising the worker
+    count would load the models several times over and exhaust the VRAM.
+    """
+    uvicorn.run(
+        app,
+        host=HOST,
+        port=PORT,
+        log_level="info",
+        # uvicorn defaults this to True, which lets ProxyHeadersMiddleware
+        # replace the peer address with whatever X-Forwarded-For says once the
+        # transport peer is trusted (and FORWARDED_ALLOW_IPS=* trusts all).
+        # The auth decision reads that peer, so the rewrite stays off: no
+        # proxy fronts this service, and a header must not be able to make a
+        # remote caller look local.
+        proxy_headers=False,
+    )
+
+
 if __name__ == "__main__":
-    # One process, one worker thread, one set of models. Raising the worker
-    # count would load the models several times over and exhaust the VRAM.
-    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
+    main()
