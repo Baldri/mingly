@@ -294,6 +294,12 @@ function runMigrations(database: SqlJsDatabase): void {
     migration11(database)
     setSchemaVersion(database, 11)
   }
+
+  if (version < 12) {
+    log.info('Running migration 12: Create transcription_jobs and transcription_segments tables')
+    migration12(database)
+    setSchemaVersion(database, 12)
+  }
 }
 
 function migration1(database: SqlJsDatabase): void {
@@ -609,4 +615,51 @@ function migration11(database: SqlJsDatabase): void {
   }
 
   log.info('Migration 11 completed: tenant_id column added to all tables')
+}
+
+function migration12(database: SqlJsDatabase): void {
+  // Transcription jobs. tenant_id follows the migration-11 convention (same
+  // column definition), so the "every table carries a tenant" rule holds for
+  // tables created after it as well.
+  database.run(`
+    CREATE TABLE IF NOT EXISTS transcription_jobs (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT_ID}',
+      workspace_id TEXT NOT NULL,
+      audio_path TEXT NOT NULL,
+      state TEXT NOT NULL,
+      progress REAL NOT NULL DEFAULT 0,
+      target_id TEXT NOT NULL,
+      error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+
+  // Serves listByState: one tenant, one state, oldest first
+  database.run(`
+    CREATE INDEX IF NOT EXISTS idx_transcription_jobs_state
+    ON transcription_jobs(tenant_id, state, created_at)
+  `)
+
+  // `segment_index` instead of `index`, which is a reserved SQL word.
+  // The foreign key is declared like the ones on messages and attachments, but
+  // is NOT enforced at runtime: sql.js resets PRAGMA foreign_keys to 0 on every
+  // export(), i.e. on every saveDatabase(). Whoever deletes a job must delete
+  // its segments explicitly; the cascade only applies once enforcement is on.
+  database.run(`
+    CREATE TABLE IF NOT EXISTS transcription_segments (
+      job_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT_ID}',
+      segment_index INTEGER NOT NULL,
+      start_ms INTEGER NOT NULL,
+      end_ms INTEGER NOT NULL,
+      speaker TEXT NOT NULL,
+      text TEXT NOT NULL,
+      PRIMARY KEY (job_id, segment_index),
+      FOREIGN KEY (job_id) REFERENCES transcription_jobs(id) ON DELETE CASCADE
+    )
+  `)
+
+  log.info('Migration 12 completed: transcription_jobs and transcription_segments tables created')
 }
