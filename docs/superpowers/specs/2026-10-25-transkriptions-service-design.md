@@ -56,7 +56,12 @@ ueber `src/` ergab null Treffer, bei angeschlagener Positivkontrolle (`residency
    zuerst die App und den Container und betreiben nichts selbst. Der Betrieb wird
    geplant, aber nicht ausgeschlossen. Was daraus folgt, steht in Abschnitt 10.2 -
    insbesondere die Dinge, die Stufe 1 **nicht** verbauen darf.
-7. **Die Einwilligung ist ein aktiver Schritt vor der Aufnahme** (Holger, 2026-10-25):
+7. **Die Pipeline aus TranscriboZH uebernehmen, nicht die Anwendung** (Holger,
+   2026-10-25): `src/transcription.py`, `data_leaks` und der `get_prompt`-Patch
+   kommen mit, unter MIT mit Copyright-Hinweis. Frontend, Zusammenfassung und
+   Job-Verwaltung bleiben draussen - Mingly hat fuer alle drei schon etwas Besseres.
+   Begruendung und Fundstellen in Abschnitt 10.3.
+8. **Die Einwilligung ist ein aktiver Schritt vor der Aufnahme** (Holger, 2026-10-25):
    Wer aufnimmt, startet sie vorher. Die Aufnahme beginnt also nicht mit einem
    Druck auf "Rec", sondern mit einem Einwilligungsschritt, den der Aufnehmende
    ausloest - damit ist die Zustimmung aller Beteiligten Teil des Ablaufs und nicht
@@ -392,10 +397,12 @@ Nichts davon ist neu zu bauen, nur zu konfigurieren:
 
 ## 10. Was offen ist (braucht Holgers Entscheid)
 
-1. **Eigenbau oder TranscriboZH einbetten?** TranscriboZH ist MIT und loest Editor,
-   Sprechertrennung und Vokabular bereits. Es ist Python plus eigenes Frontend —
-   einbetten heisst, ein Python-Subsystem mitzuliefern (wie `rag-server`, also nicht neu),
-   nachbauen heisst, dieselben Probleme zweimal zu loesen.
+1. **Der Hugging-Face-Blocker fuer die Sprechertrennung.** Die Uebernahme der
+   Pipeline ist entschieden; offen bleibt, wie die `pyannote`-Gewichte zum Kunden
+   kommen. Beide Modelle sind gated, die Lizenzen (MIT bzw. CC-BY-4.0) erlauben
+   Weitergabe aber ausdruecklich. **Naechster Schritt liegt bei Holger:** eingeloggt
+   den Volltext der Bedingungen lesen. Details und die vier Wege in 10.3,
+   Punkt "Der Blocker".
 2. **Die `TENANT_ORIGIN`-Frage** aus 6.1: darf ein Kunde die Residenz seiner eigenen
    Infrastruktur erklaeren?
 3. **Welches Modell in welcher Betriebsform?** (praezisiert nach der Messung)
@@ -508,6 +515,132 @@ Stufe 1 bequem und in Stufe 2 ein Umbau:
 Punkte 2 bis 5 kosten in Stufe 1 wenig. Punkt 1 kostet eine Datenmodell-Migration,
 und sie ist der eigentliche Preis des Entscheids "nicht ausschliessen". Ohne diese
 fuenf Punkte ist Stufe 2 ein Neubau.
+
+---
+
+## 10.3 Befund zu TranscriboZH (gelesen am 2026-10-25)
+
+Quelle: `github.com/machinelearningZH/audio-transcription`, MIT, shallow clone,
+nur gelesen. Die Fragen waren: welche Parameter, wie werden lange Aufnahmen
+segmentiert, wie ist die Sprechertrennung angebunden.
+
+### Der Stack ist nicht der erwartete
+
+Nicht plain Whisper, sondern **WhisperX 3.2.0** (`requirements.txt`), dazu
+`pyannote.audio 3.1.1` und - fuer Apple Silicon - `mlx_whisper 0.4.1`
+(`requirements-mps.txt`). Die Pipeline in `src/transcription.py` ist fuenfstufig:
+
+1. Transkription (`model.transcribe(audio, batch_size=..., language=...)`;
+   auf MPS stattdessen `mlx_whisper` mit `mlx-community/whisper-large-v3-mlx`),
+2. **forced alignment** (`whisperx.load_align_model` + `whisperx.align`) - daher
+   kommen die wortgenauen Zeitstempel, auf denen ein synchroner Editor aufsetzt,
+3. optionale Spracherkennung **pro Segment** mit Schwelle 0.85 (mehrsprachige Sitzungen),
+4. Diarisation (`diarize_model(audio_data, num_speakers=...)`, dann
+   `whisperx.assign_word_speakers`),
+5. **Text-Cleanup gegen `data_leaks`**.
+
+### Die drei Dinge, die man nicht nachbaut
+
+1. **`data_leaks` in `data/const.py`** - eine handgepflegte Liste von
+   Whisper-Halluzinationen aus Untertitel-Trainingsdaten, pro Sprache. Fuer Deutsch
+   unter anderem "Untertitel im Auftrag des ZDF, 2017" (und 2018, 2020, 2021),
+   "Copyright WDR 2021", "Untertitel von Stephanie Geiges", Amara.org-Credits.
+   Whisper reproduziert diese bei Stille oder unklarem Audio. **Das denkt sich
+   niemand aus - das entsteht im Betrieb an echtem Material.**
+2. **Der `get_prompt`-Patch** (`src/transcription.py`, eingehaengt in `worker.py:258`
+   per `types.MethodType`). Er baut den Decoder-Prompt so um, dass `previous_tokens`
+   **nur** noch mitgegeben wird, wenn auch ein `prefix` (Hotwords) vorliegt - im
+   Original von faster-whisper immer. Das ist genau die Kontext-Unterdrueckung, die
+   in der eigenen Messung (`2026-10-25-whisper-messung.md`) den Unterschied zwischen
+   46 % und 5,96 % Fehlerrate gemacht hat. **Sie haben denselben Befund, als Code.**
+3. **Die Verdrahtung** von Transkription, Alignment, Diarisation und
+   Sprecher-Zuordnung inklusive Sprecher-ID-Offset beim Mischen mehrerer Spuren
+   (`num_speakers_detected`, ffmpeg `amix` in `worker.py`).
+
+### Antwort auf die Segmentierungsfrage
+
+**Es gibt kein eigenes Chunking langer Dateien.** `multi_mode` und `amix` mischen
+mehrere Eingabespuren zu einer (etwa eine Spur pro Teilnehmer); der
+`num_speakers_detected`-Offset verhindert dabei Sprecher-ID-Kollisionen. Die
+Segmentierung ist vollstaendig an WhisperX delegiert, das ueber
+Sprachaktivitaetserkennung batcht - **in dieser Sitzung nicht im Bibliothekscode
+verifiziert**, sondern aus dem Fehlen eigener Chunking-Logik geschlossen.
+
+### Was das README unabhaengig bestaetigt
+
+- "transcription on a CPU is **extremely slow**", Empfehlung **mindestens 8 GB
+  VRAM**, besser 16 GB. Deckt sich mit der eigenen Messung (1,5x Echtzeit auf CPU).
+- "up to **15 times faster than real-time**" - eigene Messung 11,4x auf Metal mit
+  q5_0. Gleiche Groessenordnung, zwei unabhaengige Quellen.
+- `BATCH_SIZE` 4 bei 8 GB VRAM, 32 bei 16 GB.
+- Whisper large v3 **nicht quantisiert** (die eigene Messung nutzte q5_0 - deren
+  Qualitaet ist also potenziell besser, der Speicherbedarf hoeher).
+- **"Make sure not to run the worker script multiple times"** - mehr als ein Worker
+  frisst das VRAM. Fuer einen Mehrbenutzer-Dienst ist damit **nicht der Durchsatz
+  die Kapazitaetsgrenze, sondern ein Worker pro GPU**, Jobs streng serialisiert.
+  Das gehoert in jede Kapazitaetsrechnung der Private Cloud.
+- Das Repo fuehrt einen ausformulierten rechtlichen Hinweis, der den **EU AI Act**
+  und Schweizer Recht nennt (`worker.py`). Die Autoren waren rechtlich beraten.
+
+### Der Blocker
+
+Das README verlangt: die **User Conditions von zwei Modellen** akzeptieren
+(`pyannote/segmentation` und `pyannote/speaker-diarization-3.0`) und einen
+**Hugging-Face-Token mit read- und write-Rechten** anlegen. Im Code:
+`Pipeline.from_pretrained("pyannote/speaker-diarization", use_auth_token=os.getenv("HF_AUTH_TOKEN"))`.
+
+Fuer eine **ausgelieferte App** heisst das: jeder Kunde braeuchte einen eigenen
+Hugging-Face-Account und muesste zwei Modellbedingungen akzeptieren. Das ist fuer
+ein kommerzielles Produkt nicht zumutbar.
+
+**Geprueft am 2026-10-25 (Modellkarten):**
+
+| | `speaker-diarization-3.1` | `speaker-diarization-community-1` |
+|---|---|---|
+| gated | **ja** | **ja** |
+| Lizenz | MIT, "will always remain open-source" | CC-BY-4.0, "will always remain freely accessible" |
+| zu akzeptieren | HF-Informationen teilen, dazu E-Mails ueber "premium pipelines and paid services" | dasselbe |
+| zusaetzlich | auch `pyannote/segmentation-3.0` | - |
+| Volltext der Bedingungen | nur eingeloggt sichtbar | nur eingeloggt sichtbar |
+
+Damit ist der naheliegende Ausweg - ein ungated Alternativmodell - **widerlegt.**
+
+**Was das Bild aber praeziser macht:** Das Gate ist eine **Zugangskontrolle plus
+Datenschutz-Einwilligung** gegenueber pyannote, keine Lizenzbeschraenkung. Die
+Lizenzen selbst (MIT bzw. CC-BY-4.0) erlauben Weitergabe ausdruecklich. Wer die
+Gewichte einmal rechtmaessig bezogen hat, darf sie danach unter diesen Lizenzen
+mit einem Produkt ausliefern - bei CC-BY-4.0 mit Namensnennung.
+
+**Noch nicht geklaert, und nur mit Konto klaerbar:** der Volltext der Bedingungen.
+Sollte er eine Weitergabebeschraenkung enthalten, widerspraeche das der
+MIT-Lizenz - solche Widersprueche kommen vor und gehoeren vor dem Ausliefern
+geklaert, nicht danach. **Das Akzeptieren der Bedingungen ist eine Vertragsannahme
+und damit Holgers Handlung, nicht die von Claude.**
+
+**Wege, in der Reihenfolge der Pruefung:**
+
+1. **Bedingungen im Volltext lesen** (Holger, eingeloggt) und bei Weitergabeabsicht
+   anwaltlich bestaetigen lassen. Das ist der kurze Weg, wenn er aufgeht.
+2. **Gewichte mit dem Produkt ausliefern**, Lizenztexte und Namensnennung beilegen.
+   Setzt Punkt 1 voraus.
+3. **Stufe 1 ohne Sprechertrennung.** Senkt den Wert deutlich - ein Protokoll ohne
+   Sprecherzuordnung ist fuer eine Sitzung mit sieben Personen halb so nuetzlich.
+4. Eine andere Diarisation (sherpa-onnx, NeMo). Eigener Aufwand, eigene
+   Qualitaetsfrage, und keine Messung dazu.
+
+### Entschieden (Holger, 2026-10-25)
+
+**Die Pipeline uebernehmen, nicht die Anwendung.** Konkret aus dem MIT-Repo
+mitnehmen: `src/transcription.py`, `data/const.py` (`data_leaks`) und den
+`get_prompt`-Patch, mit Copyright-Hinweis wie von MIT verlangt. **Nicht**
+uebernehmen: das NiceGUI-Frontend (Mingly hat React), die Qwen-Zusammenfassung
+(Mingly hat seine eigene LLM-Schicht mit Residenz-Policy) und die
+dateisystembasierte Job-Warteschlange (`data/in`, `data/out` - Mingly hat SQLite).
+
+Damit ist das Python-Subsystem klein und hat einen klaren Schnitt: Audio rein,
+Segmente mit Sprechern und Zeitstempeln raus. Das passt zum vorhandenen Muster
+(`rag-server`) und laesst Policy, Mandanten, Audit und Oberflaeche dort, wo sie
+in Mingly schon sind.
 
 ---
 
