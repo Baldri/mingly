@@ -95,7 +95,22 @@ einer Webseite aus per DNS-Rebinding erreichbar. Deshalb:
    das `allow_origins=["*"]` setzt.
 5. **Generische Fehlermeldungen.** Ein `400` sagt nur "Audio file is not
    usable" und gibt den eingereichten Pfad nicht zurueck; welche Pruefung
-   angesprochen hat und ob ein Pfad existiert, steht nur im Dienst-Log.
+   angesprochen hat und ob ein Pfad existiert, steht nur im Dienst-Log. Auch
+   unbrauchbare Pfade (Nullbyte, zu lange Namen) ergeben diesen `400` und
+   keinen `500` mit Traceback.
+6. **Keine `/docs`, `/redoc`, `/openapi.json`.** FastAPI legt diese Routen
+   sonst automatisch an, und sie tragen **keine** Auth-Abhaengigkeit — der
+   Dienst haette damit vier unauthentisierte Endpunkte. Sie sind abgeschaltet;
+   die drei echten Endpunkte stehen in der Tabelle oben.
+7. **Die Auth-Entscheidung haengt am echten Gegenueber, nicht nur an der
+   Konfiguration.** `uvicorn server:app --host 0.0.0.0` bindet das Netz,
+   waehrend `TRANSCRIPTION_HOST` weiter `127.0.0.1` sagt — eine Pruefung nur
+   gegen die Umgebungsvariable wuerde genau diesen Fall durchlassen. Deshalb
+   wird zusaetzlich die **Adresse des Aufrufers** geprueft: eine Anfrage von
+   ausserhalb des Hosts braucht immer einen Token. Gemessen und darum so
+   gebaut: der ASGI-Kontext enthaelt die Bind-Adresse **nicht**
+   (`scope["server"]` ist die lokale Adresse der einzelnen Verbindung), die
+   Gegenstelle dagegen schon.
 
 Auf `127.0.0.1` ohne Schluessel bleibt der Dienst absichtlich offen: das ist
 der `on-device`-Fall, in dem nur lokale Prozesse ihn erreichen. Die
@@ -157,11 +172,14 @@ python3.12 -m venv .venv
 transcription-server/.venv/bin/python -m pytest transcription-server/tests/ -v
 ```
 
-25 Tests in zwei Dateien: `test_pipeline.py` fuer `get_prompt` und
-`clean_segments`, `test_security.py` fuer Token-Pruefung, Pfad-Einschraenkung
-und Startverweigerung. Die HTTP-Tests fahren einen echten uvicorn-Server in
-einem Thread und sprechen ihn ueber `urllib` an — `fastapi.testclient` braucht
-`httpx`, das hier absichtlich nicht installiert ist.
+39 Tests in zwei Dateien: `test_pipeline.py` fuer `get_prompt` und
+`clean_segments`, `test_security.py` fuer Token-Pruefung, Pfad-Einschraenkung,
+die angebotene Endpunkt-Oberflaeche und die Startverweigerung. Die HTTP-Tests
+fahren einen echten uvicorn-Server in einem Thread und sprechen ihn ueber
+`urllib` an — `fastapi.testclient` braucht `httpx`, das hier absichtlich nicht
+installiert ist. Fuer einen Aufrufer **von ausserhalb** des Hosts wird die
+ASGI-Anwendung direkt aufgerufen: eine Verbindung von 192.168.x.x laesst sich
+ueber Loopback nicht herstellen.
 
 Die Tests laufen **ohne Modelle, ohne GPU und ohne Hugging-Face-Konto**. Das
 ist der Grund fuer die Importaufteilung in `pipeline.py`: `whisperx`, `torch`,

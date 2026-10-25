@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Annotated, AsyncIterator, Literal
 
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -185,7 +185,9 @@ class QueuedJob(BaseModel):
 
 
 _jobs = JobStore()
-_work_queue: "queue.Queue[QueuedJob]" = queue.Queue()
+# `None` is the stop sentinel, so shutdown can reap the worker instead of
+# leaving a thread parked on get() for the life of the process.
+_work_queue: "queue.Queue[QueuedJob | None]" = queue.Queue()
 
 
 def _worker_loop() -> None:
@@ -197,6 +199,9 @@ def _worker_loop() -> None:
     """
     while True:
         queued = _work_queue.get()
+        if queued is None:
+            _work_queue.task_done()
+            return
         job_id = queued.job_id
         try:
             _jobs.set_running(job_id)
@@ -218,6 +223,7 @@ def _worker_loop() -> None:
 
 
 async def require_api_key(
+    request: Request,
     authorization: Annotated[str | None, Header()] = None,
 ) -> None:
     """Reject a request that does not carry the configured bearer token.
@@ -225,13 +231,28 @@ async def require_api_key(
     Applied to every endpoint except /health, which has to stay reachable
     unauthenticated so the TypeScript client can tell "service down" from
     "service up but misconfigured".
+
+    The decision uses the REAL peer address, not just the configured bind:
+    an external runner given `--host 0.0.0.0` leaves HOST at 127.0.0.1, and a
+    configuration-only check would serve the network unauthenticated. See
+    security.auth_required_for_request.
     """
-    if security.check_api_key(
-        authorization,
-        configured=API_KEY,
-        require_auth=security.auth_required(HOST, REQUIRE_AUTH),
-    ):
+    client_host = request.client.host if request.client else None
+    required = security.auth_required_for_request(client_host, HOST, REQUIRE_AUTH)
+
+    if required and not API_KEY:
+        # Reachable but keyless. check_api_key would already deny, but say so
+        # distinctly: this is our misconfiguration, not a bad token.
+        logger.error(
+            "Refusing request from %s: authentication is required for this "
+            "binding, but TRANSCRIPTION_API_KEY is not set",
+            client_host,
+        )
+        raise HTTPException(status_code=503, detail="Service is misconfigured.")
+
+    if security.check_api_key(authorization, configured=API_KEY, require_auth=required):
         return
+
     raise HTTPException(
         status_code=401,
         detail="Unauthorized.",
@@ -272,12 +293,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     except Exception:
         logger.exception("Model loading failed; starting without a model and refusing jobs")
+        worker: threading.Thread | None = None
     else:
         # Exactly one. Never make this a pool.
-        threading.Thread(target=_worker_loop, name="transcription-worker", daemon=True).start()
+        worker = threading.Thread(
+            target=_worker_loop, name="transcription-worker", daemon=True
+        )
+        worker.start()
         logger.info("Transcription service ready on http://%s:%d", HOST, PORT)
 
     yield
+
+    if worker is not None:
+        _work_queue.put(None)
+        worker.join(timeout=10)
 
 
 app = FastAPI(
@@ -285,6 +314,15 @@ app = FastAPI(
     description="WhisperX transcription with speaker diarization",
     version="1.0.0",
     lifespan=lifespan,
+    # No /docs, /redoc, /openapi.json or /docs/oauth2-redirect. FastAPI adds
+    # those four routes by default and they carry NO dependencies, so with them
+    # the service would have four unauthenticated endpoints and the rule "a
+    # token on everything except /health" would simply be untrue. There is no
+    # per-route way to put the auth dependency on them, so they are switched
+    # off; the three real routes are documented in README.md instead.
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 # A Host allowlist is what defeats DNS rebinding: a browser can be steered to

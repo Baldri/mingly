@@ -62,6 +62,32 @@ def auth_required(host: str, require_auth: bool) -> bool:
     return require_auth or not is_loopback_host(host)
 
 
+def auth_required_for_request(
+    client_host: str | None, host: str, require_auth: bool
+) -> bool:
+    """Whether THIS request has to present a key, judged from real state.
+
+    `auth_required` alone reads the configured bind, and configuration can be
+    wrong about reality: `uvicorn server:app --host 0.0.0.0` (or any ASGI
+    runner with its own --host, or a container command) binds the network
+    while TRANSCRIPTION_HOST still says 127.0.0.1. A configuration-only check
+    would then wave through exactly the case it exists to stop.
+
+    Measured on 2026-10-25: the ASGI scope does NOT carry the bind address —
+    `scope["server"]` is the local address of the individual connection, so it
+    reports 127.0.0.1 for a loopback request even when the server is bound to
+    0.0.0.0. The peer address is therefore the available evidence, and a
+    non-loopback peer is proof that the service is reachable off the box,
+    whatever the configuration claims.
+    """
+    if auth_required(host, require_auth):
+        return True
+    if client_host is None:
+        # No peer information: treat as remote rather than guess local.
+        return True
+    return not is_loopback_host(client_host)
+
+
 def check_api_key(
     authorization: str | None, configured: str | None, require_auth: bool
 ) -> bool:
@@ -116,6 +142,21 @@ def resolve_spool_path(audio_path: str, spool_root: Path) -> Path:
         AudioPathRejected: for any path that is not usable, with the reason in
             the message for logging only.
     """
+    try:
+        return _resolve_spool_path(audio_path, spool_root)
+    except AudioPathRejected:
+        raise
+    except (OSError, ValueError) as error:
+        # pathlib raises ValueError on an embedded NUL byte and OSError on
+        # various unusable names. Left unhandled these escape as a 500 with a
+        # traceback, which fails the request AND says more about the internals
+        # than the deliberately generic 400 is allowed to.
+        raise AudioPathRejected(
+            f"unusable path {audio_path!r}: {error!r}"
+        ) from error
+
+
+def _resolve_spool_path(audio_path: str, spool_root: Path) -> Path:
     root = spool_root.resolve()
     submitted = Path(audio_path)
     raw = submitted if submitted.is_absolute() else root / submitted
