@@ -143,6 +143,9 @@ describe('TranscriptionJobRunner', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.unstubAllEnvs()
+    // Two tests make a model method throw; without this they would do so for
+    // every test after them in this file.
+    vi.restoreAllMocks()
     closeDatabase()
     fs.rmSync(tmpDir, { recursive: true, force: true })
   })
@@ -743,7 +746,14 @@ describe('TranscriptionJobRunner', () => {
 
     const stored = requireJob('tenant-a', job.id)
     expect(stored.state).toBe('cancelled')
-    expect(stored.error).toMatch(/^Wartet: /)
+    // Changed requirement, not a loosened assertion: a wait reason may only be
+    // written while the job is still waiting FOR something. This row is
+    // cancelled, so it waits for nothing, and the IPC view would not show a
+    // reason on it anyway - the same rule that stops a `done` row with a
+    // missing transcript from explaining itself to nobody. What this test is
+    // about, that the state change survives the pass, is asserted above and
+    // unchanged.
+    expect(stored.error).toBeUndefined()
   })
 
   // ── Ruling 34: a cancellation must not be overwritten ──────────
@@ -867,6 +877,61 @@ describe('TranscriptionJobRunner', () => {
     expect(stuck.error).toMatch(/^Wartet: /)
 
     // And the job behind it was handled in the SAME pass.
+    expect(requireJob('tenant-a', second.id).state).toBe('running')
+    expect(client.submitted).toHaveLength(2)
+  })
+
+  it('laesst einen Job nicht als done ohne Transkript und ohne Grund zurueck', async () => {
+    // The blind spot where two correct fixes meet: the state change to 'done'
+    // has already landed when saving the transcript fails. A wait reason on a
+    // terminal row is deliberately not shown to the user, so the job would
+    // read "finished" with an empty transcript and no explanation anywhere
+    // except the log. Reaching 'done' without a transcript is not a success.
+    const runner = makeRunner()
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+    await runner.tick()
+
+    client.pollImpl = () =>
+      Promise.resolve(
+        doneStatus([
+          { jobId: 'svc-1', index: 0, startMs: 0, endMs: 1000, speaker: 'SPEAKER_00', text: 'Guten Tag' }
+        ])
+      )
+    vi.spyOn(TranscriptionModel, 'saveSegments').mockImplementation(() => {
+      throw new Error('Datenbank konnte die Segmente nicht speichern')
+    })
+
+    await runner.tick()
+
+    const stored = requireJob('tenant-a', job.id)
+    expect(stored.state).toBe('failed')
+    expect(stored.error).toContain('Segmente')
+    // Not a wait reason: a failure is what this is, and a wait reason would be
+    // hidden on a terminal row.
+    expect(stored.error).not.toMatch(/^Wartet: /)
+  })
+
+  it('laesst einen Schreibfehler beim Vermerken nicht den Durchlauf abbrechen', async () => {
+    // The containment of `attempt` has to cover its own recording too: if
+    // writing the reason fails, the error used to escape the pass and every
+    // job behind it was skipped again - the very shape the per-job guard
+    // exists to prevent, one layer down.
+    const runner = makeRunner()
+    const first = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+    const second = await runner.enqueue('tenant-a', 'ws1', writeAudio('b.wav', 64), 'critical')
+    const firstPath = requireJob('tenant-a', first.id).audioPath
+
+    client.submitImpl = (audioPath) =>
+      audioPath === firstPath
+        ? Promise.reject(new Error('unerwartet'))
+        : Promise.resolve({ jobId: 'svc-2' })
+    vi.spyOn(TranscriptionModel, 'setError').mockImplementation(() => {
+      throw new Error('Datenbank nicht schreibbar')
+    })
+
+    await expect(runner.tick()).resolves.toBeUndefined()
+
+    // The job behind the one that threw twice was still handled.
     expect(requireJob('tenant-a', second.id).state).toBe('running')
     expect(client.submitted).toHaveLength(2)
   })

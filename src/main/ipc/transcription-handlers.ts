@@ -411,9 +411,19 @@ async function runPass(
   //
   // In its own try, and the pass goes ahead when it fails: a key that cannot
   // be sent is a configuration error for the operator to fix, and skipping the
-  // pass over it would stop the queue instead of showing the problem. Sent
-  // without one, the request gets a 401, which the runner records as a visible
-  // wait reason on the job.
+  // pass over it would stop the queue instead of showing the problem.
+  //
+  // What the job then shows, precisely: the refusal happens BEFORE the client
+  // is configured, so the client keeps whatever key it had. In a process that
+  // never had a usable one - the reachable case, because the environment is
+  // read once at startup and the same value is resolved on every pass - it has
+  // none, the request goes unauthenticated, a service with a key configured
+  // answers 401, and the runner records that as a visible wait reason on the
+  // job. Measured end to end in tests/unit/transcription-handlers.test.ts.
+  //
+  // Were a usable key already applied and the environment then changed to a
+  // malformed one, the old key would stay in use and nothing would be visible
+  // on any job. That is what this log line is for.
   try {
     applyTranscriptionApiKey(resolveTranscriptionApiKey())
   } catch (error) {

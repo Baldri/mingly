@@ -34,19 +34,27 @@ export function resolveTranscriptionApiKey(): string | undefined {
 }
 
 /**
- * Why a key cannot be sent, or `undefined` when it can.
+ * Characters the request path refuses to put in a header.
  *
- * The question is put to the very API that will have to carry it rather than
- * to a pattern of my own: `Headers.set` is what the HTTP client calls, so this
- * check cannot drift away from what actually works.
+ * `Headers.set` is NOT the authority here, although it is what the client
+ * calls: measured on this Node, it rejects only NUL, CR and LF, while `fetch`
+ * then rejects every other C0 control character and DEL with
+ * UND_ERR_INVALID_ARG. The client cannot tell that apart from a refused
+ * connection and reports it as "service unreachable" - a misconfigured key
+ * shown as an outage, which is precisely what its own comment forbids.
+ *
+ * Tab (0x09) and non-ASCII characters are deliberately NOT in here: both were
+ * measured to go over the wire fine (HTTP 200), so refusing them would be a
+ * false alarm on a configuration that works.
  */
+const UNSENDABLE_CHARACTERS = /[\u0000-\u0008\u000A-\u001F\u007F]/
+
+/** Why a key cannot be sent, or `undefined` when it can. */
 function describeUnusableKey(apiKey: string): string | undefined {
-  try {
-    new Headers().set('Authorization', `Bearer ${apiKey}`)
-    return undefined
-  } catch {
-    return 'enthaelt Zeichen, die ein HTTP-Header nicht tragen kann (etwa Zeilenumbrueche)'
+  if (UNSENDABLE_CHARACTERS.test(apiKey)) {
+    return 'enthaelt Steuerzeichen, die ein HTTP-Header nicht tragen kann (etwa Zeilenumbrueche)'
   }
+  return undefined
 }
 
 /**

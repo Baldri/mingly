@@ -86,20 +86,37 @@ interface RecordedRequest {
 
 const openServers: http.Server[] = []
 
-/** A service that answers every submit, and records how it was asked. */
-async function startFakeService(): Promise<{ port: number; requests: RecordedRequest[] }> {
+/**
+ * A service that records how it was asked. It answers a submit with a job id,
+ * or with the status given - 401 is what a service with a key configured says
+ * to a request that carries none.
+ */
+async function startFakeService(status = 200): Promise<{ port: number; requests: RecordedRequest[] }> {
   const requests: RecordedRequest[] = []
   const server = http.createServer((req, res) => {
     req.on('data', () => undefined)
     req.on('end', () => {
       requests.push({ url: req.url ?? '', authorization: req.headers.authorization })
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ job_id: 'svc-1' }))
+      res.writeHead(status, { 'Content-Type': 'application/json' })
+      res.end(
+        status === 200
+          ? JSON.stringify({ job_id: 'svc-1' })
+          : JSON.stringify({ detail: 'Not authenticated' })
+      )
     })
   })
   openServers.push(server)
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   return { port: (server.address() as AddressInfo).port, requests }
+}
+
+/** Wait for a condition, bounded, on real timers. */
+async function waitFor(condition: () => boolean, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!condition() && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 10))
+  }
+  if (!condition()) throw new Error(`condition not met within ${timeoutMs} ms`)
 }
 
 function segment(jobId: string, text: string): TranscriptionSegment {
@@ -571,6 +588,49 @@ describe('Transkriptions-IPC', () => {
 
     // Positive control: a usable key still goes through the same function.
     expect(() => applyTranscriptionApiKey('schluessel-4711')).not.toThrow()
+  })
+
+  it('verweigert auch Steuerzeichen, die erst im Request auffallen wuerden', () => {
+    // Measured against this Node: `new Headers().set` accepts \u0001 and
+    // \u007f, and the request then fails inside fetch with
+    // UND_ERR_INVALID_ARG - which the HTTP client turns into
+    // "service unreachable". A misconfigured key would be reported as an
+    // outage, which is exactly what the client's own comment forbids.
+    expect(() => applyTranscriptionApiKey('mit\u0001steuerzeichen')).toThrow(/TRANSCRIPTION_API_KEY/)
+    expect(() => applyTranscriptionApiKey('mit\u007fdel')).toThrow(/TRANSCRIPTION_API_KEY/)
+
+    // And it stays silent where the request path is fine with the value:
+    // measured HTTP 200 for both a tab and a non-ASCII character, so refusing
+    // them would be a false alarm on a working configuration.
+    expect(() => applyTranscriptionApiKey('mit\tTabulator')).not.toThrow()
+    expect(() => applyTranscriptionApiKey('mit-uemlaut-ü')).not.toThrow()
+  })
+
+  it('macht einen unbrauchbaren Schluessel am Job sichtbar, statt still zu warten', async () => {
+    // End to end through the real chain, because this is the claim the pass
+    // makes: an unusable key is logged and the pass goes ahead; the service
+    // answers 401 to the unauthenticated request; the runner records that as a
+    // wait reason; and the view shows it. Nothing about it was measured before.
+    const service = await startFakeService(401)
+    getTranscriptionHttpClient().updateConfig({ host: '127.0.0.1', port: service.port, protocol: 'http' })
+    vi.stubEnv('TRANSCRIPTION_API_KEY', 'kaputter\nschluessel')
+    const audio = writeAudio('mit-kaputtem-schluessel.wav')
+
+    const submitted = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', audio)
+    const jobId = submitted.job?.id
+    expect(jobId).toBeDefined()
+
+    // The real runner, driven by the real scheduler: one pass, no successor.
+    startTranscriptionScheduler({ intervalMs: 600_000 })
+    await waitFor(() => TranscriptionModel.getJob(jobId as string, DEFAULT_TENANT_ID)?.error !== undefined)
+    stopTranscriptionScheduler()
+
+    const view = (await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_STATUS, jobId)).job
+
+    expect(service.requests[0].authorization).toBeUndefined()
+    expect(view?.state).toBe('queued')
+    expect(view?.waitingReason).toContain('401')
+    expect(view?.failureReason).toBeUndefined()
   })
 
   it('schickt den Schluessel aus TRANSCRIPTION_API_KEY an den Dienst', async () => {

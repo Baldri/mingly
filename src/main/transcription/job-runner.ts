@@ -143,6 +143,14 @@ const LOCAL_USER_ACTOR: AuditActor = { actorType: 'user', actorId: 'local' }
 /** States a job can still be cancelled out of; the other three are over. */
 const CANCELLABLE_STATES: readonly TranscriptionJobState[] = ['queued', 'running']
 
+/**
+ * States in which a job can still be waiting FOR something. The other three
+ * are over, and a job that is over is not waiting - so a wait reason written
+ * onto such a row would be both untrue and invisible (the IPC view shows
+ * reasons on non-terminal states only).
+ */
+const WAITING_STATES: readonly TranscriptionJobState[] = ['queued', 'running']
+
 /** What `cancel` did, in a form the caller can act on without parsing a message. */
 export type TranscriptionCancelOutcome =
   | { cancelled: true }
@@ -335,7 +343,19 @@ export class TranscriptionJobRunner {
         jobId: job.id,
         error: describeError(error)
       })
-      this.recordWaitReason(job, describeError(error))
+
+      // The recording is inside the guard as well. It writes to the database,
+      // which can fail for the same reasons the step did - and an error from
+      // the error handling would leave `attempt` and `tick` exactly the way
+      // this method exists to prevent, one layer down.
+      try {
+        this.recordUnexpectedError(job, describeError(error))
+      } catch (recordingError) {
+        logger.error('Could not record that error on the transcription job', {
+          jobId: job.id,
+          error: describeError(recordingError)
+        })
+      }
       return 'handled'
     }
   }
@@ -607,9 +627,52 @@ export class TranscriptionJobRunner {
    * `job` was read at the start of the pass, and writing that state back would
    * revert a change made in between - a cancellation arriving during a
    * 30-second submit request would simply vanish.
+   *
+   * It REFUSES a row that has reached a terminal state in the meantime. Such a
+   * job is not waiting for anything, and the IPC view deliberately does not
+   * show reasons on terminal states - so the write would be untrue AND
+   * invisible, which is how a `done` job with a missing transcript could end
+   * up explaining itself to nobody. A caller that needs to say something about
+   * such a row has to change the state, not the reason (see
+   * `recordUnexpectedError`).
    */
   private recordWaitReason(job: TranscriptionJob, reason: string): void {
+    const current = TranscriptionModel.getJob(job.id, job.tenantId)
+    if (current === null || !WAITING_STATES.includes(current.state)) return
     TranscriptionModel.setError(job.id, `Wartet: ${reason}`)
+  }
+
+  /**
+   * Put an unexpected error where someone will actually meet it.
+   *
+   * While the job is queued or running, it is a WAIT reason: what gets here is
+   * a condition someone can fix, not a broken recording, and the next pass
+   * picks the job up again.
+   *
+   * A row that has already reached `done` is the one case where that is not
+   * true, and the only way to get here with one is `saveSegments` failing
+   * right after the job was set to `done`. That row claims a finished
+   * transcription whose transcript is missing; a wait reason on it would be
+   * hidden, and the user would see an empty transcript with no explanation.
+   * Reaching `done` without a transcript is not a success, so the job is
+   * marked FAILED with the reason - which the view does show.
+   *
+   * `cancelled` and `failed` are left exactly as they are: a cancellation must
+   * not come back as a failure (Ruling 34), and a job that already failed
+   * keeps the reason it failed with.
+   */
+  private recordUnexpectedError(job: TranscriptionJob, reason: string): void {
+    const current = TranscriptionModel.getJob(job.id, job.tenantId)
+    if (current === null) return
+
+    if (current.state === 'done') {
+      // `current`, not `job`: its state is the one the compare-and-swap has to
+      // expect, and this is a real state change, so it is audited like one.
+      this.transition(current, 'failed', reason)
+      return
+    }
+
+    this.recordWaitReason(current, reason)
   }
 
   private clearWaitReason(job: TranscriptionJob): void {

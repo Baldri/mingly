@@ -749,8 +749,9 @@ export const IPC_CHANNELS = {
 // renderer renders belongs in src/shared, because the renderer must not import
 // from src/main (tests/unit/renderer-process-boundary.test.ts, which exists
 // because such an import once pulled sql.js into the renderer's type-check).
-// The model and the HTTP client re-export them, so the main process keeps
-// importing them where it always did.
+// The job model and the IPC handler module re-export them, so the main process
+// keeps importing them where it always did (the HTTP client takes
+// TranscriptionSegment from the model, like the rest of src/main).
 // ---------------------------------------------------------------------------
 
 /**
