@@ -109,6 +109,8 @@ function segment(jobId: string, text: string): TranscriptionSegment {
 describe('Transkriptions-IPC', () => {
   let tmpDir: string
   let userDataDir: string
+  /** A directory the user has granted Mingly access to; recordings live here. */
+  let grantedDir: string
 
   async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
     const handler = ipcHandlers.get(channel)
@@ -116,7 +118,15 @@ describe('Transkriptions-IPC', () => {
     return (await handler(null, ...args)) as T
   }
 
+  /** A recording where the user granted access. */
   function writeAudio(name: string): string {
+    const file = path.join(grantedDir, name)
+    fs.writeFileSync(file, Buffer.alloc(64, 1))
+    return file
+  }
+
+  /** A file somewhere the user never granted anything. */
+  function writeOutside(name: string): string {
     const file = path.join(tmpDir, name)
     fs.writeFileSync(file, Buffer.alloc(64, 1))
     return file
@@ -129,6 +139,30 @@ describe('Transkriptions-IPC', () => {
     // directory would be gone by the time it writes.
     userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-transcription-ipc-userdata-'))
     electronPaths.userData = userDataDir
+
+    // Grant one directory through the real path the FileAccessManager loads
+    // from, rather than mocking it away: `file-access.json` in userData is
+    // what a directory the user picked leaves behind.
+    grantedDir = path.join(userDataDir, 'aufnahmen')
+    fs.mkdirSync(grantedDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(userDataDir, 'file-access.json'),
+      JSON.stringify({
+        allowedDirectories: [
+          {
+            id: 'granted-1',
+            path: grantedDir,
+            name: 'Aufnahmen',
+            location: 'local',
+            permissions: ['read'],
+            recursive: true,
+            grantedAt: Date.now(),
+            accessCount: 0
+          }
+        ]
+      })
+    )
+
     registerTranscriptionHandlers()
   })
 
@@ -305,6 +339,93 @@ describe('Transkriptions-IPC', () => {
     // Positive control: the lower-case level the type allows goes through.
     const accepted = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', audio, 'critical')
     expect(accepted.success).toBe(true)
+  })
+
+  // ── The path is renderer input, not a trusted file name ────────
+  //
+  // Mingly renders LLM answers, RAG documents and MCP content, so the renderer
+  // is the less trusted side. A submitted path that is not confined would let
+  // anything that reaches it have any audio or video file on the machine
+  // transcribed - and the transcript handed back over the segments channel.
+  // The spool copy would carry it past the path confinement the service
+  // enforces, because the service only ever sees the spool path.
+  //
+  // The same mistake was made once in this app and fixed after an audit; the
+  // rule lives in content-handlers.ts for READ_FILE (audit 2026-08-21).
+
+  it('verweigert eine Aufnahme ausserhalb der freigegebenen Verzeichnisse', async () => {
+    const outside = writeOutside('fremde-aufnahme.wav')
+
+    const refused = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', outside)
+
+    expect(refused.success).toBe(false)
+    // Nothing was queued and nothing copied: the refusal happens before the
+    // runner ever sees the path.
+    expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
+    expect(TranscriptionModel.listByState('failed', DEFAULT_TENANT_ID)).toHaveLength(0)
+
+    // Positive control in the same run: the identical call for a recording
+    // inside the granted directory IS queued, so the refusal above is the
+    // confinement and not a handler that refuses everything.
+    const inside = writeAudio('eigene-aufnahme.wav')
+    const accepted = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', inside)
+
+    expect(accepted.success).toBe(true)
+    expect(accepted.job?.state).toBe('queued')
+  })
+
+  it('verweigert einen Pfad mit ../', async () => {
+    const target = writeOutside('heimlich.wav')
+    // Spelled out, NOT through path.join: join normalises the '..' away, and
+    // then this would test the confinement check again instead of the
+    // traversal check. An attacker sends the unnormalised string.
+    const traversal = `${grantedDir}/../../${path.basename(target)}`
+
+    const refused = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', traversal)
+
+    expect(refused.success).toBe(false)
+    expect(traversal).toContain('../')
+    expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
+  })
+
+  it('verweigert einen Symlink im freigegebenen Verzeichnis, der hinausfuehrt', async () => {
+    // The case the resolution exists for: the submitted path passes every
+    // string check, and the file it names is somewhere else entirely.
+    const target = writeOutside('vertraulich.wav')
+    const link = path.join(grantedDir, 'sieht-harmlos-aus.wav')
+    fs.symlinkSync(target, link)
+
+    const refused = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', link)
+
+    expect(refused.success).toBe(false)
+    expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
+
+    fs.unlinkSync(link)
+  })
+
+  it('verweigert eine Datei, die keine Audio- oder Videodatei ist', async () => {
+    const notAudio = writeAudio('schluessel.txt')
+
+    const refused = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', notAudio)
+
+    expect(refused.success).toBe(false)
+    expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
+  })
+
+  it('nennt in der Verweigerung weder den Pfad noch die gescheiterte Pruefung', async () => {
+    const outside = writeOutside('streng-geheim.wav')
+    const notAudio = writeAudio('auch-geheim.txt')
+
+    const outsideRefusal = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', outside)
+    const extensionRefusal = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', notAudio)
+
+    // Two different checks, one message: otherwise the refusal answers "does
+    // this path exist" and "which rule did I hit".
+    expect(outsideRefusal.error).toBe(extensionRefusal.error)
+    expect(outsideRefusal.error).not.toContain('streng-geheim')
+    expect(outsideRefusal.error).not.toContain(tmpDir)
+    expect(extensionRefusal.error).not.toContain('auch-geheim')
+    expect(extensionRefusal.error).not.toContain(grantedDir)
   })
 
   it('nimmt einen Job ohne erklaerte Schutzstufe an und behandelt ihn streng', async () => {

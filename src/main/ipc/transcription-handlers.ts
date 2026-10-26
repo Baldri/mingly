@@ -19,6 +19,8 @@
  *    pass would pile passes up without bound.
  */
 
+import fs from 'fs/promises'
+import { extname } from 'path'
 import { IPC_CHANNELS } from '../../shared/types'
 import { DEFAULT_TENANT_ID } from '../database/index'
 import { TranscriptionModel } from '../database/models/transcription'
@@ -34,6 +36,9 @@ import {
 } from '../config/transcription-config'
 import { SENSITIVITY_ORDER } from '../policy/policy-types'
 import type { PIISensitivity } from '../privacy/pii-types'
+import { validateFilePath } from '../security/input-validator'
+import { getFileAccessManager } from '../file-access/file-access-manager'
+import { isPathWithinAllowedDirs } from '../../shared/file-access-types'
 import { wrapHandler, requireFeature } from './ipc-utils'
 import { createLogger } from '../../shared/logger'
 
@@ -122,6 +127,98 @@ function requireDeclaredLevel(value: unknown): PIISensitivity | undefined {
   return value as PIISensitivity
 }
 
+/**
+ * ONE refusal for every reason a submitted recording is not acceptable.
+ *
+ * Four different messages would make the channel a probe: it would answer
+ * "does this path exist", "is it inside a granted directory" and "which rule
+ * did I hit" to a caller that is allowed to know none of it. The reason goes
+ * into the main-process log instead - the same discipline the Python service
+ * arrived at for its 400s.
+ */
+const RECORDING_REFUSED =
+  'Diese Aufnahme kann nicht transkribiert werden. Erlaubt sind Audio- und ' +
+  'Videodateien aus einem Verzeichnis, fuer das Mingly Zugriff hat.'
+
+/**
+ * Containers the transcription service can decode (ffmpeg/whisperx). An
+ * allowlist, because the question at a boundary is what IS permitted - and it
+ * belongs here, not only in the runner's spool-name sanitising, which decides
+ * a file name rather than whether the job may exist.
+ */
+const ALLOWED_RECORDING_EXTENSIONS: readonly string[] = [
+  '.wav', '.mp3', '.m4a', '.aac', '.flac', '.ogg', '.oga', '.opus', '.wma',
+  '.aiff', '.aif', '.caf', '.amr', '.mka',
+  '.mp4', '.m4v', '.mov', '.mkv', '.webm', '.avi', '.mpg', '.mpeg', '.wmv', '.3gp'
+]
+
+/**
+ * The submitted path, resolved - or a refusal.
+ *
+ * The renderer is the LESS trusted side in Electron, and Mingly renders LLM
+ * answers, RAG documents and MCP content. An unconfined path here would hand
+ * anything that reaches the renderer every audio and video file on the
+ * machine: the runner copies the recording into the spool directory, so the
+ * path confinement the service enforces would be satisfied by the copy, and
+ * the transcript would come back over the segments channel.
+ *
+ * This is the rule READ_FILE already follows (content-handlers.ts, security
+ * audit 2026-08-21) - the same mistake was made once in this app - with one
+ * step more: the path is RESOLVED before it is compared, so a symlink inside a
+ * granted directory pointing somewhere else is refused rather than followed.
+ */
+async function requireAllowedRecording(submittedPath: string): Promise<string> {
+  const refuse = (reason: string): never => {
+    logger.warn('Transcription submit refused', { reason, submittedPath })
+    throw new Error(RECORDING_REFUSED)
+  }
+
+  const validation = validateFilePath(submittedPath)
+  if (!validation.valid) return refuse(validation.error ?? 'invalid path')
+
+  let resolved: string
+  try {
+    resolved = await fs.realpath(submittedPath)
+  } catch (error) {
+    // A path that cannot be resolved cannot be confined either, so it is
+    // refused rather than passed on: the alternative is deciding about a file
+    // whose identity we do not know.
+    return refuse(`cannot be resolved: ${String(error)}`)
+  }
+
+  if (!ALLOWED_RECORDING_EXTENSIONS.includes(extname(resolved).toLowerCase())) {
+    return refuse('extension is not an audio or video container')
+  }
+
+  const allowedDirs = await resolvedAllowedDirectories()
+  if (!isPathWithinAllowedDirs(resolved, allowedDirs)) {
+    return refuse('outside every granted directory')
+  }
+
+  // The resolved path, not the submitted one: it is the file that was checked.
+  return resolved
+}
+
+/**
+ * The granted directories with their symlinks resolved.
+ *
+ * Both sides have to be resolved or the comparison is between two spellings of
+ * the same place: macOS alone resolves `/tmp` to `/private/tmp` and `/var` to
+ * `/private/var`, and a grant for a directory under either would then match
+ * nothing. A granted directory that no longer resolves grants nothing.
+ */
+async function resolvedAllowedDirectories(): Promise<string[]> {
+  const resolved: string[] = []
+  for (const dir of getFileAccessManager().getAllowedDirectories()) {
+    try {
+      resolved.push(await fs.realpath(dir.path))
+    } catch {
+      continue
+    }
+  }
+  return resolved
+}
+
 /** The caller's own job, or a refusal. */
 function requireOwnJob(jobId: unknown): TranscriptionJob {
   const id = requireNonEmptyString(jobId, 'Keine Auftragskennung uebergeben')
@@ -158,8 +255,9 @@ export function registerTranscriptionHandlers(): void {
     async (workspaceId: unknown, audioPath: unknown, declaredLevel?: unknown): Promise<JobReply> => {
       requireFeature(FEATURE)
       const workspace = requireNonEmptyString(workspaceId, 'Kein Arbeitsbereich uebergeben')
-      const audio = requireNonEmptyString(audioPath, 'Kein Pfad zur Aufnahme uebergeben')
+      const submitted = requireNonEmptyString(audioPath, 'Kein Pfad zur Aufnahme uebergeben')
       const level = requireDeclaredLevel(declaredLevel)
+      const audio = await requireAllowedRecording(submitted)
 
       // A refused recording comes back as a job in state 'failed' carrying the
       // reason, so the caller sees the policy decision instead of an exception.
