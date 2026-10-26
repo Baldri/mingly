@@ -13,7 +13,9 @@
  * next pass, without restarting the queue. Not the `.env` file - `applyEnvFile`
  * fills `process.env` from it exactly once, at module load (src/main/index.ts,
  * one call site, no watcher), so an edit to the FILE takes effect at the next
- * app start.
+ * app start - and then only if the variable is not already set in the
+ * environment the process starts with, because `applyEnvFile` never
+ * overwrites one (env-file.ts, `process.env[key] === undefined`).
  *
  * No settings field yet - the key is a developer and power-user setting, like
  * the spool directory. When one is added, resolve it the way

@@ -685,11 +685,13 @@ export class TranscriptionJobRunner {
       // AFTER the transition, because the audit entry it writes reads the
       // declared level out of one of the maps this clears.
       //
-      // The only way to get here is `saveSegments` throwing right after the row
-      // was set to `done` - and `observe` releases the handles only once saving
-      // has returned, so that throw skipped it. The job is over either way,
-      // whether the transition landed or a cancellation got there first, so
-      // this pass is done with it and nothing may keep pointing at it.
+      // The only way to get here in this process is `saveSegments` throwing
+      // right after the row was set to `done` - and `observe` releases the
+      // handles only once saving has returned, so that throw skipped it. The
+      // CAS above cannot lose to a cancellation: `cancel` refuses a `done` row
+      // (CANCELLABLE_STATES), and `cancel` and `transition` are the only two
+      // writers of the state column. The job is over, so this pass is done
+      // with it and nothing may keep pointing at it.
       this.forget(job.id)
       return
     }
