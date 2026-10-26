@@ -21,31 +21,35 @@ export class ActivityLogger implements ActivityLoggerInterface {
     const id = randomUUID()
     const createdAt = new Date().toISOString()
 
-    // Fixed column list, plus tenant_id only when the caller knows the tenant.
-    // A caller that does not keeps the statement it always had, so the column
-    // default assigns the installation's tenant exactly as before; a caller
-    // that does says so explicitly, because a later multi-tenant stage cannot
-    // reconstruct the owner afterwards.
-    const columns = [
-      'id', 'actor_type', 'actor_id', 'action', 'entity_type', 'entity_id', 'details', 'created_at',
-    ]
-    const params: (string | null)[] = [
-      id,
-      entry.actorType,
-      entry.actorId,
-      entry.action,
-      entry.entityType,
-      entry.entityId,
-      entry.details ? JSON.stringify(entry.details) : null,
-      createdAt,
-    ]
-
-    if (entry.tenantId !== undefined) {
-      columns.push('tenant_id')
-      params.push(entry.tenantId)
-    }
-
     try {
+      // Built INSIDE the try, like the argument list it replaced: serialising
+      // `details` can throw on its own (a circular object, a BigInt), and a
+      // logging call must not take the caller down with it.
+      //
+      // Fixed column list, plus tenant_id only when the caller knows the
+      // tenant. A caller that does not keeps the statement it always had, so
+      // the column default assigns the installation's tenant exactly as
+      // before; a caller that does says so explicitly, because a later
+      // multi-tenant stage cannot reconstruct the owner afterwards.
+      const columns = [
+        'id', 'actor_type', 'actor_id', 'action', 'entity_type', 'entity_id', 'details', 'created_at',
+      ]
+      const params: (string | null)[] = [
+        id,
+        entry.actorType,
+        entry.actorId,
+        entry.action,
+        entry.entityType,
+        entry.entityId,
+        entry.details ? JSON.stringify(entry.details) : null,
+        createdAt,
+      ]
+
+      if (entry.tenantId !== undefined) {
+        columns.push('tenant_id')
+        params.push(entry.tenantId)
+      }
+
       dbRun(
         `INSERT INTO activity_log
          (${columns.join(', ')})

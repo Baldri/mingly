@@ -31,6 +31,7 @@ import {
 } from '../../src/main/database/models/transcription'
 import {
   TranscriptionJobRunner,
+  NO_TARGET,
   type TranscriptionJobClient,
   type TranscriptionJobRunnerOptions
 } from '../../src/main/transcription/job-runner'
@@ -46,6 +47,9 @@ import { configureLogger } from '../../src/shared/logger'
 const JOB_STATES: TranscriptionJobState[] = ['queued', 'running', 'done', 'failed', 'cancelled']
 
 const THIRTY_MINUTES_MS = 30 * 60 * 1000
+
+/** Matches MAX_COUNTED_OBSERVATION_GAP_MS: the longest gap counted in full. */
+const FIVE_MINUTES_MS = 5 * 60 * 1000
 
 /**
  * Permits nothing at any level, so `resolveTarget` returns a refusal. The
@@ -199,14 +203,18 @@ describe('TranscriptionJobRunner', () => {
 
     const afterOutage = requireJob('tenant-a', job.id)
     expect(afterOutage.state).toBe('queued')
-    expect(afterOutage.error).toBeUndefined()
+    // Waiting, and visibly so: a job that sits in the queue because the
+    // service is down must not look like one that is simply next in line.
+    expect(afterOutage.error).toMatch(/^Wartet: /)
     expect(client.submitted).toHaveLength(1)
 
-    // The queue is not a dead end: once the service answers, the same job runs.
+    // The queue is not a dead end: once the service answers, the same job runs
+    // and the wait reason is gone.
     client.submitImpl = () => Promise.resolve({ jobId: 'svc-7' })
     await runner.tick()
 
     expect(requireJob('tenant-a', job.id).state).toBe('running')
+    expect(requireJob('tenant-a', job.id).error).toBeUndefined()
     expect(client.submitted).toHaveLength(2)
   })
 
@@ -275,15 +283,49 @@ describe('TranscriptionJobRunner', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     const start = Date.now()
     client.pollImpl = () => Promise.resolve(runningStatus(0.45))
+
+    // First observation moves progress 0 -> 0.45 and resets the clock.
+    vi.setSystemTime(start + FIVE_MINUTES_MS)
     await runner.tick()
     expect(requireJob('tenant-a', job.id).state).toBe('running')
 
-    vi.setSystemTime(start + THIRTY_MINUTES_MS + 60 * 1000)
+    // Progress now stops moving. Six five-minute observations are exactly the
+    // window, which is not yet past it ...
+    for (let step = 2; step <= 7; step++) {
+      vi.setSystemTime(start + step * FIVE_MINUTES_MS)
+      await runner.tick()
+    }
+    expect(requireJob('tenant-a', job.id).state).toBe('running')
+
+    // ... and the seventh takes it past.
+    vi.setSystemTime(start + 8 * FIVE_MINUTES_MS)
     await runner.tick()
 
     const stored = requireJob('tenant-a', job.id)
     expect(stored.state).toBe('failed')
     expect(stored.error).toMatch(/Fortschritt/)
+  })
+
+  it('laesst einen Job nicht scheitern, wenn der Rechner laenger geschlafen hat als das Stillstandsfenster', async () => {
+    const audio = writeAudio('slept.wav', 64)
+    const runner = makeRunner({ progressStallTimeoutMs: THIRTY_MINUTES_MS })
+    const job = await runner.enqueue('tenant-a', 'ws1', audio, 'critical')
+    await runner.tick()
+
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const start = Date.now()
+    client.pollImpl = () => Promise.resolve(runningStatus(0.45))
+    vi.setSystemTime(start + FIVE_MINUTES_MS)
+    await runner.tick()
+
+    // The lid closes for eight hours. The local service is suspended with the
+    // app, so on wake it reports the progress it had before - sixteen times
+    // the window as a wall-clock delta, but nobody was awake for it.
+    vi.setSystemTime(start + FIVE_MINUTES_MS + 8 * 60 * 60 * 1000)
+    await runner.tick()
+
+    expect(requireJob('tenant-a', job.id).state).toBe('running')
+    expect(requireJob('tenant-a', job.id).error).toBeUndefined()
   })
 
   it('laesst die Stillstandsuhr nicht laufen, solange der Dienst den Job nur in seiner Warteschlange hat', async () => {
@@ -312,9 +354,12 @@ describe('TranscriptionJobRunner', () => {
 
     const stored = requireJob('tenant-a', job.id)
     expect(stored.state).toBe('failed')
+    // The sentinel is what distinguishes THIS branch from "a target was
+    // permitted but has no endpoint": the policy version appears in both
+    // messages, and neither branch copies anything into the spool.
+    expect(stored.targetId).toBe(NO_TARGET)
     expect(stored.error).toContain(NOTHING_ALLOWED_POLICY.version)
     expect(client.submitted).toEqual([])
-    // Refused before anything was copied anywhere.
     expect(fs.existsSync(spoolDir)).toBe(false)
   })
 
@@ -352,6 +397,34 @@ describe('TranscriptionJobRunner', () => {
     await runner.tick()
 
     expect(client.submitted).toEqual([job.audioPath])
+  })
+
+  it('legt Spool-Verzeichnis und Kopie mit restriktiven Rechten an', async () => {
+    const runner = makeRunner()
+
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+
+    // The spool holds personal audio; `recursive: true` would otherwise take
+    // the default mode.
+    expect(fs.statSync(spoolDir).mode & 0o777).toBe(0o700)
+    expect(fs.statSync(job.audioPath).mode & 0o777).toBe(0o600)
+  })
+
+  it('laesst keine Kopie im Spool zurueck, wenn der Job nicht angelegt werden kann', async () => {
+    const runner = makeRunner()
+
+    // Positive control: a successful enqueue DOES leave its copy there.
+    await runner.enqueue('tenant-a', 'ws1', writeAudio('kept.wav', 64), 'critical')
+    expect(fs.readdirSync(spoolDir)).toHaveLength(1)
+
+    // Now make `createJob` throw. Without cleanup the copy would stay behind
+    // with no row pointing at it, and Task 9's deletion walks jobs.
+    closeDatabase()
+    await expect(
+      runner.enqueue('tenant-a', 'ws1', writeAudio('orphan.wav', 64), 'critical')
+    ).rejects.toThrow()
+
+    expect(fs.readdirSync(spoolDir)).toHaveLength(1)
   })
 
   it('nutzt TRANSCRIPTION_SPOOL_DIR, wenn kein Verzeichnis uebergeben wurde', async () => {
@@ -396,6 +469,27 @@ describe('TranscriptionJobRunner', () => {
     expect(client.submitted).toHaveLength(1)
   })
 
+  it('loescht den Wartegrund, sobald der Dienst wieder antwortet', async () => {
+    // A running job that waited keeps its state, so no state change clears the
+    // reason for it - it has to be cleared on the spot.
+    const runner = makeRunner()
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+    await runner.tick()
+
+    client.pollImpl = () => Promise.reject(new TranscriptionServiceUnreachableError('down'))
+    await runner.tick()
+    // Positive control: there really was a reason to clear.
+    expect(requireJob('tenant-a', job.id).error).toMatch(/^Wartet: /)
+
+    client.pollImpl = () => Promise.resolve(runningStatus(0.45))
+    await runner.tick()
+
+    const stored = requireJob('tenant-a', job.id)
+    expect(stored.state).toBe('running')
+    expect(stored.error).toBeUndefined()
+    expect(stored.progress).toBe(0.45)
+  })
+
   it('reicht nach einem 404 des Dienstes erneut ein — dessen Warteschlange ist weg', async () => {
     const runner = makeRunner()
     const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
@@ -418,11 +512,12 @@ describe('TranscriptionJobRunner', () => {
     await runner.tick()
 
     expect(requireJob('tenant-a', job.id).state).toBe('queued')
-    expect(requireJob('tenant-a', job.id).error).toBeUndefined()
+    expect(requireJob('tenant-a', job.id).error).toMatch(/^Wartet: /)
 
     client.submitImpl = () => Promise.resolve({ jobId: 'svc-1' })
     await runner.tick()
     expect(requireJob('tenant-a', job.id).state).toBe('running')
+    expect(requireJob('tenant-a', job.id).error).toBeUndefined()
     expect(client.submitted).toHaveLength(2)
 
     client.pollImpl = () => Promise.reject(new TranscriptionServiceError('models not loaded', 503))
@@ -430,6 +525,81 @@ describe('TranscriptionJobRunner', () => {
 
     expect(requireJob('tenant-a', job.id).state).toBe('running')
     expect(client.submitted).toHaveLength(2)
+  })
+
+  it('laesst den Job bei 401 und 403 warten, statt ihn scheitern zu lassen', async () => {
+    // Nobody wires an API key into the client before Task 7, so a service
+    // that requires one answers 401 to everything. Failing the job would empty
+    // the queue over a configuration problem of the installation.
+    const runner = makeRunner()
+    client.submitImpl = () => Promise.reject(new TranscriptionServiceError('Unauthorized', 401))
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+
+    await runner.tick()
+
+    const waiting = requireJob('tenant-a', job.id)
+    expect(waiting.state).toBe('queued')
+    expect(waiting.error).toMatch(/^Wartet: /)
+    expect(waiting.error).toContain('Unauthorized')
+
+    // Same on the poll path, with 403.
+    client.submitImpl = () => Promise.resolve({ jobId: 'svc-1' })
+    await runner.tick()
+    expect(requireJob('tenant-a', job.id).state).toBe('running')
+
+    client.pollImpl = () => Promise.reject(new TranscriptionServiceError('Forbidden', 403))
+    await runner.tick()
+
+    const stillRunning = requireJob('tenant-a', job.id)
+    expect(stillRunning.state).toBe('running')
+    expect(stillRunning.error).toContain('Forbidden')
+    // And no second hand-over of the same audio.
+    expect(client.submitted).toHaveLength(2)
+  })
+
+  it('laesst einen laufenden Job weiterlaufen, wenn eine Antwort des Dienstes unbrauchbar ist', async () => {
+    // The client reports a malformed BODY as a TranscriptionServiceError that
+    // carries the ANSWER's own 2xx status. The service accepted the job and is
+    // computing; one garbled answer must not throw away forty minutes of work.
+    const runner = makeRunner()
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+    await runner.tick()
+
+    client.pollImpl = () =>
+      Promise.reject(
+        new TranscriptionServiceError(
+          'Unerwartete Antwort des Transkriptionsdienstes (HTTP 200): job.state is not a known state',
+          200
+        )
+      )
+    await runner.tick()
+    await runner.tick()
+
+    const stored = requireJob('tenant-a', job.id)
+    expect(stored.state).toBe('running')
+    expect(stored.error).toMatch(/^Wartet: /)
+    // Two ticks after the submitting one, so two polls: it kept observing ...
+    expect(client.polled).toHaveLength(2)
+    // ... and did not hand the same audio over a second time.
+    expect(client.submitted).toHaveLength(1)
+  })
+
+  it('laesst den Job in der Warteschlange, wenn die Antwort auf die Einreichung unbrauchbar ist', async () => {
+    const runner = makeRunner()
+    client.submitImpl = () =>
+      Promise.reject(
+        new TranscriptionServiceError(
+          'Unerwartete Antwort des Transkriptionsdienstes (HTTP 200): job_id is not a non-empty string',
+          200
+        )
+      )
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+
+    await runner.tick()
+
+    const stored = requireJob('tenant-a', job.id)
+    expect(stored.state).toBe('queued')
+    expect(stored.error).toMatch(/^Wartet: /)
   })
 
   it('laesst den Job scheitern, wenn der Dienst die Anfrage ablehnt', async () => {
@@ -443,6 +613,58 @@ describe('TranscriptionJobRunner', () => {
     const stored = requireJob('tenant-a', job.id)
     expect(stored.state).toBe('failed')
     expect(stored.error).toContain('Audio file is not usable')
+  })
+
+  // ── Overlapping passes ─────────────────────────────────────────
+
+  it('reicht denselben Job nicht zweimal ein, wenn zwei Durchlaeufe sich ueberlappen', async () => {
+    // Task 8 wires this as an IPC handler AND an interval, so two passes can
+    // overlap. The row still reads `queued` for the whole duration of the
+    // submit request, which is up to the client's 30 s limit.
+    const runner = makeRunner()
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+
+    let release: ((value: { jobId: string }) => void) | undefined
+    client.submitImpl = () =>
+      new Promise<{ jobId: string }>((resolve) => {
+        release = resolve
+      })
+
+    const firstPass = runner.tick()
+    const secondPass = runner.tick()
+    // Let the first pass reach its submit request and stay there.
+    for (let spin = 0; spin < 50 && release === undefined; spin++) await Promise.resolve()
+    expect(release).toBeDefined()
+    expect(client.submitted).toHaveLength(1)
+
+    release?.({ jobId: 'svc-1' })
+    await Promise.all([firstPass, secondPass])
+
+    expect(client.submitted).toHaveLength(1)
+    expect(requireJob('tenant-a', job.id).state).toBe('running')
+  })
+
+  it('laesst resumeInterrupted nicht neben einem Durchlauf laufen', async () => {
+    const runner = makeRunner()
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+
+    let release: ((value: { jobId: string }) => void) | undefined
+    client.submitImpl = () =>
+      new Promise<{ jobId: string }>((resolve) => {
+        release = resolve
+      })
+
+    const pass = runner.tick()
+    const resume = runner.resumeInterrupted()
+    for (let spin = 0; spin < 50 && release === undefined; spin++) await Promise.resolve()
+    release?.({ jobId: 'svc-1' })
+    await Promise.all([pass, resume])
+
+    expect(client.submitted).toHaveLength(1)
+    // Serialised rather than skipped: the resumption ran AFTER the pass, saw
+    // the job as running and handed it back to the queue. A guard that simply
+    // dropped the overlapping call would have left it `running`.
+    expect(requireJob('tenant-a', job.id).state).toBe('queued')
   })
 
   // ── Result and progress ────────────────────────────────────────

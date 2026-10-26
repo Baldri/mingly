@@ -3,11 +3,12 @@
  *
  * Three things here are decisions, not details:
  *
- * 1. **No limit on a job, only on a standstill.** Transcribing an hour of
- *    audio legitimately takes tens of minutes (measured: 40 minutes on CPU for
- *    one session hour). A wall clock would kill such a job after it had already
- *    done the work, so the only clock this runner keeps is the one since
- *    PROGRESS last moved.
+ * 1. **No limit on a job, only on a standstill - in awake time.** Transcribing
+ *    an hour of audio legitimately takes tens of minutes (measured: 40 minutes
+ *    on CPU for one session hour). A wall clock would kill such a job after it
+ *    had already done the work, so the only clock this runner keeps is the one
+ *    since PROGRESS last moved, and it does not run while the machine sleeps
+ *    (see MAX_COUNTED_OBSERVATION_GAP_MS).
  * 2. **An unreachable service is not a failed job.** A job stays `queued` when
  *    it could not be handed over, and stays `running` when it could not be
  *    observed - re-submitting a running job would transcribe the same audio a
@@ -18,7 +19,8 @@
  *
  * The runner has no timer of its own: `tick()` is one pass and the caller
  * decides how often it happens. That keeps the whole state machine testable
- * without waiting.
+ * without waiting. Passes never run beside each other, whoever starts them -
+ * see `inOwnPass`.
  */
 
 import { randomUUID } from 'crypto'
@@ -75,20 +77,44 @@ const EXECUTABLE_TARGETS: readonly string[] = ['local']
  * `target_id` of a job that never got one, because no target was permitted.
  * The row still exists so the refusal is visible and auditable; a sentinel
  * keeps the column honest instead of naming a target that was never used.
+ *
+ * Exported because it is the only way to tell "no target was permitted" apart
+ * from "the permitted target has no endpoint" by looking at the row.
  */
-const NO_TARGET = 'none'
+export const NO_TARGET = 'none'
 
 /**
- * Default standstill window. It has to exceed the longest SINGLE stage of the
- * service's pipeline, not the whole job: the service reports progress at five
- * points (audio loaded, transcribed, aligned, diarised, done) and
+ * Default standstill window, measured in AWAKE time (see
+ * MAX_COUNTED_OBSERVATION_GAP_MS). It has to exceed the longest SINGLE stage
+ * of the service's pipeline, not the whole job: the service reports progress
+ * at five points (audio loaded, transcribed, aligned, diarised, done) and
  * transcription is by far the longest of them. Two hours covers a recording of
  * several hours on CPU; a deployment that transcribes longer recordings raises
  * it through the option.
  */
 const DEFAULT_PROGRESS_STALL_TIMEOUT_MS = 2 * 60 * 60 * 1000
 
+/**
+ * The longest gap between two observations of the same job that is still
+ * counted towards the standstill window in full.
+ *
+ * This is what makes the window awake time rather than wall-clock time. A
+ * laptop that sleeps for eight hours suspends the local transcription service
+ * with it; on wake the service reports the same progress it had before, and a
+ * wall-clock delta would read that as eight hours of standstill and kill a job
+ * that never stopped. Sleep is the normal case for a desktop app, so a gap
+ * longer than this one is taken as "this process was not watching" and
+ * contributes only this much.
+ *
+ * It is clamped rather than ignored on purpose: a caller that polls less often
+ * than this still accumulates standstill, just more slowly. Ignoring long gaps
+ * would switch the detection off silently for such a caller.
+ */
+const MAX_COUNTED_OBSERVATION_GAP_MS = 5 * 60 * 1000
+
 const HTTP_NOT_FOUND = 404
+const HTTP_UNAUTHORIZED = 401
+const HTTP_FORBIDDEN = 403
 const HTTP_SERVICE_UNAVAILABLE = 503
 
 const AUDIT_ACTOR_ID = 'transcription-job-runner'
@@ -106,8 +132,15 @@ type StepOutcome = 'handled' | 'service-unavailable'
 interface TrackedJob {
   serviceJobId: string
   lastProgress: number
-  /** When `lastProgress` last changed - the only clock a job is given up by. */
-  lastProgressAt: number
+  /**
+   * Awake time with unchanged progress, accumulated over the observations -
+   * the only measure a job is ever given up by. Reset to zero whenever
+   * progress moves, and whenever the service says the job is still waiting in
+   * its own queue.
+   */
+  standstillMs: number
+  /** When this job was last observed; the base for the next gap. */
+  lastObservedAt: number
 }
 
 export class TranscriptionJobRunner {
@@ -128,6 +161,21 @@ export class TranscriptionJobRunner {
    */
   private readonly declaredLevels = new Map<string, PIISensitivity>()
 
+  /**
+   * Tail of the chain of passes. Every pass - `tick` and `resumeInterrupted`
+   * alike - runs behind the previous one, because two passes over the same
+   * queue would both read a job as `queued` while the first one is still
+   * inside its `submit` request (up to the client's 30 s limit) and hand the
+   * same audio over twice. That is exactly the double transcription Ruling 23
+   * exists to prevent, and it needs no timeout to happen: Task 8 wires this as
+   * an IPC handler AND an interval.
+   *
+   * Passes are serialised rather than skipped so that a `resumeInterrupted`
+   * arriving during a pass still happens; a skipped resumption would leave
+   * jobs stranded in `running` for the rest of the session.
+   */
+  private passes: Promise<void> = Promise.resolve()
+
   constructor(options: TranscriptionJobRunnerOptions = {}) {
     this.tenantIds = options.tenantIds ?? [DEFAULT_TENANT_ID]
     this.policy = options.policy ?? DEFAULT_POLICY
@@ -144,9 +192,12 @@ export class TranscriptionJobRunner {
    *
    * Every way this can go wrong produces a job in state `failed` carrying the
    * reason, not a thrown error - a refusal nobody sees would be the quiet
-   * deviation from a policy decision that this feature exists to prevent. The
-   * one exception is a tenant this runner does not serve: that is a
-   * configuration error of the caller, and it is raised before a row exists.
+   * deviation from a policy decision that this feature exists to prevent.
+   *
+   * Two things are raised instead, because there is no row to carry them: a
+   * tenant this runner does not serve (a configuration error of the caller,
+   * caught before anything is written) and a database that cannot take the
+   * job at all.
    */
   async enqueue(
     tenantId: string,
@@ -191,7 +242,16 @@ export class TranscriptionJobRunner {
 
     // The job carries the COPY, not the original: the original may be gone by
     // the time the job runs, and the service only accepts the copy's location.
-    const job = TranscriptionModel.createJob(tenantId, workspaceId, spooledPath, targetId)
+    let job: TranscriptionJob
+    try {
+      job = TranscriptionModel.createJob(tenantId, workspaceId, spooledPath, targetId)
+    } catch (error) {
+      // Without a row, nothing points at the copy: Task 9's deletion walks
+      // jobs, and this one does not exist. It would sit in the spool for ever.
+      await discard(spooledPath)
+      throw error
+    }
+
     if (declaredLevel !== undefined) this.declaredLevels.set(job.id, declaredLevel)
     this.audit(job, 'queued')
     return job
@@ -207,14 +267,16 @@ export class TranscriptionJobRunner {
    * timeout.
    */
   async tick(): Promise<void> {
-    for (const tenantId of this.tenantIds) {
-      for (const job of TranscriptionModel.listByState('running', tenantId)) {
-        if ((await this.observe(job)) === 'service-unavailable') return
+    return this.inOwnPass(async () => {
+      for (const tenantId of this.tenantIds) {
+        for (const job of TranscriptionModel.listByState('running', tenantId)) {
+          if ((await this.observe(job)) === 'service-unavailable') return
+        }
+        for (const job of TranscriptionModel.listByState('queued', tenantId)) {
+          if ((await this.start(job)) === 'service-unavailable') return
+        }
       }
-      for (const job of TranscriptionModel.listByState('queued', tenantId)) {
-        if ((await this.start(job)) === 'service-unavailable') return
-      }
-    }
+    })
   }
 
   /**
@@ -224,11 +286,29 @@ export class TranscriptionJobRunner {
    * alternative, leaving it `running`, would strand it for ever.
    */
   async resumeInterrupted(): Promise<void> {
-    for (const tenantId of this.tenantIds) {
-      for (const job of TranscriptionModel.listByState('running', tenantId)) {
-        this.requeue(job)
+    return this.inOwnPass(async () => {
+      for (const tenantId of this.tenantIds) {
+        for (const job of TranscriptionModel.listByState('running', tenantId)) {
+          this.requeue(job)
+        }
       }
-    }
+    })
+  }
+
+  /**
+   * Run `work` after every pass started before it, and never beside one.
+   *
+   * The caller still sees `work`'s own rejection - an unexpected error has to
+   * surface - but a rejected pass must not poison the chain for the passes
+   * behind it, hence the separate, swallowed tail.
+   */
+  private inOwnPass(work: () => Promise<void>): Promise<void> {
+    const pass = this.passes.then(work, work)
+    this.passes = pass.then(
+      () => undefined,
+      () => undefined
+    )
+    return pass
   }
 
   // ── One job's turn ─────────────────────────────────────────────
@@ -247,12 +327,14 @@ export class TranscriptionJobRunner {
     } catch (error) {
       if (error instanceof TranscriptionServiceUnreachableError) {
         // Nothing was handed over, nothing is lost: the job stays queued.
+        this.recordWaitReason(job, error.message)
         return 'service-unavailable'
       }
       if (error instanceof TranscriptionServiceError) {
-        // 503 means the models are not loaded yet. The service is there and
-        // will take the job later, so this is not a failure of the job.
-        if (error.status === HTTP_SERVICE_UNAVAILABLE) return 'service-unavailable'
+        if (isRetryableStatus(error.status)) {
+          this.recordWaitReason(job, error.message)
+          return 'service-unavailable'
+        }
         // Any other answer is a refusal of this request, and repeating the
         // same request will not change it.
         this.fail(job, error.message)
@@ -267,8 +349,10 @@ export class TranscriptionJobRunner {
     this.tracked.set(job.id, {
       serviceJobId: submitted.jobId,
       lastProgress: job.progress,
-      lastProgressAt: Date.now()
+      standstillMs: 0,
+      lastObservedAt: Date.now()
     })
+    // Clears any wait reason recorded while the service was unavailable.
     TranscriptionModel.setState(job.id, 'running')
     this.audit(job, 'running')
     return 'handled'
@@ -291,6 +375,7 @@ export class TranscriptionJobRunner {
         // Keep polling, do NOT submit again: the job is most likely still
         // running on the service, and a second submission would transcribe
         // the same audio twice.
+        this.recordWaitReason(job, error.message)
         return 'service-unavailable'
       }
       if (error instanceof TranscriptionServiceError) {
@@ -300,18 +385,32 @@ export class TranscriptionJobRunner {
           this.requeue(job)
           return 'handled'
         }
-        if (error.status === HTTP_SERVICE_UNAVAILABLE) return 'service-unavailable'
+        if (isRetryableStatus(error.status)) {
+          this.recordWaitReason(job, error.message)
+          return 'service-unavailable'
+        }
         this.fail(job, error.message)
         return 'handled'
       }
       throw error
     }
 
+    // The answer arrived, so whatever the job was waiting for is over.
+    this.clearWaitReason(job)
+
+    // One reading of the clock for both: two calls would drop the sliver
+    // between them out of the accounting.
+    const now = Date.now()
+    const gap = now - tracked.lastObservedAt
+    tracked.lastObservedAt = now
+
     if (status.progress !== tracked.lastProgress) {
       tracked.lastProgress = status.progress
-      tracked.lastProgressAt = Date.now()
+      tracked.standstillMs = 0
       // Stored as the service reports it (0..1), never rescaled.
       TranscriptionModel.setProgress(job.id, status.progress)
+    } else {
+      tracked.standstillMs += Math.min(gap, MAX_COUNTED_OBSERVATION_GAP_MS)
     }
 
     switch (status.state) {
@@ -332,8 +431,8 @@ export class TranscriptionJobRunner {
 
       case 'queued':
         // Waiting in the service's queue is not a standstill: its single
-        // worker may be busy with another job. Hold the clock at now.
-        tracked.lastProgressAt = Date.now()
+        // worker may be busy with another job.
+        tracked.standstillMs = 0
         return 'handled'
 
       case 'running':
@@ -342,11 +441,11 @@ export class TranscriptionJobRunner {
   }
 
   private giveUpOnStandstill(job: TranscriptionJob, tracked: TrackedJob): StepOutcome {
-    const standstillMs = Date.now() - tracked.lastProgressAt
-    if (standstillMs > this.progressStallTimeoutMs) {
+    if (tracked.standstillMs > this.progressStallTimeoutMs) {
       this.fail(
         job,
-        `Der Transkriptionsdienst meldet seit ${Math.round(standstillMs / 60_000)} Minuten ` +
+        'Der Transkriptionsdienst meldet seit ' +
+          `${Math.round(tracked.standstillMs / 60_000)} Minuten beobachteter Laufzeit ` +
           'keinen Fortschritt mehr; der Job wurde aufgegeben.'
       )
     }
@@ -375,6 +474,29 @@ export class TranscriptionJobRunner {
     // `updatedAt` is restated rather than carried over from `createJob`: the row
     // WAS touched again, and the model does not hand the written row back.
     return { ...job, state: 'failed', error: reason, updatedAt: Date.now() }
+  }
+
+  /**
+   * Say on the job WHY it is waiting, without moving it out of its state.
+   *
+   * A job that silently sits in the queue because the service is unreachable
+   * or the API key is not wired up yet looks identical to one that is simply
+   * next in line. There is no column for "why waiting", so the reason goes
+   * where the user already looks for it; the prefix keeps it readable as a
+   * wait rather than a failure. Any state change clears it again, so it cannot
+   * outlive the condition.
+   *
+   * No audit entry: nothing changed state, and the audit records state
+   * changes.
+   */
+  private recordWaitReason(job: TranscriptionJob, reason: string): void {
+    TranscriptionModel.setState(job.id, job.state, `Wartet: ${reason}`)
+  }
+
+  private clearWaitReason(job: TranscriptionJob): void {
+    // Only when there is something to clear - otherwise every poll of every
+    // running job would write a row for nothing.
+    if (job.error !== undefined) TranscriptionModel.setState(job.id, job.state)
   }
 
   private fail(job: TranscriptionJob, reason: string): void {
@@ -446,11 +568,27 @@ export class TranscriptionJobRunner {
 
   private async copyIntoSpool(audioPath: string): Promise<string> {
     const spoolDir = this.spoolDir
-    await fs.mkdir(spoolDir, { recursive: true })
+    // 0o700 on a directory this call creates: the spool holds personal audio,
+    // and `recursive: true` would otherwise take the default mode. An
+    // EXISTING directory is deliberately left alone - it may belong to a
+    // service account, and tightening it from here could lock the service out
+    // of its own spool.
+    await fs.mkdir(spoolDir, { recursive: true, mode: 0o700 })
     // A generated name, not the original one: two recordings called
     // "aufnahme.wav" must not overwrite each other in a shared directory.
     const target = path.join(spoolDir, `${randomUUID()}${safeExtension(audioPath)}`)
-    await fs.copyFile(audioPath, target)
+    try {
+      await fs.copyFile(audioPath, target)
+      // `copyFile` creates with 0o666 minus the umask; the audio itself must
+      // not be readable by other accounts even when the directory already
+      // existed and was looser.
+      await fs.chmod(target, 0o600)
+    } catch (error) {
+      // A copy that failed part-way leaves a truncated file behind that no row
+      // will ever point at, so nothing would clean it up later.
+      await discard(target)
+      throw error
+    }
     return target
   }
 
@@ -495,4 +633,35 @@ function safeExtension(audioPath: string): string {
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Remove a spool copy nothing points at. Best effort on purpose: every caller
+ * is already handling a failure and must not be derailed by a second one.
+ */
+async function discard(filePath: string): Promise<void> {
+  await fs.rm(filePath, { force: true }).catch(() => undefined)
+}
+
+/**
+ * Whether an answered-but-refused request says "not now" rather than "no".
+ * Such a status leaves the job in its state to be tried again; everything else
+ * fails it, because repeating the identical request would not change it.
+ *
+ * - **401/403** - the service wants a key. Nobody wires one up before Task 7,
+ *   so until then EVERY job would die on the first pass against a service
+ *   that requires one. A missing key is a configuration problem of the
+ *   installation, not a property of the recording.
+ * - **503** - models not loaded yet.
+ * - **2xx** - the client reports an unusable BODY by wrapping it in a
+ *   `TranscriptionServiceError` that carries the ANSWER's own 2xx status
+ *   (transcription-http-client.ts). The service accepted the request and is
+ *   working: one garbled poll answer must not fail a job that has been
+ *   computing for forty minutes, and a garbled submit answer must not fail a
+ *   row for a job the service has already taken.
+ */
+function isRetryableStatus(status: number): boolean {
+  if (status === HTTP_UNAUTHORIZED || status === HTTP_FORBIDDEN) return true
+  if (status === HTTP_SERVICE_UNAVAILABLE) return true
+  return status >= 200 && status < 300
 }

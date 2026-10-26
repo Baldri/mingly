@@ -103,6 +103,27 @@ describe('ActivityLogger', () => {
       expect(values[8]).toBe('tenant-a')
     })
 
+    it('does not throw when details cannot be serialised', () => {
+      // Serialising `details` happens inside the same swallow as the insert:
+      // a circular object (or a BigInt) must not take the caller down with it.
+      const circular: Record<string, unknown> = { action: 'transcription.queued' }
+      circular.self = circular
+
+      expect(() =>
+        logger.log({
+          actorType: 'system',
+          actorId: 'transcription-job-runner',
+          action: 'transcription.queued',
+          entityType: 'transcription_job',
+          entityId: 'job_1',
+          tenantId: 'tenant-a',
+          details: circular
+        })
+      ).not.toThrow()
+
+      expect(dbRun).not.toHaveBeenCalled()
+    })
+
     it('should not throw on database error', () => {
       ;(dbRun as ReturnType<typeof vi.fn>).mockImplementation(() => {
         throw new Error('DB write failed')
