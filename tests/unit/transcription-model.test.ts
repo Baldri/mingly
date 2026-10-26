@@ -157,6 +157,82 @@ describe('TranscriptionModel', () => {
     })
   })
 
+  describe('getJob', () => {
+    it('liefert den Job des eigenen Mandanten in jedem Zustand', () => {
+      const job = TranscriptionModel.createJob('tenant-a', 'ws1', '/a.wav', 'local')
+      TranscriptionModel.setState(job.id, 'running')
+
+      const found = TranscriptionModel.getJob(job.id, 'tenant-a')
+
+      expect(found?.state).toBe('running')
+      expect(found?.workspaceId).toBe('ws1')
+      expect(found?.targetId).toBe('local')
+    })
+
+    it('liefert null für den Job eines anderen Mandanten', () => {
+      const job = TranscriptionModel.createJob('tenant-a', 'ws1', '/a.wav', 'local')
+
+      // Positive control: the same id IS found for its own tenant, so the null
+      // below is the tenant filter and not a broken query.
+      expect(TranscriptionModel.getJob(job.id, 'tenant-a')).not.toBeNull()
+      expect(TranscriptionModel.getJob(job.id, 'tenant-b')).toBeNull()
+    })
+
+    it('liefert null für eine unbekannte Kennung', () => {
+      expect(TranscriptionModel.getJob('gibt-es-nicht', 'tenant-a')).toBeNull()
+    })
+  })
+
+  describe('compareAndSetState', () => {
+    it('wechselt den Zustand, wenn der erwartete noch gilt', () => {
+      const job = TranscriptionModel.createJob('tenant-a', 'ws1', '/a.wav', 'local')
+
+      expect(TranscriptionModel.compareAndSetState(job.id, 'queued', 'cancelled')).toBe(true)
+      expect(TranscriptionModel.getJob(job.id, 'tenant-a')?.state).toBe('cancelled')
+    })
+
+    it('schreibt nicht, wenn der Zustand sich inzwischen geändert hat', () => {
+      const job = TranscriptionModel.createJob('tenant-a', 'ws1', '/a.wav', 'local')
+      TranscriptionModel.setState(job.id, 'running')
+
+      expect(TranscriptionModel.compareAndSetState(job.id, 'queued', 'done')).toBe(false)
+      expect(TranscriptionModel.getJob(job.id, 'tenant-a')?.state).toBe('running')
+
+      // Positive control: with the state the row actually has, the same call writes.
+      expect(TranscriptionModel.compareAndSetState(job.id, 'running', 'done')).toBe(true)
+      expect(TranscriptionModel.getJob(job.id, 'tenant-a')?.state).toBe('done')
+    })
+
+    it('schreibt nicht für eine unbekannte Kennung', () => {
+      TranscriptionModel.createJob('tenant-a', 'ws1', '/a.wav', 'local')
+
+      expect(TranscriptionModel.compareAndSetState('gibt-es-nicht', 'queued', 'done')).toBe(false)
+    })
+
+    it('setzt und löscht die Fehlermeldung wie setState', () => {
+      const job = TranscriptionModel.createJob('tenant-a', 'ws1', '/a.wav', 'local')
+
+      TranscriptionModel.compareAndSetState(job.id, 'queued', 'failed', 'Audiodatei ist leer')
+      expect(TranscriptionModel.getJob(job.id, 'tenant-a')?.error).toBe('Audiodatei ist leer')
+
+      TranscriptionModel.compareAndSetState(job.id, 'failed', 'queued')
+      expect(TranscriptionModel.getJob(job.id, 'tenant-a')?.error).toBeUndefined()
+    })
+
+    it('führt updatedAt nur beim erfolgreichen Wechsel nach', () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(1000)
+      const job = TranscriptionModel.createJob('tenant-a', 'ws1', '/a.wav', 'local')
+
+      vi.setSystemTime(5000)
+      expect(TranscriptionModel.compareAndSetState(job.id, 'running', 'done')).toBe(false)
+      expect(TranscriptionModel.getJob(job.id, 'tenant-a')?.updatedAt).toBe(1000)
+
+      expect(TranscriptionModel.compareAndSetState(job.id, 'queued', 'running')).toBe(true)
+      expect(TranscriptionModel.getJob(job.id, 'tenant-a')?.updatedAt).toBe(5000)
+    })
+  })
+
   describe('setProgress', () => {
     it('speichert den Fortschritt und führt updatedAt nach', () => {
       vi.useFakeTimers({ toFake: ['Date'] })

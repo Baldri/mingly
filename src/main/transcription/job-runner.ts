@@ -122,6 +122,30 @@ const HTTP_TOO_MANY_REQUESTS = 429
 const AUDIT_ACTOR_ID = 'transcription-job-runner'
 const AUDIT_ENTITY_TYPE = 'transcription_job'
 
+interface AuditActor {
+  actorType: string
+  actorId: string
+}
+
+/** Every state change a pass makes is the runner's own. */
+const SYSTEM_ACTOR: AuditActor = { actorType: 'system', actorId: AUDIT_ACTOR_ID }
+
+/**
+ * A cancellation is somebody's decision, not the runner's. Stage 1 has no user
+ * identity, and `local` is what the request guard writes for the same reason -
+ * one installation, one person, no id to invent.
+ */
+const LOCAL_USER_ACTOR: AuditActor = { actorType: 'user', actorId: 'local' }
+
+/** States a job can still be cancelled out of; the other three are over. */
+const CANCELLABLE_STATES: readonly TranscriptionJobState[] = ['queued', 'running']
+
+/** What `cancel` did, in a form the caller can act on without parsing a message. */
+export type TranscriptionCancelOutcome =
+  | { cancelled: true }
+  | { cancelled: false; reason: 'not-found' }
+  | { cancelled: false; reason: 'not-cancellable'; state: TranscriptionJobState }
+
 /** What one job's turn in `tick` ended with. */
 type StepOutcome = 'handled' | 'service-unavailable'
 
@@ -298,6 +322,39 @@ export class TranscriptionJobRunner {
   }
 
   /**
+   * Cancel a job the user no longer wants, and say what happened.
+   *
+   * Runs OUTSIDE the pass chain on purpose. A cancellation that had to wait
+   * for a 30-second submit request to come back would be useless, and it does
+   * not have to: every state change a pass makes is a compare-and-swap on the
+   * state the pass read, so whichever of the two lands second loses - and
+   * finds out. Serialising the cancel behind the passes would trade a lost
+   * write for a slow one.
+   *
+   * What it does NOT do is stop a transcription the service already started:
+   * the service has no cancel endpoint in stage 1, so it finishes the job into
+   * the void. Nothing here polls it again and no transcript is stored.
+   */
+  cancel(tenantId: string, jobId: string): TranscriptionCancelOutcome {
+    const job = TranscriptionModel.getJob(jobId, tenantId)
+    if (job === null) return { cancelled: false, reason: 'not-found' }
+    if (!CANCELLABLE_STATES.includes(job.state)) {
+      return { cancelled: false, reason: 'not-cancellable', state: job.state }
+    }
+
+    if (!TranscriptionModel.compareAndSetState(job.id, job.state, 'cancelled')) {
+      // A pass changed the state between the read above and here. Report the
+      // state the job now HAS, read again rather than guessed.
+      const current = TranscriptionModel.getJob(jobId, tenantId)
+      return { cancelled: false, reason: 'not-cancellable', state: current?.state ?? job.state }
+    }
+
+    this.audit(job, 'cancelled', LOCAL_USER_ACTOR)
+    this.forget(job.id)
+    return { cancelled: true }
+  }
+
+  /**
    * Run `work` after every pass started before it, and never beside one.
    *
    * The caller still sees `work`'s own rejection - an unexpected error has to
@@ -348,15 +405,23 @@ export class TranscriptionJobRunner {
       throw error
     }
 
+    // Clears any wait reason recorded while the service was unavailable - and
+    // only if the job is still queued. The submit above took up to 30 seconds,
+    // and a cancellation that arrived inside that window must not be turned
+    // back into a running job. The audio HAS been handed over; the service
+    // will transcribe it into the void, which is the price of there being no
+    // cancel endpoint. Nothing polls it, nothing is stored.
+    if (!this.transition(job, 'running')) {
+      this.forget(job.id)
+      return 'handled'
+    }
+
     this.tracked.set(job.id, {
       serviceJobId: submitted.jobId,
       lastProgress: job.progress,
       standstillMs: 0,
       lastObservedAt: Date.now()
     })
-    // Clears any wait reason recorded while the service was unavailable.
-    TranscriptionModel.setState(job.id, 'running')
-    this.audit(job, 'running')
     return 'handled'
   }
 
@@ -397,6 +462,15 @@ export class TranscriptionJobRunner {
       throw error
     }
 
+    // The poll was an await, so the row may have been cancelled while it was
+    // in flight. Then nothing below is worth writing - not the progress
+    // either - and the handle goes. Everything after this point is
+    // synchronous, so this reading cannot go stale before the writes happen.
+    if (TranscriptionModel.getJob(job.id, job.tenantId)?.state !== 'running') {
+      this.forget(job.id)
+      return 'handled'
+    }
+
     // The answer arrived, so whatever the job was waiting for is over.
     this.clearWaitReason(job)
 
@@ -417,9 +491,12 @@ export class TranscriptionJobRunner {
 
     switch (status.state) {
       case 'done':
-        TranscriptionModel.saveSegments(job.id, status.segments)
-        TranscriptionModel.setState(job.id, 'done')
-        this.audit(job, 'done')
+        // State first, transcript second: the transition can be refused, and
+        // a cancelled job must not end up with a stored transcript. Both
+        // writes are synchronous, so no reader sees the row in between.
+        if (this.transition(job, 'done')) {
+          TranscriptionModel.saveSegments(job.id, status.segments)
+        }
         this.forget(job.id)
         return 'handled'
 
@@ -506,9 +583,26 @@ export class TranscriptionJobRunner {
     if (job.error !== undefined) TranscriptionModel.setError(job.id, null)
   }
 
+  /**
+   * Write one state change of this pass - but only if the job is still in the
+   * state the pass read, and say whether that was the case.
+   *
+   * `job.state` is the expected value on purpose: it is what the pass saw when
+   * it picked the job up, and every decision it made rests on it. A refused
+   * transition means someone else got there first (a cancellation through
+   * `cancel`), and then this pass has nothing more to say about the job - no
+   * state, and no audit entry either, because nothing changed.
+   */
+  private transition(job: TranscriptionJob, state: TranscriptionJobState, error?: string): boolean {
+    if (!TranscriptionModel.compareAndSetState(job.id, job.state, state, error)) return false
+    this.audit(job, state)
+    return true
+  }
+
   private fail(job: TranscriptionJob, reason: string): void {
-    TranscriptionModel.setState(job.id, 'failed', reason)
-    this.audit(job, 'failed')
+    this.transition(job, 'failed', reason)
+    // The handle goes either way: this pass is done with the job, whether the
+    // failure was recorded or a cancellation got there first.
     this.forget(job.id)
   }
 
@@ -516,8 +610,7 @@ export class TranscriptionJobRunner {
     this.tracked.delete(job.id)
     // Without an error argument any earlier message is cleared - the job is
     // waiting again, not failed.
-    TranscriptionModel.setState(job.id, 'queued')
-    this.audit(job, 'queued')
+    this.transition(job, 'queued')
   }
 
   private forget(jobId: string): void {
@@ -537,10 +630,14 @@ export class TranscriptionJobRunner {
    * explicitly, not by column default: a later multi-tenant stage cannot
    * reconstruct it afterwards.
    */
-  private audit(job: TranscriptionJob, state: TranscriptionJobState): void {
+  private audit(
+    job: TranscriptionJob,
+    state: TranscriptionJobState,
+    actor: AuditActor = SYSTEM_ACTOR
+  ): void {
     getActivityLogger().log({
-      actorType: 'system',
-      actorId: AUDIT_ACTOR_ID,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
       action: `transcription.${state}`,
       entityType: AUDIT_ENTITY_TYPE,
       entityId: job.id,
@@ -716,4 +813,25 @@ function isRetryableStatus(status: number): boolean {
   if (status === HTTP_UNAUTHORIZED || status === HTTP_FORBIDDEN) return true
   if (status === HTTP_TOO_MANY_REQUESTS || status >= 500) return true
   return status >= 200 && status < 300
+}
+
+// ── Singleton ────────────────────────────────────────────────────
+
+/**
+ * The one runner of this process.
+ *
+ * A singleton is not convenience here, it is correctness: every handle to a
+ * job the service is working on lives in this instance's `tracked` map and is
+ * deliberately not persisted. A second instance would read those jobs as
+ * `running` without a handle, put them back into the queue and hand the same
+ * audio over a second time - the double transcription the whole state machine
+ * is built to avoid.
+ */
+let runnerInstance: TranscriptionJobRunner | null = null
+
+export function getTranscriptionJobRunner(): TranscriptionJobRunner {
+  if (!runnerInstance) {
+    runnerInstance = new TranscriptionJobRunner()
+  }
+  return runnerInstance
 }

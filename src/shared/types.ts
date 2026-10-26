@@ -391,6 +391,7 @@ export type GatedFeature =
   | 'comparison'            // Pro+: Side-by-side model comparison
   | 'unlimited_conversations' // Pro+: Unlimited conversations per day
   | 'advanced_rag'           // Pro+: Vector DB RAG (Qdrant, ChromaDB, Weaviate, Pinecone)
+  | 'transcription'          // Pro+: Audio transcription via the local transcription service
   | 'team_workspaces'       // Team+: Team workspaces
   | 'shared_rag'            // Team+: Shared RAG knowledge base
   | 'team_rbac'             // Team+: Team RBAC
@@ -416,6 +417,16 @@ export interface TierLimits {
   maxTemplates: number             // 0 = unlimited
   builtinTemplatesOnly: boolean
   maxComparisonModels: number      // 0 = disabled
+  /**
+   * Minutes of AUDIO per month this tier may transcribe — not a number of
+   * files. Compute time is the cost driver for transcription, which is what
+   * sets it apart from the rest of Mingly (design section 9).
+   *
+   * 'unlimited' is spelled out rather than encoded as the 0 the two limits
+   * above use for it: 0 has to mean "none at all" here, because the Free tier
+   * has no transcription, and one field cannot carry both meanings.
+   */
+  maxTranscriptionMinutesPerMonth: number | 'unlimited'
 }
 
 // Comparison Types
@@ -723,4 +734,10 @@ export const IPC_CHANNELS = {
   PRIVACY_NER_STATUS: 'privacy:ner-status',
   PRIVACY_NER_DOWNLOAD: 'privacy:ner-download',
   PRIVACY_NER_DELETE: 'privacy:ner-delete',
+
+  // Transcription (audio → transcript via the local transcription service)
+  TRANSCRIPTION_SUBMIT: 'transcription:submit',
+  TRANSCRIPTION_STATUS: 'transcription:status',
+  TRANSCRIPTION_SEGMENTS: 'transcription:segments',
+  TRANSCRIPTION_CANCEL: 'transcription:cancel',
 } as const

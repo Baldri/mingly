@@ -746,6 +746,90 @@ describe('TranscriptionJobRunner', () => {
     expect(stored.error).toMatch(/^Wartet: /)
   })
 
+  // ── Ruling 34: a cancellation must not be overwritten ──────────
+
+  it('macht aus einer Stornierung kein running, wenn die Einreichung danach gelingt', async () => {
+    // The dangerous half of the window above: the submit SUCCEEDS. Writing
+    // 'running' from the state read before the request would resurrect a job
+    // the user cancelled, and the runner would then poll it to completion.
+    const runner = makeRunner()
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+
+    let resolveSubmit: ((value: { jobId: string }) => void) | undefined
+    client.submitImpl = () =>
+      new Promise<{ jobId: string }>((resolve) => {
+        resolveSubmit = resolve
+      })
+
+    const pass = runner.tick()
+    for (let spin = 0; spin < 50 && resolveSubmit === undefined; spin++) await Promise.resolve()
+    expect(resolveSubmit).toBeDefined()
+
+    TranscriptionModel.setState(job.id, 'cancelled')
+    resolveSubmit?.({ jobId: 'svc-1' })
+    await pass
+
+    expect(requireJob('tenant-a', job.id).state).toBe('cancelled')
+    // The audio HAD been handed over - that cannot be taken back, and the
+    // assertion is here so the one above cannot pass on a submit that never
+    // happened.
+    expect(client.submitted).toHaveLength(1)
+  })
+
+  it('macht aus einer Stornierung kein done, wenn der Dienst danach ein Ergebnis liefert', async () => {
+    const runner = makeRunner()
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+    await runner.tick()
+    expect(requireJob('tenant-a', job.id).state).toBe('running')
+
+    let resolvePoll: ((value: TranscriptionJobStatus) => void) | undefined
+    client.pollImpl = () =>
+      new Promise<TranscriptionJobStatus>((resolve) => {
+        resolvePoll = resolve
+      })
+
+    const pass = runner.tick()
+    for (let spin = 0; spin < 50 && resolvePoll === undefined; spin++) await Promise.resolve()
+    expect(resolvePoll).toBeDefined()
+
+    TranscriptionModel.setState(job.id, 'cancelled')
+    resolvePoll?.(
+      doneStatus([
+        { jobId: 'svc-1', index: 0, startMs: 0, endMs: 1000, speaker: 'SPEAKER_00', text: 'Guten Tag' }
+      ])
+    )
+    await pass
+
+    expect(requireJob('tenant-a', job.id).state).toBe('cancelled')
+    // No transcript for a job the user cancelled.
+    expect(TranscriptionModel.getSegments(job.id, 'tenant-a')).toEqual([])
+  })
+
+  it('stellt einen stornierten Job nach einem 404 nicht zurueck in die Warteschlange', async () => {
+    const runner = makeRunner()
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+    await runner.tick()
+
+    let rejectPoll: ((reason: Error) => void) | undefined
+    client.pollImpl = () =>
+      new Promise<TranscriptionJobStatus>((_resolve, reject) => {
+        rejectPoll = reject
+      })
+
+    const pass = runner.tick()
+    for (let spin = 0; spin < 50 && rejectPoll === undefined; spin++) await Promise.resolve()
+    expect(rejectPoll).toBeDefined()
+
+    TranscriptionModel.setState(job.id, 'cancelled')
+    rejectPoll?.(new TranscriptionServiceError('unknown job', 404))
+    await pass
+
+    // A requeue here would transcribe the cancelled recording all over again.
+    expect(requireJob('tenant-a', job.id).state).toBe('cancelled')
+    await runner.tick()
+    expect(client.submitted).toHaveLength(1)
+  })
+
   it('laesst den Job scheitern, wenn der Dienst die Anfrage ablehnt', async () => {
     const runner = makeRunner()
     client.submitImpl = () =>

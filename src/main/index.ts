@@ -9,6 +9,10 @@ import { getDocMindIntegration } from './integrations/docmind-integration'
 import { getAutoUpdater } from './updater/auto-updater'
 import { applyEnvFile } from './config/env-file'
 import { applyInfomaniakConfig, resolveInfomaniakProductId } from './config/infomaniak-config'
+import {
+  startTranscriptionScheduler,
+  stopTranscriptionScheduler
+} from './ipc/transcription-handlers'
 import { SimpleStore } from './utils/simple-store'
 import { createLogger } from '../shared/logger'
 
@@ -133,6 +137,11 @@ app.whenReady().then(async () => {
     logger.warn('Could not apply the Infomaniak configuration', { error: String(error) })
   }
 
+  // Work the transcription queue: resume jobs the last run left running, then
+  // one pass after each previous one has finished. Nothing else would ever
+  // call tick(), so without this a submitted recording sits in the queue.
+  startTranscriptionScheduler()
+
   // Initialize deployment manager (auto-starts server if in server mode)
   try {
     await getDeploymentManager().initialize()
@@ -195,6 +204,9 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', async () => {
+  // Before closeDatabase below: a pass scheduled after it would find no
+  // database.
+  stopTranscriptionScheduler()
   getAutoUpdater().shutdown()
   getLocalAIBridge().shutdown()
   await getDocMindIntegration().disconnectMCP()

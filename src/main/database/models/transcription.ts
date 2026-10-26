@@ -70,12 +70,55 @@ export class TranscriptionModel {
     }
   }
 
+  /** One job of one tenant, in whatever state. `null` for another tenant's job. */
+  static getJob(id: string, tenantId: string): TranscriptionJob | null {
+    const row = dbGet(
+      `SELECT ${JOB_COLUMNS} FROM transcription_jobs WHERE id = ? AND tenant_id = ?`,
+      [id, tenantId]
+    )
+
+    return row === null ? null : TranscriptionModel.rowToJob(row)
+  }
+
   /** Move a job to a new state. Without `error` any previous error message is cleared. */
   static setState(id: string, state: TranscriptionJobState, error?: string): void {
     dbRun(
       'UPDATE transcription_jobs SET state = ?, error = ?, updated_at = ? WHERE id = ?',
       [state, error ?? null, Date.now(), id]
     )
+  }
+
+  /**
+   * Move a job to a new state ONLY IF it is still in the state the caller saw,
+   * and say whether that happened.
+   *
+   * This is what keeps a cancellation from being overwritten. Every state
+   * change a job runner makes is decided before an await - a submit request
+   * takes up to 30 seconds - and a cancellation arriving inside that window
+   * would be silently reverted by an unconditional `setState`. With the state
+   * in the WHERE clause, whichever write lands second loses and its caller
+   * finds out, instead of the row quietly ending up in the wrong state.
+   *
+   * `error` behaves exactly as in `setState`: set when given, cleared when not.
+   * A refused transition writes nothing at all, `updated_at` included.
+   */
+  static compareAndSetState(
+    id: string,
+    expectedState: TranscriptionJobState,
+    state: TranscriptionJobState,
+    error?: string
+  ): boolean {
+    dbRun(
+      'UPDATE transcription_jobs SET state = ?, error = ?, updated_at = ? WHERE id = ? AND state = ?',
+      [state, error ?? null, Date.now(), id, expectedState]
+    )
+
+    // `changes()` belongs to the statement above: the UPDATE is the last
+    // INSERT/UPDATE/DELETE on this connection, and a SELECT does not reset it.
+    // sql.js exposes no rows-modified count on dbRun, and asking SQLite is
+    // more honest than reading the row back and guessing who wrote it.
+    const changed = dbGet('SELECT changes() AS changed')
+    return Number(changed?.changed ?? 0) > 0
   }
 
   /**
