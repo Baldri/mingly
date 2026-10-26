@@ -328,6 +328,32 @@ describe('Transkriptions-IPC', () => {
     expect(failed.job?.waitingReason).toBeUndefined()
   })
 
+  it('nennt einen abgeschlossenen oder stornierten Job nicht wartend', async () => {
+    const cancelled = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/a.wav', 'local')
+    TranscriptionModel.setState(cancelled.id, 'cancelled')
+    // A wait reason that landed just before the state changed; the row keeps it.
+    TranscriptionModel.setError(cancelled.id, 'Wartet: Transkriptionsdienst nicht erreichbar')
+    const done = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/b.wav', 'local')
+    TranscriptionModel.setState(done.id, 'done')
+    TranscriptionModel.setError(done.id, 'Wartet: Transkriptionsdienst nicht erreichbar')
+
+    const cancelledView = (await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_STATUS, cancelled.id)).job
+    const doneView = (await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_STATUS, done.id)).job
+
+    // Nothing is waiting for anything any more; both fields stay empty.
+    expect(cancelledView?.waitingReason).toBeUndefined()
+    expect(cancelledView?.failureReason).toBeUndefined()
+    expect(doneView?.waitingReason).toBeUndefined()
+    expect(doneView?.failureReason).toBeUndefined()
+
+    // Positive control: the identical reason on a job that IS waiting shows up.
+    const queued = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/c.wav', 'local')
+    TranscriptionModel.setError(queued.id, 'Wartet: Transkriptionsdienst nicht erreichbar')
+    const queuedView = (await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_STATUS, queued.id)).job
+
+    expect(queuedView?.waitingReason).toBe('Transkriptionsdienst nicht erreichbar')
+  })
+
   // ── Cancellation ───────────────────────────────────────────────
 
   it('storniert einen wartenden Job', async () => {
@@ -413,18 +439,26 @@ describe('Transkriptions-IPC', () => {
     expect(accepted.job?.state).toBe('queued')
   })
 
-  it('verweigert einen Pfad mit ../', async () => {
-    const target = writeOutside('heimlich.wav')
-    // Spelled out, NOT through path.join: join normalises the '..' away, and
-    // then this would test the confinement check again instead of the
-    // traversal check. An attacker sends the unnormalised string.
-    const traversal = `${grantedDir}/../../${path.basename(target)}`
+  it('verweigert ein ..-Segment, auch wenn die Datei in der Freigabe liegt', async () => {
+    // Isolates the traversal check from the containment check: the resolved
+    // path lands INSIDE the granted directory and carries an allowed
+    // extension, so containment and extension both accept it and only
+    // validateFilePath can refuse. Spelled out rather than built with
+    // path.join, which would normalise the '..' away before the handler sees
+    // it - the unnormalised string is what an attacker sends.
+    const inside = writeAudio('legitim.wav')
+    fs.mkdirSync(path.join(grantedDir, 'unterordner'), { recursive: true })
+    const traversal = `${grantedDir}/unterordner/../${path.basename(inside)}`
 
     const refused = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', traversal)
 
-    expect(refused.success).toBe(false)
     expect(traversal).toContain('../')
+    expect(path.resolve(traversal)).toBe(inside)
+    expect(refused.success).toBe(false)
     expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
+
+    // Positive control: the same file submitted by its plain name is accepted.
+    expect((await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', inside)).success).toBe(true)
   })
 
   it('verweigert einen Symlink im freigegebenen Verzeichnis, der hinausfuehrt', async () => {
@@ -451,14 +485,13 @@ describe('Transkriptions-IPC', () => {
     expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
   })
 
-  // ── Ruling 35: nicht jede Freigabe ist eine Quelle ─────────────
+  // ── Ruling 35: not every grant is a source ─────────────────────
   //
-  // Eine Allowlist ist nur so stark wie der schwaechste Weg, auf dem ein
-  // Eintrag hineinkommt. FILE_ACCESS_ADD_NETWORK_SHARE nimmt die Konfiguration
-  // ungeprueft vom Renderer und `addNetworkShare` macht daraus eine Freigabe
-  // mit `recursive: true` - ohne Dialog, ohne Bestaetigung, ohne Pruefung, ob
-  // der Pfad ueberhaupt ein Mountpoint ist. Der Renderer kann sich damit
-  // selbst `/` freigeben.
+  // An allowlist is only as strong as the weakest way an entry gets into it.
+  // FILE_ACCESS_ADD_NETWORK_SHARE takes its configuration from the renderer
+  // unchecked, and `addNetworkShare` turns it into a grant with
+  // `recursive: true` - no dialog, no confirmation, and no check that the path
+  // is a mount point at all. A renderer can grant itself `/` that way.
 
   it('nimmt ein Netzlaufwerk nicht als Aufnahmequelle an, obwohl es freigegeben ist', async () => {
     const onShare = writeAudioIn(networkShareDir, 'vom-netzlaufwerk.wav')
@@ -468,9 +501,9 @@ describe('Transkriptions-IPC', () => {
     expect(refused.success).toBe(false)
     expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
 
-    // Positivkontrolle im selben Lauf: die per Dialog freigegebene Quelle
-    // bleibt eine Quelle - die Verweigerung oben ist die Herkunft, nicht ein
-    // Handler, der alles ablehnt.
+    // Positive control in the same run: the dialog-granted source stays a
+    // source - so the refusal above is the grant's origin and not a handler
+    // that refuses everything.
     const fromDialog = writeAudio('aus-dem-dialog.wav')
     const accepted = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', fromDialog)
 
@@ -486,7 +519,7 @@ describe('Transkriptions-IPC', () => {
     expect(refused.success).toBe(false)
     expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
 
-    // Positivkontrolle: dieselbe Datei in einem Lese-Verzeichnis geht durch.
+    // Positive control: the same file in a readable directory goes through.
     const readable = writeAudio('lesbar.wav')
     expect((await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', readable)).success).toBe(true)
   })
@@ -518,6 +551,27 @@ describe('Transkriptions-IPC', () => {
   })
 
   // ── Ruling 22: the API key reaches the service ──────────────────
+
+  it('verweigert einen unbrauchbaren Schluessel beim Setzen, ohne den Wert zu nennen', () => {
+    // A key with characters a header cannot carry used to get as far as the
+    // first request, where the client throws a plain Error - which the runner
+    // rethrows, which aborts the whole pass and lands in a log warning. The
+    // job row then says nothing at all. It fails here instead, once, visibly.
+    const malformed = 'schluessel\nmit-zeilenumbruch'
+
+    expect(() => applyTranscriptionApiKey(malformed)).toThrow(/TRANSCRIPTION_API_KEY/)
+    try {
+      applyTranscriptionApiKey(malformed)
+      expect.unreachable('a malformed key must not be accepted')
+    } catch (error) {
+      // The message is logged and shown; the key must not travel with it.
+      expect((error as Error).message).not.toContain('schluessel')
+      expect((error as Error).message).not.toContain('zeilenumbruch')
+    }
+
+    // Positive control: a usable key still goes through the same function.
+    expect(() => applyTranscriptionApiKey('schluessel-4711')).not.toThrow()
+  })
 
   it('schickt den Schluessel aus TRANSCRIPTION_API_KEY an den Dienst', async () => {
     const service = await startFakeService()
@@ -554,6 +608,27 @@ describe('Transkriptions-IPC', () => {
     await vi.advanceTimersByTimeAsync(1)
 
     expect(updateConfig).toHaveBeenCalledWith({ apiKey: 'schluessel-vor-dem-durchlauf' })
+  })
+
+  it('arbeitet die Warteschlange weiter, wenn der konfigurierte Schluessel unbrauchbar ist', async () => {
+    // The point of I1: an unusable key is an operator's problem, not a reason
+    // to stop working the queue. Passes keep running; the request then gets a
+    // 401, which the runner records as a visible wait reason on the job.
+    vi.useFakeTimers()
+    vi.stubEnv('TRANSCRIPTION_API_KEY', 'kaputter\nschluessel')
+    let ticks = 0
+    const runner = {
+      resumeInterrupted: () => Promise.resolve(),
+      tick: (): Promise<void> => {
+        ticks += 1
+        return Promise.resolve()
+      }
+    }
+
+    startTranscriptionScheduler({ intervalMs: 10, runner })
+    await vi.advanceTimersByTimeAsync(25)
+
+    expect(ticks).toBeGreaterThan(1)
   })
 
   // ── Ruling 31: the next pass is scheduled after the previous one ──
@@ -610,6 +685,54 @@ describe('Transkriptions-IPC', () => {
 
     await vi.advanceTimersByTimeAsync(10)
     expect(calls).toEqual(['resume', 'tick', 'tick'])
+  })
+
+  it('laesst eine gestoppte Kette den Taktgeber nicht uebernehmen', async () => {
+    // Stop while a pass is in flight, start again, then let the old pass
+    // finish. With a single module-level flag the old chain sees "running"
+    // again, schedules its own successor and overwrites the new chain's timer
+    // handle: two live chains, only one of them cancellable.
+    vi.useFakeTimers()
+    let releaseOld: () => void = () => undefined
+    let oldTicks = 0
+    let newTicks = 0
+    const oldRunner = {
+      resumeInterrupted: () => Promise.resolve(),
+      tick: (): Promise<void> => {
+        oldTicks += 1
+        return new Promise<void>((resolve) => {
+          releaseOld = resolve
+        })
+      }
+    }
+    const newRunner = {
+      resumeInterrupted: () => Promise.resolve(),
+      tick: (): Promise<void> => {
+        newTicks += 1
+        return Promise.resolve()
+      }
+    }
+
+    startTranscriptionScheduler({ intervalMs: 10, runner: oldRunner })
+    await vi.advanceTimersByTimeAsync(1)
+    expect(oldTicks).toBe(1)
+
+    stopTranscriptionScheduler()
+    startTranscriptionScheduler({ intervalMs: 10, runner: newRunner })
+    releaseOld()
+    await vi.advanceTimersByTimeAsync(100)
+
+    // The old chain ran once and never again; the new one owns the clock.
+    expect(oldTicks).toBe(1)
+    expect(newTicks).toBeGreaterThan(1)
+
+    // And the new chain is the one a stop can actually cancel.
+    stopTranscriptionScheduler()
+    const afterStop = newTicks
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(newTicks).toBe(afterStop)
+    expect(oldTicks).toBe(1)
   })
 
   it('hoert nach stopTranscriptionScheduler auf', async () => {

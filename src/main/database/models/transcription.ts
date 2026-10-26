@@ -1,7 +1,11 @@
 import { dbRun, dbAll, dbGet } from '../index'
 import { generateId } from '../../utils/id-generator'
+import type { TranscriptionJobState, TranscriptionSegment } from '../../../shared/types'
 
-export type TranscriptionJobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
+// Defined in src/shared/types.ts, because the renderer renders them and must
+// not import from src/main; re-exported here so this model stays the one
+// import site the main process already uses for them.
+export type { TranscriptionJobState, TranscriptionSegment }
 
 export interface TranscriptionJob {
   id: string
@@ -27,15 +31,6 @@ export interface TranscriptionJob {
   error?: string
   createdAt: number
   updatedAt: number
-}
-
-export interface TranscriptionSegment {
-  jobId: string
-  index: number
-  startMs: number
-  endMs: number
-  speaker: string
-  text: string
 }
 
 const JOB_COLUMNS =

@@ -843,6 +843,34 @@ describe('TranscriptionJobRunner', () => {
     expect(stored.error).toContain('Audio file is not usable')
   })
 
+  // ── One job's surprise is not the queue's outage ───────────────
+
+  it('arbeitet die uebrigen Jobs weiter, wenn ein Job unerwartet wirft', async () => {
+    // An unexpected error - not one of the two named service errors - used to
+    // propagate out of the pass, so every job behind it was skipped and
+    // nothing was recorded on any row. The client raises a plain Error for an
+    // unusable API key, which made this reachable for the whole queue.
+    const runner = makeRunner()
+    const first = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+    const second = await runner.enqueue('tenant-a', 'ws1', writeAudio('b.wav', 64), 'critical')
+
+    client.submitImpl = (audioPath) =>
+      path.basename(audioPath) === path.basename(requireJob('tenant-a', first.id).audioPath)
+        ? Promise.reject(new Error('Der API-Schluessel enthaelt ungueltige Zeichen'))
+        : Promise.resolve({ jobId: 'svc-2' })
+
+    await runner.tick()
+
+    // The job that threw carries a visible reason and stays in the queue.
+    const stuck = requireJob('tenant-a', first.id)
+    expect(stuck.state).toBe('queued')
+    expect(stuck.error).toMatch(/^Wartet: /)
+
+    // And the job behind it was handled in the SAME pass.
+    expect(requireJob('tenant-a', second.id).state).toBe('running')
+    expect(client.submitted).toHaveLength(2)
+  })
+
   // ── Overlapping passes ─────────────────────────────────────────
 
   it('reicht denselben Job nicht zweimal ein, wenn zwei Durchlaeufe sich ueberlappen', async () => {

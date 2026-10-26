@@ -741,3 +741,60 @@ export const IPC_CHANNELS = {
   TRANSCRIPTION_SEGMENTS: 'transcription:segments',
   TRANSCRIPTION_CANCEL: 'transcription:cancel',
 } as const
+
+// ---------------------------------------------------------------------------
+// Transcription — what crosses the IPC boundary
+//
+// These three live here, not next to the model that stores them: everything a
+// renderer renders belongs in src/shared, because the renderer must not import
+// from src/main (tests/unit/renderer-process-boundary.test.ts, which exists
+// because such an import once pulled sql.js into the renderer's type-check).
+// The model and the HTTP client re-export them, so the main process keeps
+// importing them where it always did.
+// ---------------------------------------------------------------------------
+
+/**
+ * A transcription job's state. It is the ONLY place that says whether a job
+ * failed — see `TranscriptionJobView.failureReason`.
+ *
+ * `cancelled` exists on Mingly's side only; the service knows the other four.
+ */
+export type TranscriptionJobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
+
+/** One piece of a transcript, in transcript order. */
+export interface TranscriptionSegment {
+  jobId: string
+  index: number
+  startMs: number
+  endMs: number
+  speaker: string
+  text: string
+}
+
+/**
+ * One transcription job as a caller of the IPC surface sees it.
+ *
+ * The job row's `error` column is split in two here, because it carries two
+ * different things: a reason the job FAILED, and a reason a job that has not
+ * failed is not moving (the runner writes wait reasons there, prefixed, for
+ * want of a column of their own). Which one is filled follows the state, which
+ * is the truth about the job — a caller must never conclude "failed" from a
+ * non-empty message.
+ */
+export interface TranscriptionJobView {
+  id: string
+  workspaceId: string
+  state: TranscriptionJobState
+  /** As the service reports it, 0..1. */
+  progress: number
+  targetId: string
+  /** Why the job failed. Only ever set for state 'failed'. */
+  failureReason?: string
+  /**
+   * Why a job that is still queued or running is not progressing. Never a
+   * failure, and never set on a job that has reached a terminal state.
+   */
+  waitingReason?: string
+  createdAt: number
+  updatedAt: number
+}

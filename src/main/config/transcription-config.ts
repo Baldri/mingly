@@ -34,13 +34,44 @@ export function resolveTranscriptionApiKey(): string | undefined {
 }
 
 /**
+ * Why a key cannot be sent, or `undefined` when it can.
+ *
+ * The question is put to the very API that will have to carry it rather than
+ * to a pattern of my own: `Headers.set` is what the HTTP client calls, so this
+ * check cannot drift away from what actually works.
+ */
+function describeUnusableKey(apiKey: string): string | undefined {
+  try {
+    new Headers().set('Authorization', `Bearer ${apiKey}`)
+    return undefined
+  } catch {
+    return 'enthaelt Zeichen, die ein HTTP-Header nicht tragen kann (etwa Zeilenumbrueche)'
+  }
+}
+
+/**
  * Put the resolved key on the shared HTTP client - or take it off.
  *
  * `undefined` clears it, so a key removed from the environment stops being
  * sent instead of living on in a client that was configured once. The client
  * then omits the Authorization header entirely, which is what a loopback
  * service without a key expects.
+ *
+ * A key that cannot be sent is REFUSED here, where it is configured, and not
+ * left for the first request. Discovered there it is an exception from inside
+ * a job's turn, which the runner does not treat as an answer from the service:
+ * it surfaced as a log warning and nothing at all on the job row, so the queue
+ * looked idle while every pass failed. Here it is one visible error about a
+ * setting, which is the only place anyone can fix it.
+ *
+ * The message never carries the value. It ends up in the log, and a secret
+ * does not belong there.
  */
 export function applyTranscriptionApiKey(apiKey: string | undefined): void {
+  if (apiKey !== undefined) {
+    const problem = describeUnusableKey(apiKey)
+    if (problem !== undefined) throw new Error(`${ENV_VAR} ${problem}`)
+  }
+
   getTranscriptionHttpClient().updateConfig({ apiKey })
 }

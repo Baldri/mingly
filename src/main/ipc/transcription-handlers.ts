@@ -22,6 +22,7 @@
 import fs from 'fs/promises'
 import { extname } from 'path'
 import { IPC_CHANNELS } from '../../shared/types'
+import type { TranscriptionJobView } from '../../shared/types'
 import { DEFAULT_TENANT_ID } from '../database/index'
 import { TranscriptionModel } from '../database/models/transcription'
 import type {
@@ -58,31 +59,21 @@ const NOT_FOUND = 'Transkriptionsauftrag nicht gefunden'
 /** The prefix the job runner puts in front of a reason that is NOT a failure. */
 const WAIT_REASON_PREFIX = 'Wartet: '
 
+/**
+ * The states a job can still be waiting IN. The other three are over, and a
+ * reason left on the row from before - a wait reason that landed just as the
+ * job was cancelled, say - must not make a finished job look like it is
+ * waiting for something.
+ */
+const WAITING_STATES: readonly TranscriptionJobState[] = ['queued', 'running']
+
 /** The declared protection levels, from the one place that ranks them. */
 const PROTECTION_LEVELS = Object.keys(SENSITIVITY_ORDER)
 
-/**
- * One transcription job as a caller sees it.
- *
- * The stored `error` column is split in two here, because it carries two
- * different things (see decision 2 above): a reason the job FAILED, and a
- * reason a job that has not failed is not moving. Which one is filled follows
- * the state, which is the truth about the job.
- */
-export interface TranscriptionJobView {
-  id: string
-  workspaceId: string
-  state: TranscriptionJobState
-  /** As the service reports it, 0..1. */
-  progress: number
-  targetId: string
-  /** Why the job failed. Only ever set for state 'failed'. */
-  failureReason?: string
-  /** Why a job that has NOT failed is not progressing. Never a failure. */
-  waitingReason?: string
-  createdAt: number
-  updatedAt: number
-}
+// The payload type lives in src/shared/types.ts with the channel names, so a
+// preload or renderer can import it without reaching into src/main. Re-exported
+// because this module is where it is produced.
+export type { TranscriptionJobView }
 
 interface JobReply {
   success: true
@@ -197,6 +188,16 @@ async function requireAllowedRecording(submittedPath: string): Promise<string> {
   }
 
   // The resolved path, not the submitted one: it is the file that was checked.
+  //
+  // What this approval guarantees, and what it rests on: the file AT THIS
+  // MOMENT is inside a granted directory. The runner opens it again by name
+  // when it copies it into the spool, so replacing it with a symlink in
+  // between would escape the confinement (a time-of-check/time-of-use gap).
+  // Nothing in the repo lets the renderer create a symlink, and no IPC channel
+  // writes into a granted directory, which is why the gap is not reachable
+  // today - but the whole value of the check above depends on that staying
+  // true. Closing it properly means handing the runner an open descriptor
+  // instead of a path.
   return resolved
 }
 
@@ -264,6 +265,7 @@ function withoutWaitPrefix(reason: string): string {
 
 function toView(job: TranscriptionJob): TranscriptionJobView {
   const failed = job.state === 'failed'
+  const waiting = WAITING_STATES.includes(job.state)
   return {
     id: job.id,
     workspaceId: job.workspaceId,
@@ -271,7 +273,7 @@ function toView(job: TranscriptionJob): TranscriptionJobView {
     progress: job.progress,
     targetId: job.targetId,
     failureReason: failed ? job.error : undefined,
-    waitingReason: failed || job.error === undefined ? undefined : withoutWaitPrefix(job.error),
+    waitingReason: waiting && job.error !== undefined ? withoutWaitPrefix(job.error) : undefined,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt
   }
@@ -352,7 +354,20 @@ export interface TranscriptionSchedulerOptions {
 const DEFAULT_PASS_INTERVAL_MS = 5_000
 
 let passTimer: ReturnType<typeof setTimeout> | null = null
-let schedulerRunning = false
+
+/**
+ * Which chain of passes owns the clock, or `null` while nothing does.
+ *
+ * A counter rather than a boolean, because a pass can outlive the stop that
+ * ended its chain: stop while a pass sits in `await tick()`, start again, and
+ * with a shared flag the old pass finds "running" true again when it returns,
+ * schedules its own successor and overwrites the new chain's timer handle.
+ * Two live chains then exist and only one of them can be cancelled. Each
+ * chain carries its generation and reschedules only while it is still the one
+ * that owns the clock.
+ */
+let owningChain: number | null = null
+let lastChain = 0
 
 /**
  * Start working the queue: resume what the last process left running, then one
@@ -362,12 +377,13 @@ let schedulerRunning = false
  * double the rate.
  */
 export function startTranscriptionScheduler(options: TranscriptionSchedulerOptions = {}): void {
-  if (schedulerRunning) return
-  schedulerRunning = true
+  if (owningChain !== null) return
+  lastChain += 1
+  owningChain = lastChain
 
   const intervalMs = options.intervalMs ?? DEFAULT_PASS_INTERVAL_MS
   const runner = options.runner ?? getTranscriptionJobRunner()
-  void runPass(runner, intervalMs, true)
+  void runPass(runner, intervalMs, true, owningChain)
 }
 
 /**
@@ -375,7 +391,7 @@ export function startTranscriptionScheduler(options: TranscriptionSchedulerOptio
  * halfway is what leaves jobs stranded - and schedules no successor.
  */
 export function stopTranscriptionScheduler(): void {
-  schedulerRunning = false
+  owningChain = null
   if (passTimer !== null) {
     clearTimeout(passTimer)
     passTimer = null
@@ -385,15 +401,26 @@ export function stopTranscriptionScheduler(): void {
 async function runPass(
   runner: TranscriptionPassRunner,
   intervalMs: number,
-  resumeFirst: boolean
+  resumeFirst: boolean,
+  chain: number
 ): Promise<void> {
+  // Before every pass, not once at startup: the key is read from the
+  // environment at the moment of use (see config/transcription-config.ts), so
+  // a key added to the .env file after start is picked up by the next pass
+  // instead of at the next restart.
+  //
+  // In its own try, and the pass goes ahead when it fails: a key that cannot
+  // be sent is a configuration error for the operator to fix, and skipping the
+  // pass over it would stop the queue instead of showing the problem. Sent
+  // without one, the request gets a 401, which the runner records as a visible
+  // wait reason on the job.
   try {
-    // Before every pass, not once at startup: the key is read from the
-    // environment at the moment of use (see config/transcription-config.ts),
-    // so a key added to the .env file after start is picked up by the next
-    // pass instead of at the next restart.
     applyTranscriptionApiKey(resolveTranscriptionApiKey())
+  } catch (error) {
+    logger.error('Transcription API key cannot be used', { error: String(error) })
+  }
 
+  try {
     // Resumption before the first ordinary pass: a job the previous process
     // left in state 'running' has to be back in the queue before anything
     // tries to observe it, because the handle to it died with that process.
@@ -401,12 +428,16 @@ async function runPass(
     await runner.tick()
   } catch (error) {
     // A failed pass must not stop the clock: the next one may well work, and
-    // the jobs stay in the table either way.
+    // the jobs stay in the table either way. One job's error does not get
+    // here - the runner keeps that to the job (see `attempt`).
     logger.warn('Transcription pass failed', { error: String(error) })
   }
 
-  if (!schedulerRunning) return
+  // Only while this chain still owns the clock: a chain that was stopped must
+  // not schedule a successor, least of all over the handle of the chain that
+  // replaced it.
+  if (owningChain !== chain) return
   passTimer = setTimeout(() => {
-    void runPass(runner, intervalMs, false)
+    void runPass(runner, intervalMs, false, chain)
   }, intervalMs)
 }

@@ -33,6 +33,7 @@ import { DEFAULT_TENANT_ID } from '../database/index'
 import { TranscriptionModel } from '../database/models/transcription'
 import type { TranscriptionJob, TranscriptionJobState } from '../database/models/transcription'
 import { getActivityLogger } from '../audit/activity-logger'
+import { createLogger } from '../../shared/logger'
 import { DEFAULT_POLICY } from '../policy/policy-engine'
 import type { PolicySet } from '../policy/policy-types'
 import type { PIISensitivity } from '../privacy/pii-types'
@@ -121,6 +122,8 @@ const HTTP_TOO_MANY_REQUESTS = 429
 
 const AUDIT_ACTOR_ID = 'transcription-job-runner'
 const AUDIT_ENTITY_TYPE = 'transcription_job'
+
+const logger = createLogger('TranscriptionJobRunner')
 
 interface AuditActor {
   actorType: string
@@ -296,13 +299,45 @@ export class TranscriptionJobRunner {
     return this.inOwnPass(async () => {
       for (const tenantId of this.tenantIds) {
         for (const job of TranscriptionModel.listByState('running', tenantId)) {
-          if ((await this.observe(job)) === 'service-unavailable') return
+          if ((await this.attempt(job, (it) => this.observe(it))) === 'service-unavailable') return
         }
         for (const job of TranscriptionModel.listByState('queued', tenantId)) {
-          if ((await this.start(job)) === 'service-unavailable') return
+          if ((await this.attempt(job, (it) => this.start(it))) === 'service-unavailable') return
         }
       }
     })
+  }
+
+  /**
+   * One job's turn, with its surprises kept to that job.
+   *
+   * `start` and `observe` deliberately raise anything that is NOT the service
+   * answering - a programming or configuration error, such as an API key that
+   * cannot go into a header. Raised through `tick` it aborted the whole pass:
+   * every job behind it was skipped, no row said why, and the only trace was a
+   * log line in the caller. One job's surprise is not the queue's outage.
+   *
+   * It is recorded as a WAIT reason, not as a failure: what gets here is a
+   * condition someone can fix, not a broken recording, and a failed job would
+   * need re-submitting after the fix. The state stays where it was, so the
+   * next pass picks the job up again.
+   */
+  private async attempt(
+    job: TranscriptionJob,
+    step: (job: TranscriptionJob) => Promise<StepOutcome>
+  ): Promise<StepOutcome> {
+    try {
+      return await step(job)
+    } catch (error) {
+      // Logged as well as recorded: the row says what a user can see, the log
+      // keeps the detail for whoever has to fix the cause.
+      logger.error('Unexpected error while handling a transcription job', {
+        jobId: job.id,
+        error: describeError(error)
+      })
+      this.recordWaitReason(job, describeError(error))
+      return 'handled'
+    }
   }
 
   /**
