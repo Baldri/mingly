@@ -143,7 +143,7 @@ describe('TranscriptionJobRunner', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.unstubAllEnvs()
-    // Two tests make a model method throw; without this they would do so for
+    // Three tests make a model method throw; without this they would do so for
     // every test after them in this file.
     vi.restoreAllMocks()
     closeDatabase()
@@ -911,6 +911,51 @@ describe('TranscriptionJobRunner', () => {
     expect(stored.error).not.toMatch(/^Wartet: /)
   })
 
+  it('gibt die Handles frei, wenn das Speichern nach dem Uebergang auf done scheitert', async () => {
+    // Reaches into the runner on purpose. What is wrong here has no projection
+    // on the public surface: both maps are keyed by job id, and a job in a
+    // terminal state is never listed again, so an entry left behind is simply
+    // never released for the rest of the process - invisible from outside, and
+    // only growing. `observe` releases the handles AFTER saving the transcript,
+    // so a throw from `saveSegments` skipped that step.
+    const runner = makeRunner()
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+    await runner.tick()
+
+    const internals = runner as unknown as {
+      tracked: Map<string, unknown>
+      declaredLevels: Map<string, unknown>
+    }
+    // Positive control in the same run: the entries ARE there while the job
+    // runs, so the assertions below measure a release and not an empty map.
+    expect(internals.tracked.has(job.id)).toBe(true)
+    expect(internals.declaredLevels.has(job.id)).toBe(true)
+
+    client.pollImpl = () =>
+      Promise.resolve(
+        doneStatus([
+          { jobId: 'svc-1', index: 0, startMs: 0, endMs: 1000, speaker: 'SPEAKER_00', text: 'Guten Tag' }
+        ])
+      )
+    vi.spyOn(TranscriptionModel, 'saveSegments').mockImplementation(() => {
+      throw new Error('Datenbank konnte die Segmente nicht speichern')
+    })
+
+    await runner.tick()
+
+    // The audit entry of that last state change still carries the declared
+    // level, so the release happens after it and not before.
+    const failure = readAuditEntries('tenant-a').filter(
+      (entry) => entry.entityId === job.id && entry.event === 'transcription.failed'
+    )
+    expect(failure).toHaveLength(1)
+    expect(failure[0].details.declaredLevel).toBe('critical')
+
+    expect(requireJob('tenant-a', job.id).state).toBe('failed')
+    expect(internals.tracked.has(job.id)).toBe(false)
+    expect(internals.declaredLevels.has(job.id)).toBe(false)
+  })
+
   it('laesst einen Schreibfehler beim Vermerken nicht den Durchlauf abbrechen', async () => {
     // The containment of `attempt` has to cover its own recording too: if
     // writing the reason fails, the error used to escape the pass and every
@@ -934,6 +979,37 @@ describe('TranscriptionJobRunner', () => {
     // The job behind the one that threw twice was still handled.
     expect(requireJob('tenant-a', second.id).state).toBe('running')
     expect(client.submitted).toHaveLength(2)
+  })
+
+  it('behaelt den Handle, wenn ein laufender Job nur einen Wartegrund bekommt', async () => {
+    // The other side of releasing the handles: a wait reason must NOT release
+    // them. The obvious way to fix the leak above is one `forget` at the top of
+    // `recordUnexpectedError`, for every state - and that is wrong here, where
+    // the job stays `running`. `observe` reads a running job without a handle
+    // as "this process lost it", puts it back into the queue, and the next pass
+    // submits the same audio a second time. Measured: with the release moved to
+    // the front, `submitted` has two entries instead of one.
+    const runner = makeRunner()
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+    await runner.tick()
+    expect(client.submitted).toHaveLength(1)
+    expect(requireJob('tenant-a', job.id).state).toBe('running')
+
+    // An unexpected error while observing: neither unreachable nor a
+    // TranscriptionServiceError, so it goes through `attempt` into
+    // `recordUnexpectedError` and the job keeps its state.
+    client.pollImpl = () => Promise.reject(new Error('unerwartet'))
+    await runner.tick()
+    expect(requireJob('tenant-a', job.id).state).toBe('running')
+    expect(requireJob('tenant-a', job.id).error).toMatch(/^Wartet: /)
+
+    // Two more passes, with the service answering again: the first would
+    // requeue a job whose handle is gone, the second would submit it anew.
+    client.pollImpl = () => Promise.resolve(runningStatus(0.5))
+    await runner.tick()
+    await runner.tick()
+    expect(client.submitted).toHaveLength(1)
+    expect(requireJob('tenant-a', job.id).state).toBe('running')
   })
 
   // ── Overlapping passes ─────────────────────────────────────────

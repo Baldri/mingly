@@ -600,10 +600,42 @@ describe('Transkriptions-IPC', () => {
     expect(() => applyTranscriptionApiKey('mit\u007fdel')).toThrow(/TRANSCRIPTION_API_KEY/)
 
     // And it stays silent where the request path is fine with the value:
-    // measured HTTP 200 for both a tab and a non-ASCII character, so refusing
-    // them would be a false alarm on a working configuration.
+    // measured HTTP 200 for a tab and for Latin-1 above ASCII, so refusing
+    // those would be a false alarm on a working configuration. Latin-1 is as
+    // far as that measurement reaches, and as far as this assertion claims -
+    // NOT "every non-ASCII character". Above U+00FF the request path refuses
+    // too, which the next test is about.
     expect(() => applyTranscriptionApiKey('mit\tTabulator')).not.toThrow()
-    expect(() => applyTranscriptionApiKey('mit-uemlaut-ü')).not.toThrow()
+    expect(() => applyTranscriptionApiKey('mit-umlaut-ü')).not.toThrow()
+  })
+
+  it('verweigert Zeichen jenseits von Latin-1, mit einem eigenen Grund', () => {
+    // Measured on this Node: `Headers.set` throws a TypeError above U+00FF -
+    // for `Ā` (U+0100), `€` (U+20AC) and an emoji alike - while `ü` and `ÿ`
+    // pass and reach the service with HTTP 200. The check used to cover C0 and
+    // DEL only, so such a key was ACCEPTED where it is configured and turned up
+    // once per job as a wait reason instead, which is the outcome this function
+    // exists to prevent.
+    expect(() => applyTranscriptionApiKey('schluessel-mit-€')).toThrow(/TRANSCRIPTION_API_KEY/)
+
+    // An astral character is ONE codepoint held in two UTF-16 units. The rule
+    // is about codepoints, so it has to be judged once rather than through its
+    // surrogate halves.
+    expect(() => applyTranscriptionApiKey('schluessel-mit-\u{1F600}')).toThrow(/Latin-1/)
+
+    // The two reasons have to stay apart: a stray line break is a different
+    // mistake from the wrong value pasted whole, and the message says which one
+    // it is. Asserted on the TEXT, not merely on "it throws".
+    expect(() => applyTranscriptionApiKey('schluessel-mit-€')).toThrow(/Latin-1/)
+    expect(() => applyTranscriptionApiKey('schluessel-mit-€')).not.toThrow(/Steuerzeichen/)
+    expect(() => applyTranscriptionApiKey('schluessel\nmit-umbruch')).toThrow(/Steuerzeichen/)
+    expect(() => applyTranscriptionApiKey('schluessel\nmit-umbruch')).not.toThrow(/Latin-1/)
+
+    // The direction that falls if anyone widens the rule to "everything
+    // non-ASCII": Latin-1 above ASCII, and a tab in the middle, still pass.
+    expect(() => applyTranscriptionApiKey('schluessel-mit-ü')).not.toThrow()
+    expect(() => applyTranscriptionApiKey('schluessel-mit-ÿ')).not.toThrow()
+    expect(() => applyTranscriptionApiKey('schluessel\tmit-tabulator')).not.toThrow()
   })
 
   it('macht einen unbrauchbaren Schluessel am Job sichtbar, statt still zu warten', async () => {

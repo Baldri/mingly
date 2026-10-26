@@ -21,15 +21,11 @@
 
 import fs from 'fs/promises'
 import { extname } from 'path'
-import { IPC_CHANNELS } from '../../shared/types'
+import { IPC_CHANNELS, TRANSCRIPTION_WAITING_STATES } from '../../shared/types'
 import type { TranscriptionJobView } from '../../shared/types'
 import { DEFAULT_TENANT_ID } from '../database/index'
 import { TranscriptionModel } from '../database/models/transcription'
-import type {
-  TranscriptionJob,
-  TranscriptionJobState,
-  TranscriptionSegment
-} from '../database/models/transcription'
+import type { TranscriptionJob, TranscriptionSegment } from '../database/models/transcription'
 import { getTranscriptionJobRunner } from '../transcription/job-runner'
 import {
   applyTranscriptionApiKey,
@@ -58,14 +54,6 @@ const NOT_FOUND = 'Transkriptionsauftrag nicht gefunden'
 
 /** The prefix the job runner puts in front of a reason that is NOT a failure. */
 const WAIT_REASON_PREFIX = 'Wartet: '
-
-/**
- * The states a job can still be waiting IN. The other three are over, and a
- * reason left on the row from before - a wait reason that landed just as the
- * job was cancelled, say - must not make a finished job look like it is
- * waiting for something.
- */
-const WAITING_STATES: readonly TranscriptionJobState[] = ['queued', 'running']
 
 /** The declared protection levels, from the one place that ranks them. */
 const PROTECTION_LEVELS = Object.keys(SENSITIVITY_ORDER)
@@ -265,7 +253,17 @@ function withoutWaitPrefix(reason: string): string {
 
 function toView(job: TranscriptionJob): TranscriptionJobView {
   const failed = job.state === 'failed'
-  const waiting = WAITING_STATES.includes(job.state)
+  // The states a job can still be waiting IN. The other three are over, and a
+  // reason left on the row from before - a wait reason that landed just as the
+  // job was cancelled, say - must not make a finished job look like it is
+  // waiting for something.
+  //
+  // From src/shared/types.ts, because the job runner decides by the same list:
+  // it refuses to write a wait reason onto a row outside that set precisely
+  // because this view would not show it. Both sides held the same literal list
+  // and a comment tying them together, so a change HERE could silently make the
+  // runner refuse the wrong set, with no test failing.
+  const waiting = TRANSCRIPTION_WAITING_STATES.includes(job.state)
   return {
     id: job.id,
     workspaceId: job.workspaceId,
@@ -405,9 +403,11 @@ async function runPass(
   chain: number
 ): Promise<void> {
   // Before every pass, not once at startup: the key is read from the
-  // environment at the moment of use (see config/transcription-config.ts), so
-  // a key added to the .env file after start is picked up by the next pass
-  // instead of at the next restart.
+  // environment at the moment of use (see config/transcription-config.ts), so a
+  // key set or removed in THIS PROCESS's environment is picked up by the next
+  // pass instead of at the next restart. The .env file is not that - it is read
+  // once, at module load (src/main/index.ts), so an edit to the FILE needs an
+  // app restart.
   //
   // In its own try, and the pass goes ahead when it fails: a key that cannot
   // be sent is a configuration error for the operator to fix, and skipping the

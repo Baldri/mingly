@@ -762,6 +762,24 @@ export const IPC_CHANNELS = {
  */
 export type TranscriptionJobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
 
+/**
+ * The states a job can still be WAITING in — the two that are not over.
+ *
+ * One constant for two sides on purpose, because they have to agree. The job
+ * runner refuses to write a wait reason onto a row outside this set
+ * (`recordWaitReason` in transcription/job-runner.ts), and the IPC view fills
+ * `TranscriptionJobView.waitingReason` only for a row inside it (`toView` in
+ * ipc/transcription-handlers.ts). Let the two drift apart and one of two things
+ * happens: a reason is written where nobody can see it — which is how a `done`
+ * job with a missing transcript once ended up explaining itself to nobody — or
+ * a reason is shown on a row that is not waiting for anything. Both sides read
+ * this list so that neither can be changed alone.
+ */
+export const TRANSCRIPTION_WAITING_STATES: readonly TranscriptionJobState[] = [
+  'queued',
+  'running'
+]
+
 /** One piece of a transcript, in transcript order. */
 export interface TranscriptionSegment {
   jobId: string

@@ -8,9 +8,12 @@
  * not fail the job" (Ruling 23), the job would sit in the queue for ever with
  * a reason nobody can act on.
  *
- * Resolved at the moment of use, never cached: `applyEnvFile` fills
- * `process.env` at startup, and the key can be changed in that file and
- * reloaded without restarting the queue.
+ * Resolved at the moment of use, never cached. What that buys is the RUNNING
+ * process's own environment: a key set or removed there is picked up by the
+ * next pass, without restarting the queue. Not the `.env` file - `applyEnvFile`
+ * fills `process.env` from it exactly once, at module load (src/main/index.ts,
+ * one call site, no watcher), so an edit to the FILE takes effect at the next
+ * app start.
  *
  * No settings field yet - the key is a developer and power-user setting, like
  * the spool directory. When one is added, resolve it the way
@@ -43,17 +46,52 @@ export function resolveTranscriptionApiKey(): string | undefined {
  * connection and reports it as "service unreachable" - a misconfigured key
  * shown as an outage, which is precisely what its own comment forbids.
  *
- * Tab (0x09) and non-ASCII characters are deliberately NOT in here: both were
- * measured to go over the wire fine (HTTP 200), so refusing them would be a
- * false alarm on a configuration that works.
+ * Tab (0x09) is deliberately NOT in here, and neither is U+0080..U+00FF: both
+ * were measured to go over the wire fine (HTTP 200), so refusing them would be
+ * a false alarm on a configuration that works. That measured range is Latin-1
+ * and stops there - it is the whole range a header value can carry byte for
+ * byte. Above it the request path refuses as well, for a different reason; see
+ * MAX_HEADER_CODEPOINT.
  */
 const UNSENDABLE_CHARACTERS = /[\u0000-\u0008\u000A-\u001F\u007F]/
+
+/**
+ * The highest codepoint a header value can carry.
+ *
+ * A header value is a byte string, so `Headers.set` throws a TypeError for
+ * anything above U+00FF - measured on this Node: `Ā` (U+0100), `€` (U+20AC)
+ * and an emoji all throw, while `ü` and `ÿ` pass and reach the service with
+ * HTTP 200. Checking C0 and DEL alone let such a key through here, and it then
+ * surfaced once per job as a wait reason instead of once where it is
+ * configured - the outcome `applyTranscriptionApiKey` exists to prevent.
+ *
+ * It gets its OWN reason rather than joining the control characters, because
+ * cause and remedy differ: a control character is usually a stray line break
+ * from copying an otherwise correct key, a high codepoint usually means the
+ * wrong value was pasted altogether.
+ */
+const MAX_HEADER_CODEPOINT = 0xff
 
 /** Why a key cannot be sent, or `undefined` when it can. */
 function describeUnusableKey(apiKey: string): string | undefined {
   if (UNSENDABLE_CHARACTERS.test(apiKey)) {
     return 'enthaelt Steuerzeichen, die ein HTTP-Header nicht tragen kann (etwa Zeilenumbrueche)'
   }
+
+  // Per CODEPOINT, not per UTF-16 unit: a character outside the BMP is one
+  // codepoint held in two units, and the rule is about codepoints - so
+  // `for...of`, which iterates them, judges it once instead of twice over its
+  // surrogate halves.
+  for (const character of apiKey) {
+    const codePoint = character.codePointAt(0)
+    if (codePoint !== undefined && codePoint > MAX_HEADER_CODEPOINT) {
+      return (
+        'enthaelt Zeichen jenseits von Latin-1 (etwa ein Eurozeichen oder ein Emoji), ' +
+        'die ein HTTP-Header nicht tragen kann - hier steht vermutlich der falsche Wert'
+      )
+    }
+  }
+
   return undefined
 }
 

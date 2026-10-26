@@ -34,6 +34,7 @@ import { TranscriptionModel } from '../database/models/transcription'
 import type { TranscriptionJob, TranscriptionJobState } from '../database/models/transcription'
 import { getActivityLogger } from '../audit/activity-logger'
 import { createLogger } from '../../shared/logger'
+import { TRANSCRIPTION_WAITING_STATES } from '../../shared/types'
 import { DEFAULT_POLICY } from '../policy/policy-engine'
 import type { PolicySet } from '../policy/policy-types'
 import type { PIISensitivity } from '../privacy/pii-types'
@@ -140,16 +141,18 @@ const SYSTEM_ACTOR: AuditActor = { actorType: 'system', actorId: AUDIT_ACTOR_ID 
  */
 const LOCAL_USER_ACTOR: AuditActor = { actorType: 'user', actorId: 'local' }
 
-/** States a job can still be cancelled out of; the other three are over. */
-const CANCELLABLE_STATES: readonly TranscriptionJobState[] = ['queued', 'running']
-
 /**
- * States in which a job can still be waiting FOR something. The other three
- * are over, and a job that is over is not waiting - so a wait reason written
- * onto such a row would be both untrue and invisible (the IPC view shows
- * reasons on non-terminal states only).
+ * States a job can still be cancelled out of; the other three are over.
+ *
+ * Deliberately its own list, although it holds the same two states as
+ * `TRANSCRIPTION_WAITING_STATES` today. That one answers "may a reason be
+ * written onto this row, and will the view show it", and nothing about
+ * cancelling follows from the answer: a state that is not over but whose work
+ * can no longer be called off - the service has no cancel endpoint, so a
+ * later "finalising" would be exactly that - belongs in one list and not the
+ * other. Merging them would tie two unrelated decisions together.
  */
-const WAITING_STATES: readonly TranscriptionJobState[] = ['queued', 'running']
+const CANCELLABLE_STATES: readonly TranscriptionJobState[] = ['queued', 'running']
 
 /** What `cancel` did, in a form the caller can act on without parsing a message. */
 export type TranscriptionCancelOutcome =
@@ -635,10 +638,14 @@ export class TranscriptionJobRunner {
    * up explaining itself to nobody. A caller that needs to say something about
    * such a row has to change the state, not the reason (see
    * `recordUnexpectedError`).
+   *
+   * The set comes from src/shared/types.ts, which is the same list the view
+   * decides by: the two are one statement about the same thing, and keeping two
+   * copies of it in step was a comment's job until now.
    */
   private recordWaitReason(job: TranscriptionJob, reason: string): void {
     const current = TranscriptionModel.getJob(job.id, job.tenantId)
-    if (current === null || !WAITING_STATES.includes(current.state)) return
+    if (current === null || !TRANSCRIPTION_WAITING_STATES.includes(current.state)) return
     TranscriptionModel.setError(job.id, `Wartet: ${reason}`)
   }
 
@@ -660,6 +667,12 @@ export class TranscriptionJobRunner {
    * `cancelled` and `failed` are left exactly as they are: a cancellation must
    * not come back as a failure (Ruling 34), and a job that already failed
    * keeps the reason it failed with.
+   *
+   * Only the terminal branch releases the handles. A job that stays queued or
+   * running keeps them on purpose: `observe` reads a `running` job without a
+   * tracked service job id as "this process lost the handle" and puts it back
+   * into the queue, so dropping the entry here would hand the same audio over
+   * a second time - the double transcription the whole state machine avoids.
    */
   private recordUnexpectedError(job: TranscriptionJob, reason: string): void {
     const current = TranscriptionModel.getJob(job.id, job.tenantId)
@@ -669,6 +682,15 @@ export class TranscriptionJobRunner {
       // `current`, not `job`: its state is the one the compare-and-swap has to
       // expect, and this is a real state change, so it is audited like one.
       this.transition(current, 'failed', reason)
+      // AFTER the transition, because the audit entry it writes reads the
+      // declared level out of one of the maps this clears.
+      //
+      // The only way to get here is `saveSegments` throwing right after the row
+      // was set to `done` - and `observe` releases the handles only once saving
+      // has returned, so that throw skipped it. The job is over either way,
+      // whether the transition landed or a cancellation got there first, so
+      // this pass is done with it and nothing may keep pointing at it.
+      this.forget(job.id)
       return
     }
 
