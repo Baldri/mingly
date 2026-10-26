@@ -39,6 +39,7 @@ import type { PIISensitivity } from '../privacy/pii-types'
 import { validateFilePath } from '../security/input-validator'
 import { getFileAccessManager } from '../file-access/file-access-manager'
 import { isPathWithinAllowedDirs } from '../../shared/file-access-types'
+import type { FileAccessPermission, FileLocation } from '../../shared/file-access-types'
 import { wrapHandler, requireFeature } from './ipc-utils'
 import { createLogger } from '../../shared/logger'
 
@@ -200,7 +201,31 @@ async function requireAllowedRecording(submittedPath: string): Promise<string> {
 }
 
 /**
- * The granted directories with their symlinks resolved.
+ * Grant origins that are NOT a recording source, however they got into the
+ * allowlist.
+ *
+ * A network share gets in without a dialog: `FILE_ACCESS_ADD_NETWORK_SHARE`
+ * takes its configuration from the renderer, and `addNetworkShare` turns the
+ * `mountPoint` it is handed into a recursive grant - no confirmation, and no
+ * check that the path is a mount point at all. A renderer can therefore grant
+ * itself `/` and walk through any check that trusts the list.
+ *
+ * An allowlist is only as strong as the weakest way an entry gets into it, so
+ * this confinement picks its own trust root instead of accepting a list the
+ * side it defends against can fill.
+ *
+ * Lift the exclusion once `addNetworkShare` requires a confirmation the
+ * renderer cannot give itself: transcribing a recording from a network drive
+ * is a legitimate thing to want, and only the way the grant is made is wrong.
+ */
+const UNTRUSTED_GRANT_LOCATIONS: readonly FileLocation[] = ['network-smb', 'network-nfs']
+
+/** The permissions that make a granted directory readable at all. */
+const READING_PERMISSIONS: readonly FileAccessPermission[] = ['read', 'read-create']
+
+/**
+ * The granted directories that may hold recordings, with their symlinks
+ * resolved.
  *
  * Both sides have to be resolved or the comparison is between two spellings of
  * the same place: macOS alone resolves `/tmp` to `/private/tmp` and `/var` to
@@ -210,6 +235,12 @@ async function requireAllowedRecording(submittedPath: string): Promise<string> {
 async function resolvedAllowedDirectories(): Promise<string[]> {
   const resolved: string[] = []
   for (const dir of getFileAccessManager().getAllowedDirectories()) {
+    if (UNTRUSTED_GRANT_LOCATIONS.includes(dir.location)) continue
+    // The rule the file access manager itself applies before it reads a file:
+    // a directory granted for writing AI output into is not a source to read
+    // recordings from.
+    if (!dir.permissions.some((permission) => READING_PERMISSIONS.includes(permission))) continue
+
     try {
       resolved.push(await fs.realpath(dir.path))
     } catch {

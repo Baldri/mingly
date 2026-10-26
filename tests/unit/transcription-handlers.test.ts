@@ -118,9 +118,21 @@ describe('Transkriptions-IPC', () => {
     return (await handler(null, ...args)) as T
   }
 
+  /** A directory that reached the allowlist as a network share - no dialog. */
+  let networkShareDir: string
+  /** A granted directory the user gave CREATE permission to, not read. */
+  let createOnlyDir: string
+
   /** A recording where the user granted access. */
   function writeAudio(name: string): string {
     const file = path.join(grantedDir, name)
+    fs.writeFileSync(file, Buffer.alloc(64, 1))
+    return file
+  }
+
+  /** A recording in one of the other granted directories. */
+  function writeAudioIn(directory: string, name: string): string {
+    const file = path.join(directory, name)
     fs.writeFileSync(file, Buffer.alloc(64, 1))
     return file
   }
@@ -144,7 +156,11 @@ describe('Transkriptions-IPC', () => {
     // from, rather than mocking it away: `file-access.json` in userData is
     // what a directory the user picked leaves behind.
     grantedDir = path.join(userDataDir, 'aufnahmen')
-    fs.mkdirSync(grantedDir, { recursive: true })
+    networkShareDir = path.join(userDataDir, 'netzlaufwerk')
+    createOnlyDir = path.join(userDataDir, 'nur-schreiben')
+    for (const dir of [grantedDir, networkShareDir, createOnlyDir]) {
+      fs.mkdirSync(dir, { recursive: true })
+    }
     fs.writeFileSync(
       path.join(userDataDir, 'file-access.json'),
       JSON.stringify({
@@ -155,6 +171,29 @@ describe('Transkriptions-IPC', () => {
             name: 'Aufnahmen',
             location: 'local',
             permissions: ['read'],
+            recursive: true,
+            grantedAt: Date.now(),
+            accessCount: 0
+          },
+          // In the allowlist WITHOUT a dialog: addNetworkShare writes such an
+          // entry straight from renderer input (file-access-manager.ts).
+          {
+            id: 'smb://x/y',
+            path: networkShareDir,
+            name: 'Netzlaufwerk',
+            location: 'network-smb',
+            permissions: ['read', 'create'],
+            recursive: true,
+            grantedAt: Date.now(),
+            accessCount: 0
+          },
+          // Granted for writing AI output, never for reading.
+          {
+            id: 'granted-2',
+            path: createOnlyDir,
+            name: 'Nur Schreiben',
+            location: 'local',
+            permissions: ['create'],
             recursive: true,
             grantedAt: Date.now(),
             accessCount: 0
@@ -410,6 +449,46 @@ describe('Transkriptions-IPC', () => {
 
     expect(refused.success).toBe(false)
     expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
+  })
+
+  // ── Ruling 35: nicht jede Freigabe ist eine Quelle ─────────────
+  //
+  // Eine Allowlist ist nur so stark wie der schwaechste Weg, auf dem ein
+  // Eintrag hineinkommt. FILE_ACCESS_ADD_NETWORK_SHARE nimmt die Konfiguration
+  // ungeprueft vom Renderer und `addNetworkShare` macht daraus eine Freigabe
+  // mit `recursive: true` - ohne Dialog, ohne Bestaetigung, ohne Pruefung, ob
+  // der Pfad ueberhaupt ein Mountpoint ist. Der Renderer kann sich damit
+  // selbst `/` freigeben.
+
+  it('nimmt ein Netzlaufwerk nicht als Aufnahmequelle an, obwohl es freigegeben ist', async () => {
+    const onShare = writeAudioIn(networkShareDir, 'vom-netzlaufwerk.wav')
+
+    const refused = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', onShare)
+
+    expect(refused.success).toBe(false)
+    expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
+
+    // Positivkontrolle im selben Lauf: die per Dialog freigegebene Quelle
+    // bleibt eine Quelle - die Verweigerung oben ist die Herkunft, nicht ein
+    // Handler, der alles ablehnt.
+    const fromDialog = writeAudio('aus-dem-dialog.wav')
+    const accepted = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', fromDialog)
+
+    expect(accepted.success).toBe(true)
+    expect(accepted.job?.state).toBe('queued')
+  })
+
+  it('nimmt ein nur zum Schreiben freigegebenes Verzeichnis nicht als Quelle an', async () => {
+    const inCreateOnly = writeAudioIn(createOnlyDir, 'nur-schreiben.wav')
+
+    const refused = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', inCreateOnly)
+
+    expect(refused.success).toBe(false)
+    expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
+
+    // Positivkontrolle: dieselbe Datei in einem Lese-Verzeichnis geht durch.
+    const readable = writeAudio('lesbar.wav')
+    expect((await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', readable)).success).toBe(true)
   })
 
   it('nennt in der Verweigerung weder den Pfad noch die gescheiterte Pruefung', async () => {
