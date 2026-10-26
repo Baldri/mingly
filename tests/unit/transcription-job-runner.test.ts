@@ -399,15 +399,107 @@ describe('TranscriptionJobRunner', () => {
     expect(client.submitted).toEqual([job.audioPath])
   })
 
-  it('legt Spool-Verzeichnis und Kopie mit restriktiven Rechten an', async () => {
+  it('legt ein selbst erzeugtes Spool-Verzeichnis mit 0700 an', async () => {
     const runner = makeRunner()
 
     const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
 
-    // The spool holds personal audio; `recursive: true` would otherwise take
-    // the default mode.
     expect(fs.statSync(spoolDir).mode & 0o777).toBe(0o700)
     expect(fs.statSync(job.audioPath).mode & 0o777).toBe(0o600)
+  })
+
+  it('verweigert den Job, wenn das vorhandene Spool-Verzeichnis anderen Konten offensteht', async () => {
+    // THE case that happens in production: the service has to be running
+    // before Mingly submits anything, and it creates the spool itself. A mode
+    // argument does nothing to a directory that already exists, so this branch
+    // - not the one above - is the normal one.
+    fs.mkdirSync(spoolDir, { recursive: true })
+    fs.chmodSync(spoolDir, 0o755)
+    const runner = makeRunner()
+
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+
+    const stored = requireJob('tenant-a', job.id)
+    expect(stored.state).toBe('failed')
+    expect(stored.error).toContain('755')
+    expect(stored.error).toContain(spoolDir)
+    // Refused, not quietly tightened: the directory is someone else's.
+    expect(fs.statSync(spoolDir).mode & 0o777).toBe(0o755)
+    // And no recording was written into it.
+    expect(fs.readdirSync(spoolDir)).toEqual([])
+    expect(client.submitted).toEqual([])
+  })
+
+  it('nimmt ein vorhandenes, dicht gesetztes Spool-Verzeichnis an', async () => {
+    // Positive control for the refusal above: 0700 from the service's own
+    // mkdir must pass, otherwise the check would simply block everything.
+    fs.mkdirSync(spoolDir, { recursive: true })
+    fs.chmodSync(spoolDir, 0o700)
+    const runner = makeRunner()
+
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+
+    expect(requireJob('tenant-a', job.id).state).toBe('queued')
+    expect(fs.statSync(job.audioPath).mode & 0o777).toBe(0o600)
+  })
+
+  it('legt die Kopie nie mit einem anderen Modus als 0600 an', async () => {
+    // Asserting the mode of the FINISHED file would not notice a creation
+    // window. Eight megabytes take many event-loop turns to stream, so the
+    // sampling loop below genuinely observes the file while it is incomplete -
+    // and the test fails if it never managed to, rather than passing on a
+    // sample it never took.
+    const size = 8 * 1024 * 1024
+    const audio = writeAudio('big.wav', size)
+    const runner = makeRunner()
+
+    const observedModes = new Set<number>()
+    let sawIncompleteFile = false
+    let settled = false
+
+    const pending = runner.enqueue('tenant-a', 'ws1', audio, 'critical').then(
+      (job) => {
+        settled = true
+        return job
+      },
+      (error: unknown) => {
+        settled = true
+        throw error
+      }
+    )
+
+    const sample = (): void => {
+      if (!fs.existsSync(spoolDir)) return
+      for (const name of fs.readdirSync(spoolDir)) {
+        const stat = fs.statSync(path.join(spoolDir, name))
+        observedModes.add(stat.mode & 0o777)
+        if (stat.size < size) sawIncompleteFile = true
+      }
+    }
+
+    while (!settled) {
+      sample()
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+    const job = await pending
+    sample()
+
+    expect(sawIncompleteFile).toBe(true)
+    expect([...observedModes]).toEqual([0o600])
+    expect(fs.statSync(job.audioPath).size).toBe(size)
+  })
+
+  it('laesst keine Kopie im Spool zurueck, wenn die Aufnahme nicht lesbar ist', async () => {
+    const audio = writeAudio('locked.wav', 64)
+    fs.chmodSync(audio, 0o000)
+    const runner = makeRunner()
+
+    const job = await runner.enqueue('tenant-a', 'ws1', audio, 'critical')
+
+    const stored = requireJob('tenant-a', job.id)
+    expect(stored.state).toBe('failed')
+    expect(stored.error).toMatch(/kopiert/)
+    expect(fs.readdirSync(spoolDir)).toEqual([])
   })
 
   it('laesst keine Kopie im Spool zurueck, wenn der Job nicht angelegt werden kann', async () => {
@@ -599,6 +691,58 @@ describe('TranscriptionJobRunner', () => {
 
     const stored = requireJob('tenant-a', job.id)
     expect(stored.state).toBe('queued')
+    expect(stored.error).toMatch(/^Wartet: /)
+  })
+
+  it('laesst den Job bei 429 und 500 warten, statt ihn scheitern zu lassen', async () => {
+    // FastAPI answers 500 for any unhandled exception in the handler, and a
+    // reverse proxy adds 502/504. None of that is a statement about this
+    // recording, so it must not empty the queue.
+    const runner = makeRunner()
+    client.submitImpl = () => Promise.reject(new TranscriptionServiceError('Too Many Requests', 429))
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+
+    await runner.tick()
+    expect(requireJob('tenant-a', job.id).state).toBe('queued')
+
+    client.submitImpl = () => Promise.resolve({ jobId: 'svc-1' })
+    await runner.tick()
+    expect(requireJob('tenant-a', job.id).state).toBe('running')
+
+    client.pollImpl = () =>
+      Promise.reject(new TranscriptionServiceError('Internal Server Error', 500))
+    await runner.tick()
+
+    const stored = requireJob('tenant-a', job.id)
+    expect(stored.state).toBe('running')
+    expect(stored.error).toContain('Internal Server Error')
+    expect(client.submitted).toHaveLength(2)
+  })
+
+  it('ueberschreibt einen Zustandswechsel nicht, der waehrend der Einreichung passiert ist', async () => {
+    // The job is read at the start of the pass and the submit request can take
+    // 30 s. Writing that stale state back would silently revert whatever
+    // happened in between - Task 8 wires a cancel through IPC.
+    const runner = makeRunner()
+    const job = await runner.enqueue('tenant-a', 'ws1', writeAudio('a.wav', 64), 'critical')
+
+    let rejectSubmit: ((reason: Error) => void) | undefined
+    client.submitImpl = () =>
+      new Promise<{ jobId: string }>((_resolve, reject) => {
+        rejectSubmit = reject
+      })
+
+    const pass = runner.tick()
+    for (let spin = 0; spin < 50 && rejectSubmit === undefined; spin++) await Promise.resolve()
+    expect(rejectSubmit).toBeDefined()
+
+    // Arrives while the pass sits in its submit request.
+    TranscriptionModel.setState(job.id, 'cancelled')
+    rejectSubmit?.(new TranscriptionServiceUnreachableError('down'))
+    await pass
+
+    const stored = requireJob('tenant-a', job.id)
+    expect(stored.state).toBe('cancelled')
     expect(stored.error).toMatch(/^Wartet: /)
   })
 

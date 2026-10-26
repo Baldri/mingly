@@ -12,7 +12,18 @@ export interface TranscriptionJob {
   /** Stored as given; the scale is defined by the transcription service, not by this model. */
   progress: number
   targetId: string
-  /** Set when the job failed; cleared again by the next state change without an error. */
+  /**
+   * Why the job is not progressing — and it is NOT only set for failures.
+   *
+   * The job runner also uses it to say why a job is WAITING, prefixed with
+   * `Wartet: ` (service unreachable, no API key configured, models not loaded
+   * yet). There is no separate column for that, and a job sitting in the queue
+   * for an invisible reason is worse than a reused field.
+   *
+   * So read `state` to find out whether the job failed, never this field. It is
+   * cleared by the next state change without an error, and by the runner as
+   * soon as whatever it was waiting for is over.
+   */
   error?: string
   createdAt: number
   updatedAt: number
@@ -64,6 +75,21 @@ export class TranscriptionModel {
     dbRun(
       'UPDATE transcription_jobs SET state = ?, error = ?, updated_at = ? WHERE id = ?',
       [state, error ?? null, Date.now(), id]
+    )
+  }
+
+  /**
+   * Set or clear `error` WITHOUT touching the state.
+   *
+   * For a reason that does not move the job: the runner records why a job is
+   * waiting while it stays queued or running. Writing the state back from a
+   * value read seconds earlier would revert a state change made in between —
+   * a cancellation landing during a 30-second submit request, for instance.
+   */
+  static setError(id: string, error: string | null): void {
+    dbRun(
+      'UPDATE transcription_jobs SET error = ?, updated_at = ? WHERE id = ?',
+      [error, Date.now(), id]
     )
   }
 

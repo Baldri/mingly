@@ -285,7 +285,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     unauthenticated, so it raises and startup aborts.
     """
     security.assert_auth_config(host=HOST, require_auth=REQUIRE_AUTH, api_key=API_KEY)
-    SPOOL_DIR.mkdir(parents=True, exist_ok=True)
+    # mode=0o700: the spool holds the recordings themselves. Without a mode it
+    # is created 0755, and every other local account can list and read the
+    # meeting audio - for a product whose point is confidentiality, that is the
+    # whole game. This is the CREATING side; a mode argument does nothing to a
+    # directory that already exists, so Mingly refuses a spool it finds group-
+    # or world-accessible rather than quietly tightening it.
+    SPOOL_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     logger.info(
         "Auth: %s | spool: %s",
         "required" if security.auth_required(HOST, REQUIRE_AUTH) else "disabled (loopback)",

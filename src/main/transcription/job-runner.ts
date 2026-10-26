@@ -25,8 +25,10 @@
 
 import { randomUUID } from 'crypto'
 import fs from 'fs/promises'
+import { createReadStream, createWriteStream } from 'fs'
 import type { Stats } from 'fs'
 import path from 'path'
+import { pipeline } from 'stream/promises'
 import { DEFAULT_TENANT_ID } from '../database/index'
 import { TranscriptionModel } from '../database/models/transcription'
 import type { TranscriptionJob, TranscriptionJobState } from '../database/models/transcription'
@@ -115,7 +117,7 @@ const MAX_COUNTED_OBSERVATION_GAP_MS = 5 * 60 * 1000
 const HTTP_NOT_FOUND = 404
 const HTTP_UNAUTHORIZED = 401
 const HTTP_FORBIDDEN = 403
-const HTTP_SERVICE_UNAVAILABLE = 503
+const HTTP_TOO_MANY_REQUESTS = 429
 
 const AUDIT_ACTOR_ID = 'transcription-job-runner'
 const AUDIT_ENTITY_TYPE = 'transcription_job'
@@ -488,15 +490,20 @@ export class TranscriptionJobRunner {
    *
    * No audit entry: nothing changed state, and the audit records state
    * changes.
+   *
+   * Written as an error-only update, never as `setState(job.id, job.state)`:
+   * `job` was read at the start of the pass, and writing that state back would
+   * revert a change made in between - a cancellation arriving during a
+   * 30-second submit request would simply vanish.
    */
   private recordWaitReason(job: TranscriptionJob, reason: string): void {
-    TranscriptionModel.setState(job.id, job.state, `Wartet: ${reason}`)
+    TranscriptionModel.setError(job.id, `Wartet: ${reason}`)
   }
 
   private clearWaitReason(job: TranscriptionJob): void {
     // Only when there is something to clear - otherwise every poll of every
     // running job would write a row for nothing.
-    if (job.error !== undefined) TranscriptionModel.setState(job.id, job.state)
+    if (job.error !== undefined) TranscriptionModel.setError(job.id, null)
   }
 
   private fail(job: TranscriptionJob, reason: string): void {
@@ -567,22 +574,25 @@ export class TranscriptionJobRunner {
   }
 
   private async copyIntoSpool(audioPath: string): Promise<string> {
-    const spoolDir = this.spoolDir
-    // 0o700 on a directory this call creates: the spool holds personal audio,
-    // and `recursive: true` would otherwise take the default mode. An
-    // EXISTING directory is deliberately left alone - it may belong to a
-    // service account, and tightening it from here could lock the service out
-    // of its own spool.
-    await fs.mkdir(spoolDir, { recursive: true, mode: 0o700 })
+    const spoolDir = await this.prepareSpoolDir()
     // A generated name, not the original one: two recordings called
     // "aufnahme.wav" must not overwrite each other in a shared directory.
     const target = path.join(spoolDir, `${randomUUID()}${safeExtension(audioPath)}`)
     try {
-      await fs.copyFile(audioPath, target)
-      // `copyFile` creates with 0o666 minus the umask; the audio itself must
-      // not be readable by other accounts even when the directory already
-      // existed and was looser.
-      await fs.chmod(target, 0o600)
+      // The destination is created BY US at 0o600 and streamed into, rather
+      // than created by `copyFile` at 0o644 and tightened afterwards. The
+      // difference is not microseconds: `copyFile` creates the file and then
+      // streams into it, which is seconds for an hour of WAV, and a reader who
+      // opens it inside that window keeps the descriptor - and with it read
+      // access to the finished recording - across any later chmod. This way
+      // the file never exists at any other mode.
+      //
+      // `wx` keeps the never-overwrite property an explicit create would
+      // otherwise lose.
+      await pipeline(
+        createReadStream(audioPath),
+        createWriteStream(target, { flags: 'wx', mode: 0o600 })
+      )
     } catch (error) {
       // A copy that failed part-way leaves a truncated file behind that no row
       // will ever point at, so nothing would clean it up later.
@@ -590,6 +600,40 @@ export class TranscriptionJobRunner {
       throw error
     }
     return target
+  }
+
+  /**
+   * Make sure the spool directory exists AND is not readable by other local
+   * accounts, and hand back its path.
+   *
+   * The mode argument only applies to a directory this call actually creates.
+   * In the ordinary start order it never does: the service has to be running
+   * before Mingly submits anything, and it creates the spool itself (now with
+   * mode 0o700 - without a mode it was 0755, which is what made this a real
+   * exposure rather than a theoretical one).
+   *
+   * So a directory we find group- or world-accessible is REFUSED, not quietly
+   * tightened. Tightening someone else's directory could lock a service
+   * account out of its own spool, and doing it silently would hide a
+   * misconfigured deployment; refusing puts it in front of the user, on the
+   * job, in the same place as every other reason a recording did not run.
+   */
+  private async prepareSpoolDir(): Promise<string> {
+    const spoolDir = this.spoolDir
+    await fs.mkdir(spoolDir, { recursive: true, mode: 0o700 })
+
+    const { mode } = await fs.stat(spoolDir)
+    const openBits = mode & 0o077
+    if (openBits !== 0) {
+      throw new Error(
+        `das Spool-Verzeichnis ${spoolDir} ist fuer andere Konten dieses Rechners ` +
+          `zugaenglich (Rechte ${(mode & 0o777).toString(8)}). Darin liegen die ` +
+          'Aufnahmen selbst. Setze die Rechte auf 700 (chmod 700) und starte den ' +
+          'Transkriptionsdienst neu, damit er es kuenftig selbst so anlegt'
+      )
+    }
+
+    return spoolDir
   }
 
   private describeUnconfiguredTarget(targetId: string): string {
@@ -652,16 +696,24 @@ async function discard(filePath: string): Promise<void> {
  *   so until then EVERY job would die on the first pass against a service
  *   that requires one. A missing key is a configuration problem of the
  *   installation, not a property of the recording.
- * - **503** - models not loaded yet.
+ * - **429 and every 5xx** - the service is there and broke on its own side.
+ *   FastAPI answers 500 for any unhandled exception in the submit or poll
+ *   handler, a reverse proxy adds 502 and 504, and 503 is the service's own
+ *   "models not loaded yet". None of those is a statement about this
+ *   recording, and all of them pass.
  * - **2xx** - the client reports an unusable BODY by wrapping it in a
  *   `TranscriptionServiceError` that carries the ANSWER's own 2xx status
  *   (transcription-http-client.ts). The service accepted the request and is
  *   working: one garbled poll answer must not fail a job that has been
  *   computing for forty minutes, and a garbled submit answer must not fail a
  *   row for a job the service has already taken.
+ *
+ * What is left over - 400, 404 (handled before this is asked), 405, 413, 415 -
+ * is the service saying no about THIS request, and repeating it identically
+ * would not change the answer.
  */
 function isRetryableStatus(status: number): boolean {
   if (status === HTTP_UNAUTHORIZED || status === HTTP_FORBIDDEN) return true
-  if (status === HTTP_SERVICE_UNAVAILABLE) return true
+  if (status === HTTP_TOO_MANY_REQUESTS || status >= 500) return true
   return status >= 200 && status < 300
 }
