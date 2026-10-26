@@ -21,21 +21,36 @@ export class ActivityLogger implements ActivityLoggerInterface {
     const id = randomUUID()
     const createdAt = new Date().toISOString()
 
+    // Fixed column list, plus tenant_id only when the caller knows the tenant.
+    // A caller that does not keeps the statement it always had, so the column
+    // default assigns the installation's tenant exactly as before; a caller
+    // that does says so explicitly, because a later multi-tenant stage cannot
+    // reconstruct the owner afterwards.
+    const columns = [
+      'id', 'actor_type', 'actor_id', 'action', 'entity_type', 'entity_id', 'details', 'created_at',
+    ]
+    const params: (string | null)[] = [
+      id,
+      entry.actorType,
+      entry.actorId,
+      entry.action,
+      entry.entityType,
+      entry.entityId,
+      entry.details ? JSON.stringify(entry.details) : null,
+      createdAt,
+    ]
+
+    if (entry.tenantId !== undefined) {
+      columns.push('tenant_id')
+      params.push(entry.tenantId)
+    }
+
     try {
       dbRun(
         `INSERT INTO activity_log
-         (id, actor_type, actor_id, action, entity_type, entity_id, details, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          id,
-          entry.actorType,
-          entry.actorId,
-          entry.action,
-          entry.entityType,
-          entry.entityId,
-          entry.details ? JSON.stringify(entry.details) : null,
-          createdAt,
-        ]
+         (${columns.join(', ')})
+         VALUES (${columns.map(() => '?').join(', ')})`,
+        params
       )
     } catch (err) {
       logger.error('Failed to write activity log', { error: String(err), action: entry.action })
