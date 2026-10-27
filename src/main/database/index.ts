@@ -486,9 +486,7 @@ function migration5(database: SqlJsDatabase): void {
 
 function migration6(database: SqlJsDatabase): void {
   // Add billing_type column to tracking_events (api | subscription | free)
-  database.run(`
-    ALTER TABLE tracking_events ADD COLUMN billing_type TEXT NOT NULL DEFAULT 'api'
-  `)
+  addColumnIfMissing(database, 'tracking_events', 'billing_type', "TEXT NOT NULL DEFAULT 'api'")
 
   // Create a convenience view that aggregates costs per conversation
   database.run(`
@@ -572,21 +570,15 @@ function migration8(database: SqlJsDatabase): void {
 
 function migration9(database: SqlJsDatabase): void {
   // Add template_id to conversations for prompt template association
-  database.run(`
-    ALTER TABLE conversations ADD COLUMN template_id TEXT
-  `)
+  addColumnIfMissing(database, 'conversations', 'template_id', 'TEXT')
 
   log.info('Migration 9 completed: template_id column added to conversations')
 }
 
 function migration10(database: SqlJsDatabase): void {
   // Link conversations to RAG-Wissen projects for per-conversation context injection
-  database.run(`
-    ALTER TABLE conversations ADD COLUMN project_id TEXT
-  `)
-  database.run(`
-    ALTER TABLE conversations ADD COLUMN rag_collection_name TEXT
-  `)
+  addColumnIfMissing(database, 'conversations', 'project_id', 'TEXT')
+  addColumnIfMissing(database, 'conversations', 'rag_collection_name', 'TEXT')
   database.run(`
     CREATE INDEX IF NOT EXISTS idx_conversations_project
     ON conversations(project_id)
@@ -615,9 +607,12 @@ function migration11(database: SqlJsDatabase): void {
   // The column default (not NULL) assigns existing rows to the default tenant,
   // so legacy data never ends up without an owner or with a foreign one.
   for (const table of tenantTables) {
-    database.run(`
-      ALTER TABLE ${table} ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT_ID}'
-    `)
+    addColumnIfMissing(
+      database,
+      table,
+      'tenant_id',
+      `TEXT NOT NULL DEFAULT '${DEFAULT_TENANT_ID}'`
+    )
   }
 
   log.info('Migration 11 completed: tenant_id column added to all tables')
