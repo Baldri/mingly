@@ -300,6 +300,12 @@ function runMigrations(database: SqlJsDatabase): void {
     migration12(database)
     setSchemaVersion(database, 12)
   }
+
+  if (version < 13) {
+    log.info('Running migration 13: Create transcription_retention table and job retention columns')
+    migration13(database)
+    setSchemaVersion(database, 13)
+  }
 }
 
 function migration1(database: SqlJsDatabase): void {
@@ -662,4 +668,74 @@ function migration12(database: SqlJsDatabase): void {
   `)
 
   log.info('Migration 12 completed: transcription_jobs and transcription_segments tables created')
+}
+
+function migration13(database: SqlJsDatabase): void {
+  // Retention periods per workspace, in a table of their own rather than in
+  // `settings`: that table's PRIMARY KEY is `key` alone, so it is global. A
+  // tenant_id column would not make a key unique per tenant, and two tenants
+  // holding the same key would collide on the primary key.
+  //
+  // The primary key is (tenant_id, workspace_id), so one workspace of one
+  // tenant has exactly one pair of periods, and an UPSERT cannot grow a second
+  // row for it.
+  database.run(`
+    CREATE TABLE IF NOT EXISTS transcription_retention (
+      tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT_ID}',
+      workspace_id TEXT NOT NULL,
+      audio_days INTEGER NOT NULL,
+      transcript_days INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, workspace_id)
+    )
+  `)
+
+  // When the audio of this job was removed by the retention run, NULL while it
+  // is still there. Without it the two periods cannot run apart: a job whose
+  // audio has expired but whose transcript has not would be found again by
+  // every later run, and the count it returns would be a lie. The file system
+  // is not that marker - a file can be missing for reasons the retention run
+  // did not cause, and a missing file must not count as a deletion for ever.
+  addColumnIfMissing(database, 'transcription_jobs', 'audio_deleted_at', 'INTEGER')
+
+  // How often this job has been handed to the service. UNUSED in this
+  // migration's task - the column exists so that the cap can be wired without a
+  // second migration. The reason it is needed: the runner's in-memory `tracked`
+  // entry is dropped on requeue, i.e. exactly on the retry, so nothing counts
+  // attempts today, and a job with a permanently wrong configuration repeats
+  // without end - with a database write per job per pass, every five seconds.
+  addColumnIfMissing(database, 'transcription_jobs', 'attempts', 'INTEGER NOT NULL DEFAULT 0')
+
+  log.info('Migration 13 completed: transcription_retention table and job retention columns added')
+}
+
+/**
+ * Add a column only if the table does not have it yet.
+ *
+ * `CREATE TABLE IF NOT EXISTS` makes a migration repeatable; `ALTER TABLE ADD
+ * COLUMN` does not, and migrations run here WITHOUT an enclosing transaction.
+ * A migration that fails after its first ALTER therefore leaves the schema
+ * half applied and its version unwritten - and the next start replays it and
+ * dies on "duplicate column name", with no way out from inside the app. The
+ * column list is read instead of assumed, because that is the state the
+ * decision depends on.
+ */
+function addColumnIfMissing(
+  database: SqlJsDatabase,
+  table: string,
+  column: string,
+  definition: string
+): void {
+  const stmt = database.prepare(`PRAGMA table_info(${table})`)
+  let present = false
+  while (stmt.step()) {
+    if (stmt.getAsObject().name === column) present = true
+  }
+  stmt.free()
+
+  if (present) {
+    log.info('Column already present, skipping ALTER', { table, column })
+    return
+  }
+
+  database.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
 }

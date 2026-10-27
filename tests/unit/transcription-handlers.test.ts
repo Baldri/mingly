@@ -79,6 +79,12 @@ interface SegmentsResult {
   segments?: TranscriptionSegment[]
 }
 
+interface DeleteResult {
+  success: boolean
+  error?: string
+  jobId?: string
+}
+
 interface RecordedRequest {
   url: string
   authorization: string | undefined
@@ -401,6 +407,75 @@ describe('Transkriptions-IPC', () => {
     expect(result.success).toBe(false)
     expect(result.error).toMatch(/done/)
     expect(TranscriptionModel.getJob(job.id, DEFAULT_TENANT_ID)?.state).toBe('done')
+  })
+
+  // ── Deletion ───────────────────────────────────────────────────
+
+  /**
+   * A recording where a job's `audio_path` actually points: the spool copy.
+   * The deletion confines itself to that directory, so a job pointing anywhere
+   * else is refused rather than deleted.
+   */
+  function writeSpooled(name: string): string {
+    const spoolDir = path.join(tmpDir, 'spool')
+    fs.mkdirSync(spoolDir, { recursive: true, mode: 0o700 })
+    const file = path.join(spoolDir, name)
+    fs.writeFileSync(file, Buffer.alloc(64, 1), { mode: 0o600 })
+    return file
+  }
+
+  it('loescht einen Auftrag samt Aufnahme und Transkript', async () => {
+    const audio = writeSpooled('zu-loeschen.wav')
+    const job = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', audio, 'local')
+    TranscriptionModel.saveSegments(job.id, [segment(job.id, 'Text')])
+
+    const result = await invoke<DeleteResult>(IPC_CHANNELS.TRANSCRIPTION_DELETE, job.id)
+
+    expect(result.success).toBe(true)
+    expect(result.jobId).toBe(job.id)
+    expect(fs.existsSync(audio)).toBe(false)
+    expect(TranscriptionModel.getJob(job.id, DEFAULT_TENANT_ID)).toBeNull()
+    expect(TranscriptionModel.getSegments(job.id, DEFAULT_TENANT_ID)).toHaveLength(0)
+  })
+
+  it('loescht keinen Auftrag eines anderen Mandanten', async () => {
+    const audio = writeSpooled('fremd.wav')
+    const foreign = TranscriptionModel.createJob(FOREIGN_TENANT, 'ws9', audio, 'local')
+    TranscriptionModel.saveSegments(foreign.id, [segment(foreign.id, 'fremder Text')])
+
+    const result = await invoke<DeleteResult>(IPC_CHANNELS.TRANSCRIPTION_DELETE, foreign.id)
+
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/nicht gefunden/)
+    expect(fs.existsSync(audio)).toBe(true)
+    expect(TranscriptionModel.getJob(foreign.id, FOREIGN_TENANT)).not.toBeNull()
+    expect(TranscriptionModel.getSegments(foreign.id, FOREIGN_TENANT)).toHaveLength(1)
+
+    // Positivkontrolle im selben Lauf: der eigene Auftrag geht ueber denselben
+    // Kanal weg, die Verweigerung oben ist also der Mandantenfilter.
+    const own = TranscriptionModel.createJob(
+      DEFAULT_TENANT_ID,
+      'ws1',
+      writeSpooled('eigen.wav'),
+      'local'
+    )
+    expect((await invoke<DeleteResult>(IPC_CHANNELS.TRANSCRIPTION_DELETE, own.id)).success).toBe(true)
+  })
+
+  it('loescht auch unterhalb der Abo-Stufe, die das Transkribieren verlangt', async () => {
+    const audio = writeSpooled('trotz-free.wav')
+    const job = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', audio, 'local')
+    getFeatureGateManager().setTier('free')
+
+    // Positivkontrolle im selben Lauf: das LESEN ist auf dieser Stufe gesperrt,
+    // die Loeschung unten ist also die Ausnahme und nicht ein stummer Gate.
+    expect((await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_STATUS, job.id)).success).toBe(false)
+
+    const result = await invoke<DeleteResult>(IPC_CHANNELS.TRANSCRIPTION_DELETE, job.id)
+
+    expect(result.success).toBe(true)
+    expect(fs.existsSync(audio)).toBe(false)
+    expect(TranscriptionModel.getJob(job.id, DEFAULT_TENANT_ID)).toBeNull()
   })
 
   // ── Input validation at the trust boundary ─────────────────────

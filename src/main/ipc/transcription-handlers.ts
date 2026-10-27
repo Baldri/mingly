@@ -27,6 +27,7 @@ import { DEFAULT_TENANT_ID } from '../database/index'
 import { TranscriptionModel } from '../database/models/transcription'
 import type { TranscriptionJob, TranscriptionSegment } from '../database/models/transcription'
 import { getTranscriptionJobRunner } from '../transcription/job-runner'
+import { deleteJob } from '../transcription/retention'
 import {
   applyTranscriptionApiKey,
   resolveTranscriptionApiKey
@@ -71,6 +72,11 @@ interface JobReply {
 interface SegmentsReply {
   success: true
   segments: TranscriptionSegment[]
+}
+
+interface DeletedReply {
+  success: true
+  jobId: string
 }
 
 /**
@@ -324,6 +330,26 @@ export function registerTranscriptionHandlers(): void {
     const job = TranscriptionModel.getJob(id, tenantId)
     if (job === null) throw new Error(NOT_FOUND)
     return { success: true, job: toView(job) }
+  })
+
+  /**
+   * Delete a job for good: recording, transcript, row. The audit entries stay.
+   *
+   * The ONE channel here without `requireFeature`, on purpose. The gate
+   * decides whether this installation may HAVE the feature, and a plan that
+   * ran out would otherwise lock the user out of their own recordings and
+   * transcripts - the subscription state would decide whether personal data
+   * can be erased, which is the one thing that must never depend on it
+   * ("Loeschen muss loeschen", design 8). It hands nothing out either: the
+   * only answer is that the job is gone.
+   *
+   * The tenant filter stays in front of it twice over, as everywhere on this
+   * surface - once here for the uniform refusal, once in `deleteJob`.
+   */
+  wrapHandler(IPC_CHANNELS.TRANSCRIPTION_DELETE, (jobId: unknown): DeletedReply => {
+    const job = requireOwnJob(jobId)
+    deleteJob(job.id, callerTenantId())
+    return { success: true, jobId: job.id }
   })
 }
 

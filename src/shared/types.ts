@@ -740,6 +740,7 @@ export const IPC_CHANNELS = {
   TRANSCRIPTION_STATUS: 'transcription:status',
   TRANSCRIPTION_SEGMENTS: 'transcription:segments',
   TRANSCRIPTION_CANCEL: 'transcription:cancel',
+  TRANSCRIPTION_DELETE: 'transcription:delete',
 } as const
 
 // ---------------------------------------------------------------------------
