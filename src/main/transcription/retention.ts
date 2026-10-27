@@ -288,13 +288,20 @@ export function deleteJob(jobId: string, tenantId: string): void {
   )
   if (row === null) throw new Error(NOT_FOUND)
 
+  // Without a resolvable spool root the provenance cannot be established, so
+  // the recording counts as foreign and is left alone - exactly like a path
+  // outside the spool. Refusing here instead produced the one outcome the
+  // `not-ours` reasoning below rules out, and it produced it in the DEFAULT
+  // configuration: with no `TRANSCRIPTION_SPOOL_DIR`, `enqueue` still records
+  // the job through `refuse()`, and that row carries the user's OWN recording
+  // path - which could then never be deleted, keeping the filename of a
+  // private recording for good. Refusal is right for one case only: a spool
+  // copy that was identified and could not be removed, which is `failed`.
   const spool = resolveSpoolRoot()
-  if (spool.root === undefined) {
-    logger.warn('Job deletion refused', { jobId: id, reason: spool.refusal })
-    throw new Error(DELETE_REFUSED)
-  }
-
-  const removal = removeRecording(spool.root, row.audio_path as string)
+  const removal: Removal =
+    spool.root === undefined
+      ? { outcome: 'not-ours', reason: spool.refusal }
+      : removeRecording(spool.root, row.audio_path as string)
   if (removal.outcome === 'failed') {
     // The spool copy is still there and the row is the only thing that points
     // at it. Deleting the row now would strand the recording on disk for good,

@@ -148,6 +148,15 @@ describe('Transkriptions-Aufbewahrung', () => {
     return dbAll('SELECT * FROM activity_log WHERE tenant_id = ?', [tenantId])
   }
 
+  /** The details of the one deletion entry for this job, parsed. */
+  function detailsOfDeletion(jobId: string): { recordingKept?: boolean } {
+    const entries = auditEntries(DEFAULT_TENANT_ID).filter(
+      (e) => e.entity_id === jobId && e.action === 'transcription.deleted'
+    )
+    expect(entries).toHaveLength(1)
+    return JSON.parse(String(entries[0].details)) as { recordingKept?: boolean }
+  }
+
   // ── Schema ─────────────────────────────────────────────────────
 
   describe('Migration 13', () => {
@@ -469,6 +478,29 @@ describe('Transkriptions-Aufbewahrung', () => {
   // ── deleteJob ──────────────────────────────────────────────────
 
   describe('deleteJob', () => {
+    it('loescht auch ohne Spool-Verzeichnis, statt die Zeile fuer immer zu behalten', () => {
+      // Positive control first, in the same run: with the spool configured the
+      // recording goes and the entry says so.
+      const removed = makeJob('mit-spool')
+      deleteJob(removed.id, DEFAULT_TENANT_ID)
+      expect(fs.existsSync(removed.audioPath)).toBe(false)
+      expect(detailsOfDeletion(removed.id).recordingKept).toBe(false)
+
+      // One variable: no spool directory. `enqueue` records a refused job in
+      // exactly this state, and that row carries the user's own recording
+      // path - so a refusal here would keep that filename for good.
+      const kept = makeJob('ohne-spool')
+      vi.stubEnv('TRANSCRIPTION_SPOOL_DIR', '')
+
+      expect(() => deleteJob(kept.id, DEFAULT_TENANT_ID)).not.toThrow()
+      expect(jobExists(kept.id)).toBe(false)
+      expect(segmentCount(kept.id)).toBe(0)
+      // The file cannot be shown to be ours, so it stays - and the entry says
+      // that too, instead of claiming a deletion that did not happen.
+      expect(fs.existsSync(kept.audioPath)).toBe(true)
+      expect(detailsOfDeletion(kept.id).recordingKept).toBe(true)
+    })
+
     it('loescht Audiodatei, Job und Segmente, aber NICHT den Audit-Eintrag', () => {
       const job = makeJob('zu-loeschen')
       getActivityLogger().log({
