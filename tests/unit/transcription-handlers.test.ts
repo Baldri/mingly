@@ -27,9 +27,19 @@ import type { AddressInfo } from 'net'
 
 // Defined through vi.hoisted because the vi.mock factory below is hoisted
 // above the imports and would otherwise close over undefined bindings.
-const { ipcHandlers, electronPaths } = vi.hoisted(() => ({
+const { ipcHandlers, electronPaths, saveDialog } = vi.hoisted(() => ({
   ipcHandlers: new Map<string, (event: unknown, ...args: unknown[]) => unknown>(),
-  electronPaths: { userData: '' }
+  electronPaths: { userData: '' },
+  /**
+   * The save dialog the export channel opens. `calls` is recorded rather than
+   * only the answer, because two of the tests below assert that the dialog was
+   * NOT opened at all - a refusal that happens after the user has picked a
+   * location is a different thing from one that happens before.
+   */
+  saveDialog: {
+    result: { canceled: true } as { canceled: boolean; filePath?: string },
+    calls: [] as { defaultPath?: string; filters?: unknown }[]
+  }
 }))
 
 vi.mock('electron', () => ({
@@ -38,6 +48,12 @@ vi.mock('electron', () => ({
     handle: (channel: string, handler: (event: unknown, ...args: unknown[]) => unknown): void => {
       ipcHandlers.set(channel, handler)
     }
+  },
+  dialog: {
+    showSaveDialog: (options: { defaultPath?: string; filters?: unknown }) => {
+      saveDialog.calls.push(options)
+      return Promise.resolve(saveDialog.result)
+    }
   }
 }))
 
@@ -45,10 +61,13 @@ import { IPC_CHANNELS } from '../../src/shared/types'
 import {
   initializeDatabase,
   closeDatabase,
+  dbAll,
+  dbRun,
   DEFAULT_TENANT_ID
 } from '../../src/main/database/index'
 import {
   TranscriptionModel,
+  type TranscriptionJob,
   type TranscriptionSegment
 } from '../../src/main/database/models/transcription'
 import {
@@ -83,6 +102,13 @@ interface DeleteResult {
   success: boolean
   error?: string
   jobId?: string
+}
+
+interface ExportResult {
+  success: boolean
+  error?: string
+  canceled?: boolean
+  filePath?: string
 }
 
 interface RecordedRequest {
@@ -127,6 +153,28 @@ async function waitFor(condition: () => boolean, timeoutMs = 3000): Promise<void
 
 function segment(jobId: string, text: string): TranscriptionSegment {
   return { jobId, index: 0, startMs: 0, endMs: 900, speaker: 'S0', text }
+}
+
+/** A segment with its own place in the transcript, for the export tests. */
+function segmentAt(
+  jobId: string,
+  index: number,
+  startMs: number,
+  endMs: number,
+  speaker: string,
+  text: string
+): TranscriptionSegment {
+  return { jobId, index, startMs, endMs, speaker, text }
+}
+
+/**
+ * The timestamp the default export name is expected to carry, built from a
+ * DIFFERENT instrument than the handler: ICU's sv-SE locale prints local time
+ * as `YYYY-MM-DD HH:MM:SS`, where the handler pads the components by hand. A
+ * copy of the handler's own arithmetic would make the assertion unfalsifiable.
+ */
+function expectedStamp(epochMs: number): string {
+  return new Date(epochMs).toLocaleString('sv-SE').replace(' ', '-').replace(/:/g, '')
 }
 
 describe('Transkriptions-IPC', () => {
@@ -237,6 +285,10 @@ describe('Transkriptions-IPC', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-transcription-ipc-'))
     await initializeDatabase(tmpDir)
     vi.stubEnv('TRANSCRIPTION_SPOOL_DIR', path.join(tmpDir, 'spool'))
+    // A cancelled dialog is the default, so a test that forgets to point the
+    // dialog somewhere cannot write a file by accident.
+    saveDialog.result = { canceled: true }
+    saveDialog.calls = []
     // The transcription feature needs a paid tier; the tier test sets Free itself.
     getFeatureGateManager().setTier('pro')
   })
@@ -476,6 +528,301 @@ describe('Transkriptions-IPC', () => {
     expect(result.success).toBe(true)
     expect(fs.existsSync(audio)).toBe(false)
     expect(TranscriptionModel.getJob(job.id, DEFAULT_TENANT_ID)).toBeNull()
+  })
+
+  // ── Export (txt / SRT) ─────────────────────────────────────────
+
+  /** Every activity log row of one tenant, for the export audit assertions. */
+  function auditEntries(tenantId: string): Record<string, unknown>[] {
+    return dbAll('SELECT * FROM activity_log WHERE tenant_id = ?', [tenantId])
+  }
+
+  function exportEntries(jobId: string, tenantId = DEFAULT_TENANT_ID): Record<string, unknown>[] {
+    return auditEntries(tenantId).filter(
+      (entry) => entry.entity_id === jobId && entry.action === 'transcription.exported'
+    )
+  }
+
+  /** Where the next save dialog pretends the user pointed. */
+  function saveTo(name: string): string {
+    const target = path.join(tmpDir, 'Kundenakte Meier', name)
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    saveDialog.result = { canceled: false, filePath: target }
+    return target
+  }
+
+  /** A finished job with a transcript — the only kind the export accepts. */
+  function doneJob(
+    segments: (jobId: string) => TranscriptionSegment[],
+    tenantId = DEFAULT_TENANT_ID,
+    workspaceId = 'ws1'
+  ): TranscriptionJob {
+    const job = TranscriptionModel.createJob(tenantId, workspaceId, '/spool/a.wav', 'local')
+    TranscriptionModel.saveSegments(job.id, segments(job.id))
+    TranscriptionModel.setState(job.id, 'done')
+    return TranscriptionModel.getJob(job.id, tenantId) as TranscriptionJob
+  }
+
+  it('schreibt ein fertiges Transkript als SRT in die gewaehlte Datei', async () => {
+    const job = doneJob((id) => [
+      segmentAt(id, 0, 0, 1_500, 'SPEAKER_00', 'Guten Tag'),
+      segmentAt(id, 1, 1_500, 3_250, 'SPEAKER_01', 'Gruezi')
+    ])
+    const target = saveTo('transkript.srt')
+
+    const result = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'srt')
+
+    expect(result.success).toBe(true)
+    expect(result.filePath).toBe(target)
+    expect(fs.readFileSync(target, 'utf-8')).toBe(
+      '1\n00:00:00,000 --> 00:00:01,500\nSPEAKER_00: Guten Tag\n\n' +
+        '2\n00:00:01,500 --> 00:00:03,250\nSPEAKER_01: Gruezi\n\n'
+    )
+  })
+
+  it('schreibt ein fertiges Transkript als Text in die gewaehlte Datei', async () => {
+    const job = doneJob((id) => [segmentAt(id, 0, 0, 900, 'SPEAKER_00', 'Guten Tag')])
+    const target = saveTo('transkript.txt')
+
+    const result = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')
+
+    expect(result.success).toBe(true)
+    expect(fs.readFileSync(target, 'utf-8')).toBe('SPEAKER_00: Guten Tag\n')
+  })
+
+  it('exportiert das Transkript eines anderen Mandanten nicht', async () => {
+    const foreign = doneJob(
+      (id) => [segmentAt(id, 0, 0, 900, 'SPEAKER_00', 'fremder Text')],
+      FOREIGN_TENANT,
+      'ws9'
+    )
+    const target = saveTo('fremd.txt')
+
+    const result = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, foreign.id, 'txt')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/nicht gefunden/)
+    expect(fs.existsSync(target)).toBe(false)
+    // The dialog never opened, so nothing about the foreign job reached the
+    // screen either - not even its default file name.
+    expect(saveDialog.calls).toHaveLength(0)
+    expect(JSON.stringify(result)).not.toContain('fremder Text')
+    expect(exportEntries(foreign.id, FOREIGN_TENANT)).toHaveLength(0)
+
+    // Positivkontrolle im selben Lauf: der eigene Auftrag geht ueber denselben
+    // Kanal heraus, die Verweigerung oben ist also der Mandantenfilter.
+    const own = doneJob((id) => [segmentAt(id, 0, 0, 900, 'SPEAKER_00', 'eigener Text')])
+    const ownTarget = saveTo('eigen.txt')
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, own.id, 'txt')).success).toBe(true)
+    expect(fs.readFileSync(ownTarget, 'utf-8')).toContain('eigener Text')
+  })
+
+  it('exportiert einen Auftrag, der nicht abgeschlossen ist, mit sichtbarem Grund nicht', async () => {
+    // WITH segments, although a waiting job has none: that way the refusal
+    // below can only be the state check and not an empty transcript.
+    const job = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/a.wav', 'local')
+    TranscriptionModel.saveSegments(job.id, [segmentAt(job.id, 0, 0, 900, 'SPEAKER_00', 'Guten Tag')])
+    const target = saveTo('zu-frueh.txt')
+
+    const result = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/abgeschlossen/)
+    // The state is named, so the caller learns WHY and not just that it failed.
+    expect(result.error).toContain('queued')
+    expect(fs.existsSync(target)).toBe(false)
+    expect(saveDialog.calls).toHaveLength(0)
+    expect(exportEntries(job.id)).toHaveLength(0)
+
+    // Positivkontrolle im selben Lauf: derselbe Auftrag, fertig gemeldet, geht
+    // heraus - die Verweigerung oben haengt am Zustand und an nichts sonst.
+    TranscriptionModel.setState(job.id, 'done')
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')).success).toBe(true)
+    expect(fs.readFileSync(target, 'utf-8')).toBe('SPEAKER_00: Guten Tag\n')
+  })
+
+  it('exportiert einen abgeschlossenen Auftrag ohne Transkript nicht als leere Datei', async () => {
+    // 'done' does NOT imply a transcript, measured on the code rather than
+    // assumed: `observe` sets the state FIRST and saves the segments second
+    // (job-runner.ts), and the HTTP client accepts an empty segment list - it
+    // only checks that `segments` is a list (transcription-http-client.ts).
+    // A service answering 'done' with no segments produces exactly this row,
+    // and `exportTranscript([], 'txt')` returns the empty string, so without
+    // this check the user would get a file claiming an empty transcript.
+    const job = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/a.wav', 'local')
+    TranscriptionModel.setState(job.id, 'done')
+    const target = saveTo('leer.txt')
+
+    const result = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/kein Transkript/)
+    expect(fs.existsSync(target)).toBe(false)
+    expect(saveDialog.calls).toHaveLength(0)
+    expect(exportEntries(job.id)).toHaveLength(0)
+
+    // Positivkontrolle im selben Lauf: derselbe Auftrag mit einem Segment geht
+    // heraus - die Verweigerung oben haengt am leeren Transkript und an nichts
+    // sonst, der Zustand ist in beiden Faellen 'done'.
+    TranscriptionModel.saveSegments(job.id, [
+      segmentAt(job.id, 0, 0, 900, 'SPEAKER_00', 'Guten Tag')
+    ])
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')).success).toBe(true)
+    expect(fs.readFileSync(target, 'utf-8')).toBe('SPEAKER_00: Guten Tag\n')
+  })
+
+  it('exportiert nicht unterhalb der Abo-Stufe, die das Transkribieren verlangt', async () => {
+    const job = doneJob((id) => [segmentAt(id, 0, 0, 900, 'SPEAKER_00', 'Guten Tag')])
+    const target = saveTo('gesperrt.txt')
+    getFeatureGateManager().setTier('free')
+
+    const result = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/requires pro plan/i)
+    expect(result.error).toContain('transcription')
+    expect(fs.existsSync(target)).toBe(false)
+    expect(saveDialog.calls).toHaveLength(0)
+    expect(exportEntries(job.id)).toHaveLength(0)
+
+    // Positivkontrolle im selben Lauf: auf der verlangten Stufe geht derselbe
+    // Aufruf durch - und das LOESCHEN geht auf 'free' weiterhin, die Asymmetrie
+    // der beiden Kanaele ist also gewollt und nicht ein vergessener Gate.
+    getFeatureGateManager().setTier('pro')
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')).success).toBe(true)
+
+    // Through writeSpooled, because the deletion needs a resolvable spool
+    // directory before it will delete anything at all (retention.ts).
+    const andererJob = TranscriptionModel.createJob(
+      DEFAULT_TENANT_ID,
+      'ws1',
+      writeSpooled('trotz-free.wav'),
+      'local'
+    )
+    getFeatureGateManager().setTier('free')
+    expect((await invoke<DeleteResult>(IPC_CHANNELS.TRANSCRIPTION_DELETE, andererJob.id)).success).toBe(true)
+  })
+
+  it('weist ein unbekanntes Exportformat zurueck, statt es zu deuten', async () => {
+    const job = doneJob((id) => [segmentAt(id, 0, 0, 900, 'SPEAKER_00', 'Guten Tag')])
+    const target = saveTo('format.txt')
+
+    const rejected = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'pdf')
+
+    expect(rejected.success).toBe(false)
+    expect(rejected.error).toMatch(/Exportformat/)
+    // The refusal says what IS allowed, as the protection level's does.
+    expect(rejected.error).toContain('txt')
+    expect(rejected.error).toContain('srt')
+    expect(fs.existsSync(target)).toBe(false)
+    expect(saveDialog.calls).toHaveLength(0)
+
+    // Positivkontrolle im selben Lauf: beide erlaubten Formate gehen durch.
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')).success).toBe(true)
+    saveTo('format.srt')
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'srt')).success).toBe(true)
+  })
+
+  it('reicht eine Verweigerung aus exportTranscript als Fehler durch, statt abzustuerzen', async () => {
+    // A cue that ends before it starts: one of the five conditions
+    // exportTranscript refuses. Nothing between the model and the export
+    // prevents such a row, so this is the reachable case.
+    const job = doneJob((id) => [segmentAt(id, 0, 2_000, 1_000, 'SPEAKER_00', 'Guten Tag')])
+    const target = saveTo('kaputt.srt')
+
+    const result = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'srt')
+
+    expect(result.success).toBe(false)
+    // German sentence for the user, the measured reason verbatim behind it.
+    expect(result.error).toMatch(/kann nicht exportiert werden/)
+    expect(result.error).toMatch(/before it starts/)
+    // Rendered BEFORE the dialog: the refusal costs no dialog and leaves no
+    // half-written file behind.
+    expect(saveDialog.calls).toHaveLength(0)
+    expect(fs.existsSync(target)).toBe(false)
+    expect(exportEntries(job.id)).toHaveLength(0)
+
+    // Positivkontrolle im selben Lauf: derselbe Kanal, dasselbe Format, mit
+    // einer heilen Cue - der Fehler oben ist der Inhalt und nicht der Weg.
+    const heil = doneJob((id) => [segmentAt(id, 0, 1_000, 2_000, 'SPEAKER_00', 'Guten Tag')])
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, heil.id, 'srt')).success).toBe(true)
+  })
+
+  it('schreibt beim Abbruch des Speicherdialogs keine Datei und keinen Audit-Eintrag', async () => {
+    const job = doneJob((id) => [segmentAt(id, 0, 0, 900, 'SPEAKER_00', 'Guten Tag')])
+    const target = path.join(tmpDir, 'nie-geschrieben.txt')
+    saveDialog.result = { canceled: true, filePath: target }
+
+    const result = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')
+
+    expect(result.success).toBe(false)
+    expect(result.canceled).toBe(true)
+    // An abort is not a failure: nothing to show the user as an error.
+    expect(result.error).toBeUndefined()
+    // The dialog DID open - the abort is the user's, not an earlier refusal.
+    expect(saveDialog.calls).toHaveLength(1)
+    expect(fs.existsSync(target)).toBe(false)
+    expect(exportEntries(job.id)).toHaveLength(0)
+
+    // Positivkontrolle im selben Lauf: derselbe Aufruf mit einem bestaetigten
+    // Dialog schreibt Datei UND Eintrag, der Nullbefund oben ist also der
+    // Abbruch und nicht ein Audit, das nie etwas schreibt.
+    const confirmed = saveTo('doch-geschrieben.txt')
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')).success).toBe(true)
+    expect(fs.existsSync(confirmed)).toBe(true)
+    expect(exportEntries(job.id)).toHaveLength(1)
+  })
+
+  it('nennt im Audit-Eintrag Format und Umfang, aber weder Transkripttext noch Zielpfad', async () => {
+    const job = doneJob((id) => [
+      segmentAt(id, 0, 0, 900, 'SPEAKER_00', 'Streng vertraulicher Satz'),
+      segmentAt(id, 1, 900, 1_800, 'SPEAKER_01', 'Noch einer')
+    ])
+    const target = saveTo('audit.srt')
+
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'srt')).success).toBe(true)
+
+    const entries = exportEntries(job.id)
+    expect(entries).toHaveLength(1)
+    const entry = entries[0]
+    expect(entry.actor_type).toBe('user')
+    expect(entry.entity_type).toBe('transcription_job')
+    expect(JSON.parse(entry.details as string)).toEqual({
+      workspaceId: 'ws1',
+      format: 'srt',
+      segmentCount: 2
+    })
+
+    // Neither the content nor the place it went: the entry outlives the job
+    // (the deletion leaves it standing), and the path names the user's own
+    // directories - here a client's name.
+    const serialised = JSON.stringify(entries)
+    expect(serialised).not.toContain('Streng vertraulicher Satz')
+    expect(serialised).not.toContain('SPEAKER_00')
+    expect(serialised).not.toContain(target)
+    expect(serialised).not.toContain('Kundenakte Meier')
+  })
+
+  it('bildet den Standard-Dateinamen aus dem Erstellzeitpunkt des Auftrags', async () => {
+    const job = doneJob((id) => [segmentAt(id, 0, 0, 900, 'SPEAKER_00', 'Guten Tag')])
+    // Pinned on the row rather than through a fake clock: the handler reads
+    // `created_at`, and faking Date would also move everything else in the
+    // pass.
+    const madeAt = Date.UTC(2026, 9, 27, 12, 35, 12)
+    dbRun('UPDATE transcription_jobs SET created_at = ? WHERE id = ?', [madeAt, job.id])
+    saveTo('egal.srt')
+
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'srt')).success).toBe(true)
+
+    expect(saveDialog.calls).toHaveLength(1)
+    expect(saveDialog.calls[0].defaultPath).toBe(`Transkript-${expectedStamp(madeAt)}.srt`)
+    // Nothing in the name a file system reads as structure: it is built from
+    // digits and hyphens, so there is no title to strip.
+    expect(saveDialog.calls[0].defaultPath).not.toMatch(/[/\\:]/)
+    // The dialog offers the format that was asked for, not a free choice.
+    expect(saveDialog.calls[0].filters).toEqual([
+      { name: 'SRT-Untertitel', extensions: ['srt'] }
+    ])
   })
 
   // ── Input validation at the trust boundary ─────────────────────

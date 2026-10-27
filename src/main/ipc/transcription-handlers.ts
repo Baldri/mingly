@@ -1,5 +1,5 @@
 /**
- * IPC Handlers — Transcription (submit, status, segments, cancel)
+ * IPC Handlers — Transcription (submit, status, segments, cancel, delete, export)
  *
  * This is where the transcription feature becomes reachable: before it, the
  * job runner had no caller, the HTTP client had no key and nothing ran a pass.
@@ -21,13 +21,16 @@
 
 import fs from 'fs/promises'
 import { extname } from 'path'
+import { dialog } from 'electron'
 import { IPC_CHANNELS, TRANSCRIPTION_WAITING_STATES } from '../../shared/types'
-import type { TranscriptionJobView } from '../../shared/types'
+import type { TranscriptionJobView, TranscriptExportFormat } from '../../shared/types'
 import { DEFAULT_TENANT_ID } from '../database/index'
 import { TranscriptionModel } from '../database/models/transcription'
 import type { TranscriptionJob, TranscriptionSegment } from '../database/models/transcription'
+import { getActivityLogger } from '../audit/activity-logger'
 import { getTranscriptionJobRunner } from '../transcription/job-runner'
 import { deleteJob } from '../transcription/retention'
+import { exportTranscript } from '../transcription/transcript-export'
 import {
   applyTranscriptionApiKey,
   resolveTranscriptionApiKey
@@ -78,6 +81,16 @@ interface DeletedReply {
   success: true
   jobId: string
 }
+
+/**
+ * A written file, or an abort.
+ *
+ * The abort is NOT an error: nothing failed and nothing left the app, so there
+ * is no message for the caller to show. A failure arrives the way every other
+ * refusal on this surface does - as `{ success: false, error }` from
+ * `wrapHandler` - which is what tells the two apart.
+ */
+type ExportReply = { success: true; filePath: string } | { success: false; canceled: true }
 
 /**
  * The tenant these handlers read and write for.
@@ -245,6 +258,133 @@ async function resolvedAllowedDirectories(): Promise<string[]> {
   return resolved
 }
 
+// ── Export ───────────────────────────────────────────────────────
+
+/** The formats the export channel writes. Each name is also its extension. */
+const EXPORT_FORMATS: readonly TranscriptExportFormat[] = ['txt', 'srt']
+
+/** What the save dialog offers per format, in the language of this surface. */
+const EXPORT_FILTERS: Record<TranscriptExportFormat, { name: string; extensions: string[] }> = {
+  txt: { name: 'Textdatei', extensions: ['txt'] },
+  srt: { name: 'SRT-Untertitel', extensions: ['srt'] }
+}
+
+/**
+ * The entity type and the actor mirror the job runner's and the retention
+ * module's entries, so that everything about one job forms ONE trail - the
+ * same two values under three names: `AUDIT_ENTITY_TYPE` with `LOCAL_USER_ACTOR`
+ * in transcription/job-runner.ts, `AUDIT_ENTITY_TYPE` with `USER_ACTOR` in
+ * transcription/retention.ts. Repeated rather than imported, for the reason
+ * retention.ts already gives: a third module needing a constant must not be
+ * what turns another module's internals into API.
+ */
+const AUDIT_ENTITY_TYPE = 'transcription_job'
+const USER_ACTOR = { actorType: 'user', actorId: 'local' }
+
+/**
+ * The requested format, or a refusal naming the ones that exist.
+ *
+ * Matched against the list rather than cast, so no `as` carries an arbitrary
+ * string from the renderer into the exporter. Its own `default` branch stays
+ * the second line of defence (see transcript-export.ts); this is the first,
+ * and unlike that one it says what IS allowed.
+ */
+function requireExportFormat(value: unknown): TranscriptExportFormat {
+  for (const format of EXPORT_FORMATS) {
+    if (value === format) return format
+  }
+  throw new Error(`Unbekanntes Exportformat. Erlaubt sind: ${EXPORT_FORMATS.join(', ')}.`)
+}
+
+/**
+ * The document, or a German refusal carrying the original reason.
+ *
+ * `exportTranscript` throws for a non-finite `index`, a cue that ends before
+ * it starts, a timestamp that is not a millisecond value, a U+0000 in text or
+ * speaker, and an unknown format - and its messages are in English, while
+ * every other refusal on this surface is in German. The reason is passed
+ * through VERBATIM rather than translated: a second wording of the same
+ * condition would drift from the one in transcript-export.ts, which is where
+ * those conditions are defined and measured.
+ */
+function renderTranscript(
+  segments: TranscriptionSegment[],
+  format: TranscriptExportFormat
+): string {
+  try {
+    return exportTranscript(segments, format)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    throw new Error(`Dieses Transkript kann nicht exportiert werden: ${reason}`)
+  }
+}
+
+/**
+ * The file name the save dialog opens with.
+ *
+ * A job carries no title, so the name is built from WHEN THE RECORDING WAS
+ * QUEUED (`createdAt`, not the moment of export): that is what tells two
+ * transcripts apart in a folder, and it sorts. Local time, because the person
+ * reading the name is the person who made the recording.
+ *
+ * The chat export filters its name with `replace(/[^a-zA-Z0-9-_ ]/g, '')`
+ * because its name is a user-supplied conversation title. This one is built
+ * from digits and hyphens, so there is nothing for such a filter to remove -
+ * adding one would look like a safeguard without being one. What keeps that
+ * true is the test, not this comment.
+ */
+function defaultExportName(job: TranscriptionJob, format: TranscriptExportFormat): string {
+  const made = new Date(job.createdAt)
+  const stamp =
+    `${made.getFullYear()}-${pad2(made.getMonth() + 1)}-${pad2(made.getDate())}` +
+    `-${pad2(made.getHours())}${pad2(made.getMinutes())}${pad2(made.getSeconds())}`
+  // The format name doubles as the extension; see TranscriptExportFormat.
+  return `Transkript-${stamp}.${format}`
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+/**
+ * Record that a transcript left the app - and NOT where it went.
+ *
+ * What goes in: tenant, workspace, format and the number of segments, i.e. who
+ * exported what kind of document and how much of it. What stays out is the
+ * TARGET PATH, deliberately. "Where did the data go" is the obvious purpose of
+ * an export audit, and it is the wrong question here: the destination is a
+ * place on the user's own machine that the user picked in a dialog, so there
+ * is no new recipient to record - while the path itself names directories, and
+ * directory names describe clients, employers and cases. These entries also
+ * outlive the job, because the deletion leaves them standing on purpose
+ * (retention.ts), so a path in them would outlive the transcript it described.
+ * The chosen path goes to the caller that just chose it instead, where it is
+ * of use and does not accumulate.
+ *
+ * What this gives up: the log cannot answer "which file was that again". The
+ * reader of this log is a supervisory authority, not a user hunting a file.
+ *
+ * Never a segment, a text or a speaker name, for the reason the job runner and
+ * the retention module both state: this log is the document a customer hands
+ * to that authority, and content in it would be the data protection problem
+ * instead of its proof.
+ */
+function auditExport(
+  job: TranscriptionJob,
+  format: TranscriptExportFormat,
+  segmentCount: number
+): void {
+  getActivityLogger().log({
+    actorType: USER_ACTOR.actorType,
+    actorId: USER_ACTOR.actorId,
+    action: 'transcription.exported',
+    entityType: AUDIT_ENTITY_TYPE,
+    entityId: job.id,
+    tenantId: job.tenantId,
+    details: { workspaceId: job.workspaceId, format, segmentCount }
+  })
+}
+
 /** The caller's own job, or a refusal. */
 function requireOwnJob(jobId: unknown): TranscriptionJob {
   const id = requireNonEmptyString(jobId, 'Keine Auftragskennung uebergeben')
@@ -351,6 +491,105 @@ export function registerTranscriptionHandlers(): void {
     deleteJob(job.id, callerTenantId())
     return { success: true, jobId: job.id }
   })
+
+  /**
+   * Hand one finished transcript to the user as a txt or SRT file.
+   *
+   * This follows the house pattern for an export (`EXPORT_CONVERSATION` in
+   * content-handlers.ts) with two deliberate differences.
+   *
+   * 1. **It writes an AUDIT ENTRY, which the chat export does not.** A chat is
+   *    the user's own conversation with a model; a transcript carries the
+   *    VOICES OF THIRD PARTIES, who were recorded and did not ask for this
+   *    file. Handing those out is the kind of act the activity log exists to
+   *    document. Do not drop the entry to make the two channels look alike.
+   * 2. **The document is rendered BEFORE the dialog opens**, where the chat
+   *    export renders after. `exportTranscript` refuses five kinds of
+   *    unrenderable data; a refusal arriving after the user picked a location
+   *    would have cost them a dialog for nothing and left open whether a
+   *    half-written file exists. This way nothing is created until the content
+   *    is complete.
+   *
+   * `requireFeature` is here, where TRANSCRIPTION_DELETE above deliberately
+   * has none. The two are not inconsistent, they are opposites: deleting must
+   * stay possible when a plan runs out, or the subscription state would decide
+   * whether personal data can be erased. Exporting lets data LEAVE the app, so
+   * it belongs behind the same gate as the channels that read.
+   *
+   * There is no path check, and that is not an omission. `showSaveDialog`
+   * resolves the path question: the destination is the user's own choice, so
+   * there is no application-chosen write target left to confine. (The known
+   * hole in `FILE_ACCESS_ADD_NETWORK_SHARE`, which `requireAllowedRecording`
+   * above has to work around, does not touch this way in: nothing here reads
+   * the granted-directory list.)
+   *
+   * Line endings and encoding are whatever `exportTranscript` produced, written
+   * as UTF-8. No byte order mark: whether a given subtitle player wants one is
+   * not measured here, the same reservation that module records about LF.
+   */
+  wrapHandler(
+    IPC_CHANNELS.TRANSCRIPTION_EXPORT,
+    async (jobId: unknown, format: unknown): Promise<ExportReply> => {
+      requireFeature(FEATURE)
+      const job = requireOwnJob(jobId)
+      const exportFormat = requireExportFormat(format)
+
+      // A job that has not finished has nothing to hand out, and an empty file
+      // would be a claim that the transcript exists and is empty. The state is
+      // NAMED in the refusal, unlike the refusals above that keep their reason
+      // to the log: the job is the caller's own, and TRANSCRIPTION_STATUS hands
+      // the same value out, so there is nothing here the caller may not know.
+      if (job.state !== 'done') {
+        throw new Error(
+          'Nur ein abgeschlossener Auftrag kann exportiert werden. Dieser Auftrag ist im ' +
+            `Zustand "${job.state}".`
+        )
+      }
+
+      // The tenant again, although the job was just read for this tenant: this
+      // is the query that hands out content, the same reason the segments
+      // channel repeats it.
+      const segments = TranscriptionModel.getSegments(job.id, callerTenantId())
+
+      // A SECOND guard, and not a spare copy of the first: `done` does NOT
+      // imply a transcript. `observe` sets the state first and saves the
+      // segments second (transcription/job-runner.ts), and the HTTP client
+      // accepts an empty segment list - it only checks that `segments` is a
+      // list (transcription-http-client.ts). A service answering 'done' with
+      // no segments leaves exactly such a row, and `exportTranscript` returns
+      // the empty string for it, so the state check alone writes an empty file.
+      // Measured, not reasoned: the test for this was red before this check
+      // existed, and the empty file was written.
+      //
+      // The runner's one guard in this area is narrower than it looks. It
+      // turns a `done` row into a failure only when `saveSegments` THREW
+      // (`recordUnexpectedError`), which an empty but successful save does not.
+      if (segments.length === 0) {
+        throw new Error('Dieser Auftrag hat kein Transkript, das exportiert werden koennte.')
+      }
+
+      const content = renderTranscript(segments, exportFormat)
+
+      const result = await dialog.showSaveDialog({
+        defaultPath: defaultExportName(job, exportFormat),
+        filters: [EXPORT_FILTERS[exportFormat]]
+      })
+
+      // Nothing has left the app, so nothing is written and nothing is logged.
+      if (result.canceled || result.filePath === undefined) {
+        return { success: false, canceled: true }
+      }
+
+      await fs.writeFile(result.filePath, content, 'utf-8')
+
+      // After the write, never before: an entry about an export that then
+      // failed would be a false record in the one table that documents what
+      // left the app.
+      auditExport(job, exportFormat, segments.length)
+
+      return { success: true, filePath: result.filePath }
+    }
+  )
 }
 
 // ── The queue's clock ────────────────────────────────────────────

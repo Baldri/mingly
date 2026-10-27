@@ -35,8 +35,13 @@
  */
 
 import type { TranscriptionSegment } from '../database/models/transcription'
+import type { TranscriptExportFormat } from '../../shared/types'
 
-export type TranscriptExportFormat = 'txt' | 'srt'
+// Defined in src/shared/types.ts, because the preload bridge for
+// `TRANSCRIPTION_EXPORT` types the format and src/preload is type-checked with
+// the renderer, which must not import from src/main. Re-exported here so this
+// module stays the import site the main process already uses.
+export type { TranscriptExportFormat }
 
 /**
  * Every character a plausible consumer reads as a line break: ECMAScript's own
@@ -319,10 +324,12 @@ export function exportTranscript(
     case 'srt':
       return formatSrt(ordered)
     default: {
-      // Unreachable for a typed caller. It is meant to stay reachable for an
-      // untyped one - there is no IPC channel for the export yet, and when
-      // there is, a format that arrives from the renderer must not fall
-      // through to one the caller did not ask for.
+      // Unreachable for a typed caller, and `TRANSCRIPTION_EXPORT` refuses an
+      // unknown format at the boundary before it gets here
+      // (`requireExportFormat` in ipc/transcription-handlers.ts). It stays as
+      // the second line of defence rather than the first: a format that
+      // arrives from the renderer must not fall through to one the caller did
+      // not ask for, whatever the boundary does or stops doing.
       const unexpected: never = format
       throw new RangeError(`Unsupported transcript export format: ${String(unexpected)}`)
     }

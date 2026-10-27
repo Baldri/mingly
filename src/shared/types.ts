@@ -741,6 +741,7 @@ export const IPC_CHANNELS = {
   TRANSCRIPTION_SEGMENTS: 'transcription:segments',
   TRANSCRIPTION_CANCEL: 'transcription:cancel',
   TRANSCRIPTION_DELETE: 'transcription:delete',
+  TRANSCRIPTION_EXPORT: 'transcription:export',
 } as const
 
 // ---------------------------------------------------------------------------
@@ -780,6 +781,18 @@ export const TRANSCRIPTION_WAITING_STATES: readonly TranscriptionJobState[] = [
   'queued',
   'running'
 ]
+
+/**
+ * The file formats a transcript can be exported as. The name is also the file
+ * extension, which is what `TRANSCRIPTION_EXPORT` builds its default file name
+ * from.
+ *
+ * Here rather than next to the exporter in src/main, for the reason stated
+ * above: the preload bridge types the format, and src/preload is type-checked
+ * with the renderer. transcription/transcript-export.ts re-exports it, so the
+ * main process keeps importing it where it always did.
+ */
+export type TranscriptExportFormat = 'txt' | 'srt'
 
 /** One piece of a transcript, in transcript order. */
 export interface TranscriptionSegment {
