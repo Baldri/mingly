@@ -172,6 +172,21 @@ export function setRetention(workspaceId: string, settings: RetentionSettings): 
  * was refused before it was copied, that path is the user's own file name, and
  * a file name can describe a conversation. Emptying it belongs with the
  * question of whether the row should expire too, which nobody has decided.
+ *
+ * DEBT: nothing calls this, so the deletion deadlines exist as a setting and not
+ * as behaviour - the spool keeps every recording for as long as the process has
+ * ever run → wire a scheduler as soon as `src/preload/index.ts` bridges
+ * `transcription:submit`, because from that moment recordings arrive from the UI
+ * and accumulate.
+ *
+ * Why that matters beyond tidiness: Art. 6 Abs. 4 DSG requires personal data to
+ * be destroyed or anonymised as soon as it is no longer needed for the purpose -
+ * there is no retention PERIOD for a recording, there is a duty to be rid of it.
+ * The commentary on that article names automated deletion in the software as the
+ * practical way to meet it (OK-Gaul, Art. 6 Abs. 3-5 DSG, N 36). The periods
+ * themselves are the customer's to set, which is why they are per workspace;
+ * `DEFAULT_RETENTION` is a placeholder until they are decided. Sources and the
+ * open legal questions: docs/superpowers/specs/2026-10-27-aufbewahrungsfristen-recherche.md
  */
 export function purgeExpired(tenantId: string, now: number): { audio: number; transcripts: number } {
   const tenant = requireTenantId(tenantId)
