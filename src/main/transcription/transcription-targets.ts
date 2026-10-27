@@ -53,7 +53,13 @@ export const TRANSCRIPTION_TARGETS: RegistryEntry[] = [
       supportsStreaming: false,
       models: []
     },
-    // DEBT: static slot, operator and agreement unverified → replace with a real endpoint's verified origin before any code outside this file and its tests names 'ch-endpoint'
+    // DEBT: static slot - residency, operator and agreement are all unverified → replace with a real endpoint's verified origin before any code outside this file and its tests names 'ch-endpoint'
+    //
+    // Of those three, `residency` is the one that acts: the policy core decides
+    // on it (`evaluate` over these targets), so an unverified `'CH'` is not a
+    // label but the claim the whole residency promise rests on. The marker used
+    // to name only operator and agreement, which read as if the country were
+    // the settled part.
     //
     // `dpaStatus: 'none'` is the cautious reading, not a finding: whether a
     // Swiss endpoint offers Whisper at all, and under which agreement, is
