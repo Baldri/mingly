@@ -143,7 +143,7 @@ describe('READ_FILE after an attempted network-share grant', () => {
         shareName: 'all',
         mountPoint: '/'
       })
-    ).rejects.toThrow('must not be the home directory or one of its parents')
+    ).rejects.toMatchObject({ reason: 'contains-home' })
 
     expect(manager.getAllowedDirectories()).toEqual([])
     expect(harness.showMessageBox).not.toHaveBeenCalled()

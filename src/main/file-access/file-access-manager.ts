@@ -19,6 +19,22 @@ import {
   isPathSafe
 } from '../../shared/file-access-types'
 
+/**
+ * Why a proposed network-share mount point was refused.
+ *
+ * Kept off the Error's message on purpose — see rejectMountPoint.
+ */
+export type MountPointRejection =
+  | 'not-absolute'
+  | 'contains-home'
+  | 'missing'
+  | 'not-a-directory'
+  | 'not-separate-volume'
+  | 'not-a-mount'
+
+/** The single message every mount-point refusal shows the caller. */
+export const MOUNT_POINT_REFUSED_MESSAGE = 'Mount point cannot be granted'
+
 export class FileAccessManager {
   private store: SimpleStore
   private allowedDirs: Map<string, AllowedDirectory> = new Map()
@@ -197,35 +213,35 @@ export class FileAccessManager {
    */
   private async assertGrantableMountPoint(candidate: string): Promise<string> {
     if (!path.isAbsolute(candidate)) {
-      throw new Error('Mount point must be an absolute path')
+      this.rejectMountPoint('not-absolute', candidate)
     }
 
     // Cheap reject on the lexical path, so the obvious payloads never reach
     // the filesystem. Repeated authoritatively on the realpath below.
     if (this.containsHomeDirectory(path.resolve(candidate), path.resolve(os.homedir()))) {
-      throw new Error('Mount point must not be the home directory or one of its parents')
+      this.rejectMountPoint('contains-home', candidate)
     }
 
     let resolved: string
     try {
       resolved = await fs.realpath(candidate)
     } catch {
-      throw new Error(`Mount point does not exist: ${candidate}`)
+      this.rejectMountPoint('missing', candidate)
     }
 
     let stats: Stats
     try {
       stats = await fs.stat(resolved)
     } catch {
-      throw new Error(`Mount point does not exist: ${resolved}`)
+      this.rejectMountPoint('missing', resolved)
     }
     if (!stats.isDirectory()) {
-      throw new Error(`Mount point is not a directory: ${resolved}`)
+      this.rejectMountPoint('not-a-directory', resolved)
     }
 
     const home = await fs.realpath(os.homedir())
     if (this.containsHomeDirectory(resolved, home)) {
-      throw new Error('Mount point must not be the home directory or one of its parents')
+      this.rejectMountPoint('contains-home', resolved)
     }
 
     const [homeStats, rootStats] = await Promise.all([
@@ -233,7 +249,7 @@ export class FileAccessManager {
       fs.stat(path.parse(home).root)
     ])
     if (stats.dev === homeStats.dev || stats.dev === rootStats.dev) {
-      throw new Error(`Mount point is not a separate volume from the user's files: ${resolved}`)
+      this.rejectMountPoint('not-separate-volume', resolved)
     }
 
     // A filesystem root is its own mount by definition and has no parent to
@@ -241,11 +257,33 @@ export class FileAccessManager {
     if (path.parse(resolved).root !== resolved) {
       const parent = await fs.stat(path.dirname(resolved))
       if (parent.dev === stats.dev) {
-        throw new Error(`Mount point is not a mounted volume: ${resolved}`)
+        this.rejectMountPoint('not-a-mount', resolved)
       }
     }
 
     return resolved
+  }
+
+  /**
+   * Refuse a mount point with one message for every reason.
+   *
+   * wrapHandler hands a thrown message straight back to the renderer
+   * (`{ success: false, error: error.message }`), so a reason-specific message
+   * would turn this gate into a filesystem oracle: by probing paths an
+   * injected renderer could tell "does not exist" from "is a file" from "is on
+   * your home volume" — and a realpath in the text would additionally disclose
+   * symlink targets — all without any user interaction.
+   *
+   * The reason therefore stays in the main process: in the log, and on the
+   * error's `reason` property, which the tests read. The one refusal that
+   * keeps its own message is a declined confirmation, because the renderer
+   * already knows it asked, the UI needs to tell "you said no" from "bad
+   * path", and each such bit costs a dialog the user sees — so it is not an
+   * enumeration channel.
+   */
+  private rejectMountPoint(reason: MountPointRejection, detail: string): never {
+    console.warn(`📁 ❌ Mount point refused (${reason}): ${detail}`)
+    throw Object.assign(new Error(MOUNT_POINT_REFUSED_MESSAGE), { reason })
   }
 
   /**

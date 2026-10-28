@@ -56,7 +56,7 @@ const fsMock = vi.hoisted(() => ({
 
 vi.mock('fs/promises', () => ({ default: fsMock, ...fsMock }))
 
-import { FileAccessManager } from '../../src/main/file-access/file-access-manager'
+import { FileAccessManager, MOUNT_POINT_REFUSED_MESSAGE } from '../../src/main/file-access/file-access-manager'
 import fsPromises from 'fs/promises'
 import path from 'path'
 
@@ -372,7 +372,7 @@ describe('FileAccessManager', () => {
     it('refuses the filesystem root without even asking the user', async () => {
       // The exact payload from the finding.
       await expect(manager.addNetworkShare({ ...SHARE, mountPoint: '/' }))
-        .rejects.toThrow('must not be the home directory or one of its parents')
+        .rejects.toMatchObject({ message: MOUNT_POINT_REFUSED_MESSAGE, reason: 'contains-home' })
 
       expect(mockShowMessageBox).not.toHaveBeenCalled()
       expect(manager.getAllowedDirectories()).toEqual([])
@@ -381,7 +381,7 @@ describe('FileAccessManager', () => {
     it('refuses the home directory and its parents', async () => {
       for (const mountPoint of [TEST_HOME, path.dirname(TEST_HOME)]) {
         await expect(manager.addNetworkShare({ ...SHARE, mountPoint }))
-          .rejects.toThrow('must not be the home directory or one of its parents')
+          .rejects.toMatchObject({ message: MOUNT_POINT_REFUSED_MESSAGE, reason: 'contains-home' })
       }
 
       expect(mockShowMessageBox).not.toHaveBeenCalled()
@@ -390,7 +390,7 @@ describe('FileAccessManager', () => {
 
     it('refuses a relative mount point', async () => {
       await expect(manager.addNetworkShare({ ...SHARE, mountPoint: 'Volumes/NAS' }))
-        .rejects.toThrow('must be an absolute path')
+        .rejects.toMatchObject({ message: MOUNT_POINT_REFUSED_MESSAGE, reason: 'not-absolute' })
 
       expect(manager.getAllowedDirectories()).toEqual([])
     })
@@ -399,7 +399,7 @@ describe('FileAccessManager', () => {
       mockMountPointProbe('/Volumes/Other')
 
       await expect(manager.addNetworkShare({ ...SHARE, mountPoint: '/Volumes/NAS' }))
-        .rejects.toThrow('Mount point does not exist')
+        .rejects.toMatchObject({ message: MOUNT_POINT_REFUSED_MESSAGE, reason: 'missing' })
 
       expect(mockShowMessageBox).not.toHaveBeenCalled()
       expect(manager.getAllowedDirectories()).toEqual([])
@@ -411,7 +411,7 @@ describe('FileAccessManager', () => {
       mockMountPointProbe('/srv/data', { sameDeviceAsParent: true })
 
       await expect(manager.addNetworkShare({ ...SHARE, mountPoint: '/srv/data' }))
-        .rejects.toThrow('is not a mounted volume')
+        .rejects.toMatchObject({ message: MOUNT_POINT_REFUSED_MESSAGE, reason: 'not-a-mount' })
 
       expect(mockShowMessageBox).not.toHaveBeenCalled()
       expect(manager.getAllowedDirectories()).toEqual([])
@@ -421,7 +421,7 @@ describe('FileAccessManager', () => {
       mockMountPointProbe('/Volumes/NAS', { isDirectory: false })
 
       await expect(manager.addNetworkShare({ ...SHARE, mountPoint: '/Volumes/NAS' }))
-        .rejects.toThrow('is not a directory')
+        .rejects.toMatchObject({ message: MOUNT_POINT_REFUSED_MESSAGE, reason: 'not-a-directory' })
 
       expect(manager.getAllowedDirectories()).toEqual([])
     })
@@ -433,7 +433,7 @@ describe('FileAccessManager', () => {
       mockMountPointProbe('/mnt/backup', { sameDeviceAsHome: true })
 
       await expect(manager.addNetworkShare({ ...SHARE, mountPoint: '/mnt/backup' }))
-        .rejects.toThrow('not a separate volume')
+        .rejects.toMatchObject({ message: MOUNT_POINT_REFUSED_MESSAGE, reason: 'not-separate-volume' })
 
       expect(mockShowMessageBox).not.toHaveBeenCalled()
       expect(manager.getAllowedDirectories()).toEqual([])
@@ -457,8 +457,40 @@ describe('FileAccessManager', () => {
       })
 
       await expect(manager.addNetworkShare({ ...SHARE, mountPoint: '/Volumes/link' }))
-        .rejects.toThrow('not a separate volume')
+        .rejects.toMatchObject({ message: MOUNT_POINT_REFUSED_MESSAGE, reason: 'not-separate-volume' })
 
+      expect(manager.getAllowedDirectories()).toEqual([])
+    })
+
+    // The refusal crosses the IPC boundary verbatim via wrapHandler, so the
+    // message must not tell the renderer anything it did not already know.
+    it('says the same thing for every refusal reason', async () => {
+      const attempts: Array<[string, () => void]> = [
+        ['/', () => undefined],
+        ['/Volumes/Ghost', () => mockMountPointProbe('/Volumes/Elsewhere')],
+        ['/Volumes/File', () => mockMountPointProbe('/Volumes/File', { isDirectory: false })],
+        ['/mnt/backup', () => mockMountPointProbe('/mnt/backup', { sameDeviceAsHome: true })],
+        ['/srv/data', () => mockMountPointProbe('/srv/data', { sameDeviceAsParent: true })]
+      ]
+
+      const messages = new Set<string>()
+      let refusals = 0
+      for (const [mountPoint, arrange] of attempts) {
+        arrange()
+        await manager.addNetworkShare({ ...SHARE, mountPoint }).catch((error: Error) => {
+          refusals++
+          messages.add(error.message)
+          // No path, no realpath, no reason in the text.
+          expect(error.message).not.toContain(mountPoint)
+          expect(error.message).not.toContain('volume')
+          expect(error.message).not.toContain('exist')
+        })
+      }
+
+      // Every attempt must actually have been refused, otherwise the set below
+      // could hold the right message while one path was silently granted.
+      expect(refusals).toBe(attempts.length)
+      expect(messages).toEqual(new Set([MOUNT_POINT_REFUSED_MESSAGE]))
       expect(manager.getAllowedDirectories()).toEqual([])
     })
 
