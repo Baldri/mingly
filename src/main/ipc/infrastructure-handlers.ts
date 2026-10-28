@@ -13,6 +13,7 @@ import { getServiceDiscovery } from '../discovery/service-discovery'
 import { wrapHandler, requirePermission } from './ipc-utils'
 import type { NetworkAIServerConfig } from '../../shared/network-ai-types'
 import type { FileAccessRequest, FileAccessPermission } from '../../shared/file-access-types'
+import { parseNetworkShareConfig } from '../../shared/file-access-types'
 
 export function registerInfrastructureHandlers(): void {
   const networkAIManager = getNetworkAIManager()
@@ -178,8 +179,16 @@ export function registerInfrastructureHandlers(): void {
     return { success: true, files: await fileAccessManager.listFiles(directoryId, relativePath) }
   })
 
-  wrapHandler(IPC_CHANNELS.FILE_ACCESS_ADD_NETWORK_SHARE, async (config: any) => {
-    return { success: true, share: await fileAccessManager.addNetworkShare(config) }
+  // The payload is whatever the renderer sent, so it is parsed before it
+  // reaches the manager. addNetworkShare then decides separately whether the
+  // proposed mountPoint may be granted at all — parsing establishes the
+  // shape, not the permission.
+  wrapHandler(IPC_CHANNELS.FILE_ACCESS_ADD_NETWORK_SHARE, async (rawConfig: unknown) => {
+    const parsed = parseNetworkShareConfig(rawConfig)
+    if (!parsed.valid) {
+      throw new Error(parsed.error)
+    }
+    return { success: true, share: await fileAccessManager.addNetworkShare(parsed.config) }
   })
 
   // ========================================
