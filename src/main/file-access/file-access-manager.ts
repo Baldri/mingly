@@ -1,5 +1,7 @@
 import fs from 'fs/promises'
+import os from 'os'
 import path from 'path'
+import type { Stats } from 'fs'
 import { dialog } from 'electron'
 import { SimpleStore } from '../utils/simple-store'
 import type {
@@ -7,7 +9,8 @@ import type {
   FileAccessRequest,
   FileMetadata,
   FileAccessPermission,
-  NetworkShareConfig
+  NetworkShareConfig,
+  NetworkShareConfigInput
 } from '../../shared/file-access-types'
 import {
   ALLOWED_READ_EXTENSIONS,
@@ -90,20 +93,43 @@ export class FileAccessManager {
 
   /**
    * Add network share (SMB/NFS)
+   *
+   * The caller may PROPOSE a mount point, but proposing it is not granting it.
+   * This method writes into the same allowlist that READ_FILE and the
+   * transcription spool read back, and in Electron the renderer is the less
+   * trusted side — Mingly renders LLM answers, RAG documents and MCP content,
+   * so one prompt injection reaching the renderer was enough. Until this gate
+   * existed a renderer could post { mountPoint: '/' } and hold a read+create
+   * grant on the whole filesystem (security audit 2026-10-26).
+   *
+   * The decision is therefore the user's, taken in the main process with the
+   * same showMessageBox confirmation FileService uses before it grants a
+   * directory. That is the dialog route rather than a system volume query,
+   * because the only volume enumeration in this repo reads /Volumes
+   * (FileService.listNetworkVolumes) — macOS-only, and a directory under
+   * /Volumes says nothing about whether the user wants Mingly reading it.
+   * assertGrantableMountPoint runs first so an obviously unusable path is
+   * rejected without putting a dialog in front of the user at all, and so
+   * that the path the dialog names is the one that gets granted.
    */
-  async addNetworkShare(config: Omit<NetworkShareConfig, 'id'>): Promise<NetworkShareConfig> {
+  async addNetworkShare(config: NetworkShareConfigInput): Promise<NetworkShareConfig> {
     const share: NetworkShareConfig = {
       ...config,
       id: `${config.protocol}://${config.host}/${config.shareName}`
     }
 
-    this.networkShares.set(share.id, share)
-
     // Also add as allowed directory if mounted
     if (share.mountPoint) {
+      const mountPoint = await this.assertGrantableMountPoint(share.mountPoint)
+
+      if (!(await this.confirmNetworkShareGrant(share, mountPoint))) {
+        console.log(`📁 ❌ Network share grant denied by user: ${mountPoint}`)
+        throw new Error('Network share access denied by user')
+      }
+
       const allowedDir: AllowedDirectory = {
         id: share.id,
-        path: share.mountPoint,
+        path: mountPoint,
         name: share.name,
         location: config.protocol === 'smb' ? 'network-smb' : 'network-nfs',
         permissions: ['read', 'create'],
@@ -117,10 +143,95 @@ export class FileAccessManager {
 
       this.allowedDirs.set(allowedDir.id, allowedDir)
       this.saveAllowedDirectories()
+      share.mountPoint = mountPoint
     }
+
+    this.networkShares.set(share.id, share)
 
     console.log(`📁 Added network share: ${share.name}`)
     return share
+  }
+
+  /**
+   * Security: may this path be granted as a network share mount point?
+   *
+   * Returns the resolved absolute path, or throws. Three things are checked,
+   * in rising cost:
+   *
+   * 1. It must be absolute, so the grant does not depend on the main
+   *    process's working directory.
+   * 2. It must not contain the user's home directory — that one rule covers
+   *    '/' and '/Users' as well as the home directory itself, and still
+   *    allows a mapped Windows drive at Z:\ , which is not where the user's
+   *    files live. Note that isPathSafe is deliberately NOT reused here: it
+   *    appends path.sep to defeat sibling prefixes, which at a filesystem
+   *    root yields '//' and makes isPathSafe(home, '/') false — exactly the
+   *    payload this gate exists to refuse.
+   * 3. It must be a directory that exists AND sit on a different device than
+   *    its parent, which is what makes a path a mount point rather than an
+   *    ordinary folder someone created. A filesystem root is its own mount by
+   *    definition and has no parent to compare against.
+   */
+  private async assertGrantableMountPoint(candidate: string): Promise<string> {
+    if (!path.isAbsolute(candidate)) {
+      throw new Error('Mount point must be an absolute path')
+    }
+
+    const resolved = path.resolve(candidate)
+    const home = path.resolve(os.homedir())
+    const resolvedPrefix = resolved.endsWith(path.sep) ? resolved : resolved + path.sep
+
+    if (home === resolved || home.startsWith(resolvedPrefix)) {
+      throw new Error('Mount point must not be the home directory or one of its parents')
+    }
+
+    let stats: Stats
+    try {
+      stats = await fs.stat(resolved)
+    } catch {
+      throw new Error(`Mount point does not exist: ${resolved}`)
+    }
+    if (!stats.isDirectory()) {
+      throw new Error(`Mount point is not a directory: ${resolved}`)
+    }
+
+    if (path.parse(resolved).root !== resolved) {
+      const parent = await fs.stat(path.dirname(resolved))
+      if (parent.dev === stats.dev) {
+        throw new Error(`Mount point is not a mounted volume: ${resolved}`)
+      }
+    }
+
+    return resolved
+  }
+
+  /**
+   * Ask the user to confirm a network share grant.
+   *
+   * Defaults to Ablehnen (unlike FileService.requestAccess, which defaults to
+   * allow for a folder the user just picked themselves): nothing here came
+   * from a user gesture, so a stray Return keypress must not grant read and
+   * create rights on a whole volume.
+   */
+  private async confirmNetworkShareGrant(
+    share: NetworkShareConfig,
+    mountPoint: string
+  ): Promise<boolean> {
+    const result = await dialog.showMessageBox({
+      message: 'Netzlaufwerk-Zugriff erlauben?',
+      detail:
+        `Mingly möchte auf folgendes Netzlaufwerk zugreifen:\n\n` +
+        `${share.protocol.toUpperCase()} · ${share.host}/${share.shareName}\n` +
+        `Eingebunden unter: ${mountPoint}\n\n` +
+        `Mingly darf dort lesen und neue Dateien anlegen.\n` +
+        `Keine Dateien werden gelöscht oder überschrieben.`,
+      buttons: ['Zugriff erlauben', 'Ablehnen'],
+      type: 'question',
+      defaultId: 1,
+      cancelId: 1
+    })
+
+    return result.response === 0
   }
 
   /**

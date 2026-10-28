@@ -6,14 +6,24 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockShowOpenDialog = vi.fn()
+const mockShowMessageBox = vi.fn()
 
 vi.mock('electron', () => ({
   app: {
     getPath: () => '/tmp/mingly-file-access-test'
   },
   dialog: {
-    showOpenDialog: (...args: any[]) => mockShowOpenDialog(...args)
+    showOpenDialog: (...args: any[]) => mockShowOpenDialog(...args),
+    showMessageBox: (...args: any[]) => mockShowMessageBox(...args)
   }
+}))
+
+// Pinned so the home-directory guard is tested against a known home rather
+// than whichever machine runs the suite.
+const TEST_HOME = '/home/testuser'
+vi.mock('os', () => ({
+  default: { homedir: () => TEST_HOME },
+  homedir: () => TEST_HOME
 }))
 
 const mockStoreData = vi.hoisted(() => {
@@ -53,6 +63,31 @@ vi.mock('fs/promises', () => ({
 
 import { FileAccessManager } from '../../src/main/file-access/file-access-manager'
 import fsPromises from 'fs/promises'
+import path from 'path'
+
+/**
+ * Teach the fs mock what a mount-point probe should see.
+ *
+ * assertGrantableMountPoint stats the candidate and then its parent, and
+ * takes a differing st_dev as evidence that the candidate really is a
+ * mounted volume rather than a directory someone created.
+ */
+function mockMountPointProbe(
+  mountPath: string,
+  opts: { sameDeviceAsParent?: boolean; isDirectory?: boolean } = {}
+): void {
+  const parent = path.dirname(mountPath)
+  vi.mocked(fsPromises.stat).mockImplementation((async (target: unknown) => {
+    const probed = String(target)
+    if (probed === mountPath) {
+      return { isDirectory: () => opts.isDirectory !== false, dev: 42 }
+    }
+    if (probed === parent) {
+      return { isDirectory: () => true, dev: opts.sameDeviceAsParent ? 42 : 1 }
+    }
+    throw Object.assign(new Error(`ENOENT: ${probed}`), { code: 'ENOENT' })
+  }) as never)
+}
 
 describe('FileAccessManager', () => {
   let manager: FileAccessManager
@@ -61,6 +96,7 @@ describe('FileAccessManager', () => {
     vi.clearAllMocks()
     mockStoreData.clear()
     mockShowOpenDialog.mockReset()
+    mockShowMessageBox.mockReset()
     manager = new FileAccessManager()
   })
 
@@ -286,29 +322,121 @@ describe('FileAccessManager', () => {
     })
   })
 
+  /**
+   * Security regression (audit 2026-10-26): addNetworkShare turned a
+   * caller-supplied mountPoint straight into an AllowedDirectory with read
+   * and create rights, no dialog and no checks. The channel in front of it is
+   * reachable from the renderer, which in Mingly renders LLM answers, RAG
+   * documents and MCP content — so { mountPoint: '/' } from an injected
+   * renderer granted the whole filesystem, and every check that reads
+   * getAllowedDirectories() back (READ_FILE among them) then passed.
+   *
+   * The invariant under test: a mountPoint the CALLER chose never produces a
+   * grant on its own. Only the user's confirmation does.
+   */
   describe('addNetworkShare', () => {
-    it('should add network share without mount point', async () => {
-      const share = await manager.addNetworkShare({
-        name: 'NAS Share',
-        protocol: 'smb',
-        host: '192.168.1.100',
-        shareName: 'data'
-      })
+    const SHARE = {
+      name: 'NAS',
+      protocol: 'smb' as const,
+      host: '192.168.1.100',
+      shareName: 'share'
+    }
+
+    it('should add network share without mount point, granting no directory', async () => {
+      const share = await manager.addNetworkShare({ ...SHARE, name: 'NAS Share', shareName: 'data' })
+
       expect(share.id).toContain('smb')
       expect(share.name).toBe('NAS Share')
+      // Nothing to grant, so nothing to confirm.
+      expect(mockShowMessageBox).not.toHaveBeenCalled()
+      expect(manager.getAllowedDirectories()).toEqual([])
     })
 
-    it('should add network share with mount point as allowed directory', async () => {
-      await manager.addNetworkShare({
-        name: 'NAS',
-        protocol: 'smb',
-        host: '192.168.1.100',
-        shareName: 'share',
-        mountPoint: '/Volumes/NAS'
-      })
+    it('refuses the filesystem root without even asking the user', async () => {
+      // The exact payload from the finding.
+      await expect(manager.addNetworkShare({ ...SHARE, mountPoint: '/' }))
+        .rejects.toThrow('must not be the home directory or one of its parents')
+
+      expect(mockShowMessageBox).not.toHaveBeenCalled()
+      expect(manager.getAllowedDirectories()).toEqual([])
+    })
+
+    it('refuses the home directory and its parents', async () => {
+      for (const mountPoint of [TEST_HOME, path.dirname(TEST_HOME)]) {
+        await expect(manager.addNetworkShare({ ...SHARE, mountPoint }))
+          .rejects.toThrow('must not be the home directory or one of its parents')
+      }
+
+      expect(mockShowMessageBox).not.toHaveBeenCalled()
+      expect(manager.getAllowedDirectories()).toEqual([])
+    })
+
+    it('refuses a relative mount point', async () => {
+      await expect(manager.addNetworkShare({ ...SHARE, mountPoint: 'Volumes/NAS' }))
+        .rejects.toThrow('must be an absolute path')
+
+      expect(manager.getAllowedDirectories()).toEqual([])
+    })
+
+    it('refuses a mount point that does not exist', async () => {
+      mockMountPointProbe('/Volumes/Other')
+
+      await expect(manager.addNetworkShare({ ...SHARE, mountPoint: '/Volumes/NAS' }))
+        .rejects.toThrow('Mount point does not exist')
+
+      expect(mockShowMessageBox).not.toHaveBeenCalled()
+      expect(manager.getAllowedDirectories()).toEqual([])
+    })
+
+    it('refuses a plain directory that is not a mounted volume', async () => {
+      // Same st_dev as its parent: an ordinary folder, not a mount.
+      mockMountPointProbe('/srv/data', { sameDeviceAsParent: true })
+
+      await expect(manager.addNetworkShare({ ...SHARE, mountPoint: '/srv/data' }))
+        .rejects.toThrow('is not a mounted volume')
+
+      expect(mockShowMessageBox).not.toHaveBeenCalled()
+      expect(manager.getAllowedDirectories()).toEqual([])
+    })
+
+    it('refuses a mount point that is a file', async () => {
+      mockMountPointProbe('/Volumes/NAS', { isDirectory: false })
+
+      await expect(manager.addNetworkShare({ ...SHARE, mountPoint: '/Volumes/NAS' }))
+        .rejects.toThrow('is not a directory')
+
+      expect(manager.getAllowedDirectories()).toEqual([])
+    })
+
+    it('grants nothing when the user declines the confirmation', async () => {
+      // A mount point that passes every plausibility check still needs a human.
+      mockMountPointProbe('/Volumes/NAS')
+      mockShowMessageBox.mockResolvedValueOnce({ response: 1 })
+
+      await expect(manager.addNetworkShare({ ...SHARE, mountPoint: '/Volumes/NAS' }))
+        .rejects.toThrow('denied by user')
+
+      expect(mockShowMessageBox).toHaveBeenCalledTimes(1)
+      expect(manager.getAllowedDirectories()).toEqual([])
+    })
+
+    // Positive control: the intended route must still work, otherwise the
+    // refusals above would also pass on a method that simply never grants.
+    it('grants the mount point when it is a real volume and the user confirms', async () => {
+      mockMountPointProbe('/Volumes/NAS')
+      mockShowMessageBox.mockResolvedValueOnce({ response: 0 })
+
+      const share = await manager.addNetworkShare({ ...SHARE, mountPoint: '/Volumes/NAS' })
+
+      expect(share.mountPoint).toBe('/Volumes/NAS')
       const dirs = manager.getAllowedDirectories()
       expect(dirs.length).toBe(1)
       expect(dirs[0].path).toBe('/Volumes/NAS')
+      expect(dirs[0].location).toBe('network-smb')
+      expect(dirs[0].permissions).toEqual(['read', 'create'])
+
+      // The dialog must name the path it is about to grant.
+      expect(mockShowMessageBox.mock.calls[0][0].detail).toContain('/Volumes/NAS')
     })
   })
 

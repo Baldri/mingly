@@ -107,3 +107,84 @@ export function isPathSafe(requestedPath: string, allowedDir: string): boolean {
 export function isPathWithinAllowedDirs(requestedPath: string, allowedDirPaths: string[]): boolean {
   return allowedDirPaths.some((dir) => isPathSafe(requestedPath, dir))
 }
+
+/**
+ * Config a caller may propose for a network share — everything but the id,
+ * which addNetworkShare derives from protocol/host/shareName.
+ */
+export type NetworkShareConfigInput = Omit<NetworkShareConfig, 'id'>
+
+export type NetworkShareConfigParseResult =
+  | { valid: true; config: NetworkShareConfigInput }
+  | { valid: false; error: string }
+
+/** Long enough for a UNC path or a descriptive share name, short enough to log. */
+const MAX_SHARE_FIELD_LENGTH = 1024
+
+type FieldResult = { ok: true; value: string } | { ok: false; error: string }
+
+function checkStringField(value: unknown, field: string): FieldResult {
+  if (typeof value !== 'string') {
+    return { ok: false, error: `Network share field '${field}' must be a string` }
+  }
+  if (value.trim() === '') {
+    return { ok: false, error: `Network share field '${field}' must not be empty` }
+  }
+  if (value.length > MAX_SHARE_FIELD_LENGTH) {
+    return { ok: false, error: `Network share field '${field}' exceeds ${MAX_SHARE_FIELD_LENGTH} chars` }
+  }
+  if (value.includes('\0')) {
+    return { ok: false, error: `Network share field '${field}' contains a null byte` }
+  }
+  return { ok: true, value }
+}
+
+/**
+ * Security: turn an untrusted IPC payload into a NetworkShareConfigInput.
+ *
+ * The channel behind this used to take `config: any` straight from the
+ * renderer, so protocol, host and mountPoint were whatever the renderer said
+ * they were — including objects and null bytes (security audit 2026-10-26).
+ * Field-by-field checks live here rather than in the IPC module so the main
+ * process has one place to point at when a payload is rejected; whether the
+ * proposed mountPoint may actually be GRANTED is a separate, stricter question
+ * answered in FileAccessManager.addNetworkShare.
+ */
+export function parseNetworkShareConfig(raw: unknown): NetworkShareConfigParseResult {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return { valid: false, error: 'Network share config must be an object' }
+  }
+  const candidate = raw as Record<string, unknown>
+
+  if (candidate.protocol !== 'smb' && candidate.protocol !== 'nfs') {
+    return { valid: false, error: "Network share field 'protocol' must be 'smb' or 'nfs'" }
+  }
+  const protocol: NetworkShareConfig['protocol'] = candidate.protocol
+
+  const name = checkStringField(candidate.name, 'name')
+  if (!name.ok) return { valid: false, error: name.error }
+
+  const host = checkStringField(candidate.host, 'host')
+  if (!host.ok) return { valid: false, error: host.error }
+
+  const shareName = checkStringField(candidate.shareName, 'shareName')
+  if (!shareName.ok) return { valid: false, error: shareName.error }
+
+  const config: NetworkShareConfigInput = {
+    name: name.value,
+    protocol,
+    host: host.value,
+    shareName: shareName.value
+  }
+
+  // Optional fields are only validated when present — an absent username is
+  // normal for a guest share, an empty-string one is a malformed payload.
+  for (const field of ['username', 'password', 'mountPoint'] as const) {
+    if (candidate[field] === undefined) continue
+    const parsed = checkStringField(candidate[field], field)
+    if (!parsed.ok) return { valid: false, error: parsed.error }
+    config[field] = parsed.value
+  }
+
+  return { valid: true, config }
+}
