@@ -111,6 +111,11 @@ describe('FileAccessManager', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    // Containment is checked against the RESOLVED path since the symlink fix,
+    // so the fs double has to answer realpath at all. Identity models a path
+    // that contains no symlinks; mockMountPointProbe and the escape tests
+    // override it where the resolution itself is what is under test.
+    vi.mocked(fsPromises.realpath).mockImplementation((async (target: unknown) => String(target)) as never)
     mockStoreData.clear()
     mockShowOpenDialog.mockReset()
     mockShowMessageBox.mockReset()
