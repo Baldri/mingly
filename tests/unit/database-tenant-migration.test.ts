@@ -137,3 +137,100 @@ describe('tenant_id migration', () => {
     expect(tableInfo('conversations').map(c => c.name)).toContain('tenant_id')
   })
 })
+
+/**
+ * The three transcription tables get the column WITHOUT a default (migration 14).
+ *
+ * Migration 11 needed one: it added `tenant_id` to tables that already held
+ * rows, and the default is what gave those rows an owner. A table created with
+ * the column never had that problem, so there the default only hides a caller
+ * who forgot the tenant - it files the row under the default tenant instead of
+ * failing. That asymmetry is deliberate and is pinned in both directions here.
+ */
+describe('tenant_id auf den Transkriptions-Tabellen', () => {
+  const TRANSCRIPTION_TABLES = [
+    'transcription_jobs',
+    'transcription_segments',
+    'transcription_retention'
+  ] as const
+
+  let tmpDir: string
+
+  beforeAll(() => {
+    configureLogger({ level: 'error' })
+  })
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-tenant-new-'))
+  })
+
+  afterEach(() => {
+    closeDatabase()
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('legt tenant_id ohne Vorgabewert an', async () => {
+    await initializeDatabase(tmpDir)
+
+    for (const table of TRANSCRIPTION_TABLES) {
+      const col = tableInfo(table).find(c => c.name === 'tenant_id')
+      expect(col, table).toMatchObject({ type: 'TEXT', notnull: 1, dflt_value: null })
+    }
+
+    // Positive control in the same run: the tables from migration 11 KEEP their
+    // default. Without this a green run could also mean "no table has one".
+    expect(tableInfo('conversations').find(c => c.name === 'tenant_id')).toMatchObject({
+      dflt_value: `'${DEFAULT_TENANT_ID}'`
+    })
+  })
+
+  it('weist ein Einfuegen ohne Mandant zurueck, statt es dem Vorgabe-Mandanten zuzuschlagen', async () => {
+    await initializeDatabase(tmpDir)
+    const db = getDatabase()
+
+    expect(() =>
+      db.run(`INSERT INTO transcription_jobs
+        (id, workspace_id, audio_path, state, target_id, created_at, updated_at)
+        VALUES ('ohne', 'ws1', '/a.wav', 'queued', 'local', 1, 1)`)
+    ).toThrow()
+
+    // Positive control in the same run: with a tenant the very same insert works.
+    db.run(`INSERT INTO transcription_jobs
+      (id, tenant_id, workspace_id, audio_path, state, target_id, created_at, updated_at)
+      VALUES ('mit', 'mandant-a', 'ws1', '/a.wav', 'queued', 'local', 1, 1)`)
+    expect(dbGet('SELECT tenant_id FROM transcription_jobs WHERE id = ?', ['mit'])).toEqual({
+      tenant_id: 'mandant-a'
+    })
+  })
+
+  it('traegt Auftraege UND Segmente durch den Umbau', async () => {
+    // The rebuild drops the parent table. `initializeDatabase` turns foreign
+    // keys ON right before the migrations run, and the cascade on
+    // `transcription_segments` follows that implicit DELETE - so a rebuild that
+    // does not switch them off deletes every transcript. This test is what
+    // stands between that and a release.
+    await initializeDatabase(tmpDir)
+    const seeded = getDatabase()
+    seeded.run(`INSERT INTO transcription_jobs
+      (id, tenant_id, workspace_id, audio_path, state, target_id, created_at, updated_at)
+      VALUES ('job-1', 'mandant-a', 'ws1', '/a.wav', 'done', 'local', 1, 2)`)
+    seeded.run(`INSERT INTO transcription_segments
+      (job_id, tenant_id, segment_index, start_ms, end_ms, speaker, text)
+      VALUES ('job-1', 'mandant-a', 0, 0, 1000, 'SPEAKER_00', 'Streng vertraulicher Satz')`)
+    // Back to the state before migration 14, so it runs again on real data.
+    seeded.run("UPDATE _meta SET value = '13' WHERE key = 'schema_version'")
+    closeDatabase()
+
+    await initializeDatabase(tmpDir)
+
+    expect(dbAll('SELECT id, tenant_id FROM transcription_jobs')).toEqual([
+      { id: 'job-1', tenant_id: 'mandant-a' }
+    ])
+    expect(dbAll('SELECT job_id, text FROM transcription_segments')).toEqual([
+      { job_id: 'job-1', text: 'Streng vertraulicher Satz' }
+    ])
+    // The index went with the dropped table and has to be back.
+    const indexes = dbAll("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'transcription_jobs'")
+    expect(indexes.map(r => r.name)).toContain('idx_transcription_jobs_state')
+  })
+})

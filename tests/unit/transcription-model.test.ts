@@ -15,8 +15,7 @@ import {
   getDatabase,
   getSchemaVersion,
   dbAll,
-  dbGet,
-  DEFAULT_TENANT_ID
+  dbGet
 } from '../../src/main/database/index'
 import {
   TranscriptionModel,
@@ -329,12 +328,18 @@ describe('TranscriptionModel', () => {
   })
 
   describe('Schema', () => {
-    it('trägt die Mandanten-Kennung auf beiden Tabellen (TEXT NOT NULL DEFAULT \'default\')', () => {
+    it('trägt die Mandanten-Kennung auf beiden Tabellen (TEXT NOT NULL, ohne Vorgabewert)', () => {
+      // No default on purpose, dropped by migration 14: these tables were
+      // created WITH the column, so nothing ever needed a default to give
+      // existing rows an owner. A default here would only catch a caller who
+      // forgot the tenant and file the row under the default one instead of
+      // failing. The ten tables from migration 11 keep theirs, and
+      // database-tenant-migration.test.ts pins both sides of that asymmetry.
       for (const table of ['transcription_jobs', 'transcription_segments']) {
         const col = (dbAll(`PRAGMA table_info(${table})`) as Array<Record<string, unknown>>).find(
           c => c.name === 'tenant_id'
         )
-        expect(col, table).toMatchObject({ type: 'TEXT', notnull: 1, dflt_value: `'${DEFAULT_TENANT_ID}'` })
+        expect(col, table).toMatchObject({ type: 'TEXT', notnull: 1, dflt_value: null })
       }
     })
 

@@ -306,6 +306,12 @@ function runMigrations(database: SqlJsDatabase): void {
     migration13(database)
     setSchemaVersion(database, 13)
   }
+
+  if (version < 14) {
+    log.info('Running migration 14: Drop the tenant_id column default on the transcription tables')
+    migration14(database)
+    setSchemaVersion(database, 14)
+  }
 }
 
 function migration1(database: SqlJsDatabase): void {
@@ -701,6 +707,133 @@ function migration13(database: SqlJsDatabase): void {
   addColumnIfMissing(database, 'transcription_jobs', 'attempts', 'INTEGER NOT NULL DEFAULT 0')
 
   log.info('Migration 13 completed: transcription_retention table and job retention columns added')
+}
+
+/**
+ * Take the column default off `tenant_id` on the three transcription tables.
+ *
+ * Migrations 12 and 13 gave the column `DEFAULT '<default tenant>'`, following
+ * migration 11, which needed one: it added the column to tables that already
+ * held rows, and the default is what assigned those rows an owner. A table
+ * created WITH the column never had that problem, and the default only hides a
+ * caller that forgot the tenant - it silently files the row under the default
+ * tenant instead of failing. Without it, `NOT NULL` makes that caller fail
+ * loudly, which is the point.
+ *
+ * Why a migration of its own rather than an edit to 12 and 13: a migration is a
+ * snapshot. Editing one in place would leave two installations that both report
+ * schema version 13 with different schemas - including Holger's own database,
+ * which a packaged build has already migrated.
+ *
+ * SQLite cannot drop a default in place, so each table is rebuilt.
+ */
+function migration14(database: SqlJsDatabase): void {
+  // Foreign keys MUST be off while a parent table is dropped. `initializeDatabase`
+  // turns them ON immediately before `runMigrations`, and `DROP TABLE
+  // transcription_jobs` then performs an implicit DELETE that the ON DELETE
+  // CASCADE on `transcription_segments` follows. Measured on this sql.js
+  // (2026-10-28): with the pragma on, dropping the parent left 0 of 1 segments;
+  // with it off, 1 of 1. A rebuild that forgets this deletes every transcript
+  // in the installation.
+  const hadForeignKeys = foreignKeysEnabled(database)
+  database.run('PRAGMA foreign_keys = OFF')
+
+  try {
+    rebuildTable(
+      database,
+      'transcription_jobs',
+      `CREATE TABLE transcription_jobs_new (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        audio_path TEXT NOT NULL,
+        state TEXT NOT NULL,
+        progress REAL NOT NULL DEFAULT 0,
+        target_id TEXT NOT NULL,
+        error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        audio_deleted_at INTEGER,
+        attempts INTEGER NOT NULL DEFAULT 0
+      )`,
+      'id, tenant_id, workspace_id, audio_path, state, progress, target_id, error, ' +
+        'created_at, updated_at, audio_deleted_at, attempts'
+    )
+
+    // The index went with the old table.
+    database.run(`
+      CREATE INDEX IF NOT EXISTS idx_transcription_jobs_state
+      ON transcription_jobs(tenant_id, state, created_at)
+    `)
+
+    rebuildTable(
+      database,
+      'transcription_segments',
+      `CREATE TABLE transcription_segments_new (
+        job_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        segment_index INTEGER NOT NULL,
+        start_ms INTEGER NOT NULL,
+        end_ms INTEGER NOT NULL,
+        speaker TEXT NOT NULL,
+        text TEXT NOT NULL,
+        PRIMARY KEY (job_id, segment_index),
+        FOREIGN KEY (job_id) REFERENCES transcription_jobs(id) ON DELETE CASCADE
+      )`,
+      'job_id, tenant_id, segment_index, start_ms, end_ms, speaker, text'
+    )
+
+    rebuildTable(
+      database,
+      'transcription_retention',
+      `CREATE TABLE transcription_retention_new (
+        tenant_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        audio_days INTEGER NOT NULL,
+        transcript_days INTEGER NOT NULL,
+        PRIMARY KEY (tenant_id, workspace_id)
+      )`,
+      'tenant_id, workspace_id, audio_days, transcript_days'
+    )
+  } finally {
+    database.run(`PRAGMA foreign_keys = ${hadForeignKeys ? 'ON' : 'OFF'}`)
+  }
+
+  log.info('Migration 14 completed: tenant_id default dropped on the transcription tables')
+}
+
+/** Whether foreign key enforcement is on right now. */
+function foreignKeysEnabled(database: SqlJsDatabase): boolean {
+  const stmt = database.prepare('PRAGMA foreign_keys')
+  let enabled = false
+  if (stmt.step()) enabled = Number(stmt.getAsObject().foreign_keys) === 1
+  stmt.free()
+  return enabled
+}
+
+/**
+ * Rebuild one table under a new definition, carrying its rows across.
+ *
+ * Repeatable like the rest of the migrations: the scratch table is dropped
+ * first, so a run that died halfway does not block the next one, and rebuilding
+ * an already rebuilt table is a no-op in effect. The column list is written out
+ * on both sides rather than relying on `SELECT *`, so a future column added to
+ * one side and not the other fails here instead of shifting values silently.
+ *
+ * The caller is responsible for foreign keys being OFF and for recreating any
+ * index, both of which go with the dropped table.
+ */
+function rebuildTable(
+  database: SqlJsDatabase,
+  table: string,
+  createScratch: string,
+  columns: string
+): void {
+  database.run(`DROP TABLE IF EXISTS ${table}_new`)
+  database.run(createScratch)
+  database.run(`INSERT INTO ${table}_new (${columns}) SELECT ${columns} FROM ${table}`)
+  database.run(`DROP TABLE ${table}`)
+  database.run(`ALTER TABLE ${table}_new RENAME TO ${table}`)
 }
 
 /**
