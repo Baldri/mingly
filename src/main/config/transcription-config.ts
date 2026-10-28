@@ -77,7 +77,7 @@ const MAX_HEADER_CODEPOINT = 0xff
 /** Why a key cannot be sent, or `undefined` when it can. */
 function describeUnusableKey(apiKey: string): string | undefined {
   if (UNSENDABLE_CHARACTERS.test(apiKey)) {
-    return 'enthaelt Steuerzeichen, die ein HTTP-Header nicht tragen kann (etwa Zeilenumbrueche)'
+    return 'enthält Steuerzeichen, die ein HTTP-Header nicht tragen kann (etwa Zeilenumbrüche)'
   }
 
   // Per CODEPOINT, not per UTF-16 unit: a character outside the BMP is one
@@ -88,7 +88,7 @@ function describeUnusableKey(apiKey: string): string | undefined {
     const codePoint = character.codePointAt(0)
     if (codePoint !== undefined && codePoint > MAX_HEADER_CODEPOINT) {
       return (
-        'enthaelt Zeichen jenseits von Latin-1 (etwa ein Eurozeichen oder ein Emoji), ' +
+        'enthält Zeichen jenseits von Latin-1 (etwa ein Eurozeichen oder ein Emoji), ' +
         'die ein HTTP-Header nicht tragen kann - hier steht vermutlich der falsche Wert'
       )
     }

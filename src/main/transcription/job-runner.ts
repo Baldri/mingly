@@ -562,7 +562,7 @@ export class TranscriptionJobRunner {
         this.fail(
           job,
           status.error ??
-            'Der Transkriptionsdienst hat den Job ohne Begruendung als gescheitert gemeldet'
+            'Der Transkriptionsdienst hat den Job ohne Begründung als gescheitert gemeldet'
         )
         return 'handled'
 
@@ -845,10 +845,10 @@ export class TranscriptionJobRunner {
     const openBits = mode & 0o077
     if (openBits !== 0) {
       throw new Error(
-        `das Spool-Verzeichnis ${spoolDir} ist fuer andere Konten dieses Rechners ` +
-          `zugaenglich (Rechte ${(mode & 0o777).toString(8)}). Darin liegen die ` +
+        `das Spool-Verzeichnis ${spoolDir} ist für andere Konten dieses Rechners ` +
+          `zugänglich (Rechte ${(mode & 0o777).toString(8)}). Darin liegen die ` +
           'Aufnahmen selbst. Setze die Rechte auf 700 (chmod 700) und starte den ' +
-          'Transkriptionsdienst neu, damit er es kuenftig selbst so anlegt'
+          'Transkriptionsdienst neu, damit er es künftig selbst so anlegt'
       )
     }
 
@@ -858,7 +858,7 @@ export class TranscriptionJobRunner {
   private describeUnconfiguredTarget(targetId: string): string {
     return (
       `Das von Policy ${this.policy.version} erlaubte Transkriptionsziel "${targetId}" ist ` +
-      'nicht konfiguriert - es gibt keinen Endpunkt dafuer. Die Aufnahme wird nicht ' +
+      'nicht konfiguriert - es gibt keinen Endpunkt dafür. Die Aufnahme wird nicht ' +
       'ersatzweise an einem anderen Ziel transkribiert.'
     )
   }

@@ -13,7 +13,7 @@
  *    PRAGMA foreign_keys to 0 on every `export()`, i.e. on every
  *    `saveDatabase()`, so the cascade does not run (migration 12 says the same
  *    at the schema). Without the explicit DELETE the transcript text would
- *    stay behind as orphan rows - "Loeschen muss loeschen" (design 8) failed in
+ *    stay behind as orphan rows - "Löschen muss löschen" (design 8) failed in
  *    the one way nobody would notice.
  * 3. **Only a file inside the spool directory is ever unlinked.** Not a
  *    formality: `audio_path` does NOT always hold the spool copy. A recording
@@ -67,7 +67,7 @@ const NOT_FOUND = 'Transkriptionsauftrag nicht gefunden'
  * and the caller can do nothing with it but learn where things lie.
  */
 const DELETE_REFUSED =
-  'Dieser Auftrag konnte nicht geloescht werden. Er bleibt unveraendert bestehen.'
+  'Dieser Auftrag konnte nicht gelöscht werden. Er bleibt unverändert bestehen.'
 
 /**
  * States whose work is not over. Their audio is left alone by the retention
@@ -211,7 +211,7 @@ export function setRetention(workspaceId: string, settings: RetentionSettings): 
 export function purgeExpired(tenantId: string, now: number): { audio: number; transcripts: number } {
   const tenant = requireTenantId(tenantId)
   if (!Number.isFinite(now)) {
-    throw new Error(`Aufbewahrung kann nicht gegen eine unbrauchbare Uhrzeit geprueft werden: ${now}`)
+    throw new Error(`Aufbewahrung kann nicht gegen eine unbrauchbare Uhrzeit geprüft werden: ${now}`)
   }
 
   const spool = resolveSpoolRoot()
@@ -349,7 +349,7 @@ export function deleteJob(jobId: string, tenantId: string): void {
   // stays. That case is a recording refused before it was copied, where the
   // row carries the user's own recording - and a user who cannot delete such a
   // job can never erase the row, the state and the audit trail that belong to
-  // it, which is the one outcome "Loeschen muss loeschen" rules out.
+  // it, which is the one outcome "Löschen muss löschen" rules out.
   const recordingKept = removal.outcome === 'not-ours'
   if (recordingKept) {
     logger.info('Job deleted, recording left alone', { jobId: id, reason: removal.reason })
@@ -426,14 +426,14 @@ function resolveSpoolRoot(): SpoolRoot {
     return {
       refusal:
         'kein Spool-Verzeichnis konfiguriert (TRANSCRIPTION_SPOOL_DIR); ohne es ist nicht ' +
-        'feststellbar, ob ein gespeicherter Pfad ueberhaupt zu einer Aufnahme gehoert'
+        'feststellbar, ob ein gespeicherter Pfad überhaupt zu einer Aufnahme gehört'
     }
   }
 
   try {
     return { root: fs.realpathSync(configured) }
   } catch (error) {
-    return { refusal: `Spool-Verzeichnis ${configured} nicht aufloesbar: ${String(error)}` }
+    return { refusal: `Spool-Verzeichnis ${configured} nicht auflösbar: ${String(error)}` }
   }
 }
 
@@ -466,7 +466,7 @@ type Removal =
  */
 function removeRecording(spoolRoot: string, audioPath: string): Removal {
   if (typeof audioPath !== 'string' || audioPath === '') {
-    return { outcome: 'not-ours', reason: 'der Datensatz enthaelt keinen Pfad' }
+    return { outcome: 'not-ours', reason: 'der Datensatz enthält keinen Pfad' }
   }
 
   const resolved = resolveAsFarAsItExists(audioPath)
@@ -476,7 +476,7 @@ function removeRecording(spoolRoot: string, audioPath: string): Removal {
   if (resolved === spoolRoot || !isPathSafe(resolved, spoolRoot)) {
     return {
       outcome: 'not-ours',
-      reason: `der Pfad liegt nicht im Spool-Verzeichnis ${spoolRoot} (aufgeloest: ${resolved})`
+      reason: `der Pfad liegt nicht im Spool-Verzeichnis ${spoolRoot} (aufgelöst: ${resolved})`
     }
   }
 
@@ -548,21 +548,21 @@ function requireDays(value: number, label: string): number {
 
 function requireWorkspaceId(value: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
-    throw new Error('Kein Arbeitsbereich uebergeben')
+    throw new Error('Kein Arbeitsbereich übergeben')
   }
   return value
 }
 
 function requireTenantId(value: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
-    throw new Error('Keine Mandanten-Kennung uebergeben')
+    throw new Error('Keine Mandanten-Kennung übergeben')
   }
   return value
 }
 
 function requireJobId(value: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
-    throw new Error('Keine Auftragskennung uebergeben')
+    throw new Error('Keine Auftragskennung übergeben')
   }
   return value
 }

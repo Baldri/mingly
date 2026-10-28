@@ -137,7 +137,7 @@ function requireDeclaredLevel(value: unknown): PIISensitivity | undefined {
  */
 const RECORDING_REFUSED =
   'Diese Aufnahme kann nicht transkribiert werden. Erlaubt sind Audio- und ' +
-  'Videodateien aus einem Verzeichnis, fuer das Mingly Zugriff hat.'
+  'Videodateien aus einem Verzeichnis, für das Mingly Zugriff hat.'
 
 /**
  * Containers the transcription service can decode (ffmpeg/whisperx). An
@@ -387,7 +387,7 @@ function auditExport(
 
 /** The caller's own job, or a refusal. */
 function requireOwnJob(jobId: unknown): TranscriptionJob {
-  const id = requireNonEmptyString(jobId, 'Keine Auftragskennung uebergeben')
+  const id = requireNonEmptyString(jobId, 'Keine Auftragskennung übergeben')
   const job = TranscriptionModel.getJob(id, callerTenantId())
   if (job === null) throw new Error(NOT_FOUND)
   return job
@@ -431,8 +431,8 @@ export function registerTranscriptionHandlers(): void {
     IPC_CHANNELS.TRANSCRIPTION_SUBMIT,
     async (workspaceId: unknown, audioPath: unknown, declaredLevel?: unknown): Promise<JobReply> => {
       requireFeature(FEATURE)
-      const workspace = requireNonEmptyString(workspaceId, 'Kein Arbeitsbereich uebergeben')
-      const submitted = requireNonEmptyString(audioPath, 'Kein Pfad zur Aufnahme uebergeben')
+      const workspace = requireNonEmptyString(workspaceId, 'Kein Arbeitsbereich übergeben')
+      const submitted = requireNonEmptyString(audioPath, 'Kein Pfad zur Aufnahme übergeben')
       const level = requireDeclaredLevel(declaredLevel)
       const audio = await requireAllowedRecording(submitted)
 
@@ -458,7 +458,7 @@ export function registerTranscriptionHandlers(): void {
 
   wrapHandler(IPC_CHANNELS.TRANSCRIPTION_CANCEL, (jobId: unknown): JobReply => {
     requireFeature(FEATURE)
-    const id = requireNonEmptyString(jobId, 'Keine Auftragskennung uebergeben')
+    const id = requireNonEmptyString(jobId, 'Keine Auftragskennung übergeben')
     const tenantId = callerTenantId()
 
     const outcome = getTranscriptionJobRunner().cancel(tenantId, id)
@@ -480,7 +480,7 @@ export function registerTranscriptionHandlers(): void {
    * ran out would otherwise lock the user out of their own recordings and
    * transcripts - the subscription state would decide whether personal data
    * can be erased, which is the one thing that must never depend on it
-   * ("Loeschen muss loeschen", design 8). It hands nothing out either: the
+   * ("Löschen muss löschen", design 8). It hands nothing out either: the
    * only answer is that the job is gone.
    *
    * The tenant filter stays in front of it twice over, as everywhere on this
@@ -565,7 +565,7 @@ export function registerTranscriptionHandlers(): void {
       // turns a `done` row into a failure only when `saveSegments` THREW
       // (`recordUnexpectedError`), which an empty but successful save does not.
       if (segments.length === 0) {
-        throw new Error('Dieser Auftrag hat kein Transkript, das exportiert werden koennte.')
+        throw new Error('Dieser Auftrag hat kein Transkript, das exportiert werden könnte.')
       }
 
       const content = renderTranscript(segments, exportFormat)
