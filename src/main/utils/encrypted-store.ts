@@ -39,13 +39,30 @@ function isSafeStorageEntry(entry: StoreEntry): entry is SafeStorageEntry {
 export class EncryptedStore {
   private storePath: string
   private entries: Record<string, StoreEntry> = {}
-  private useSafeStorage: boolean
+  private useSafeStorage = false
+  private initialized = false
   private legacyKey: Buffer | null = null
   private fallbackKey: Buffer | null = null
 
   constructor(filename: string = 'secure-keys.enc.json') {
+    this.storePath = path.join(app.getPath('userData'), filename)
+  }
+
+  /**
+   * Choose the backend on first use, not in the constructor. Stores are
+   * created at module load, before app 'ready', and since Electron 44
+   * safeStorage reports itself unavailable on macOS until 'ready' — deciding
+   * early would silently downgrade every new secret to the file-key fallback.
+   */
+  private ensureInitialized(): void {
+    if (this.initialized) return
+    this.initialized = true
+
+    if (!app.isReady()) {
+      console.warn('[EncryptedStore] Accessed before app ready — safeStorage may be reported unavailable')
+    }
+
     const userDataPath = app.getPath('userData')
-    this.storePath = path.join(userDataPath, filename)
     this.useSafeStorage = safeStorage.isEncryptionAvailable()
 
     if (!this.useSafeStorage) {
@@ -145,6 +162,7 @@ export class EncryptedStore {
   }
 
   get(key: string): string | undefined {
+    this.ensureInitialized()
     const entry = this.entries[key]
     if (!entry) return undefined
 
@@ -167,6 +185,7 @@ export class EncryptedStore {
   }
 
   set(key: string, value: string): void {
+    this.ensureInitialized()
     if (this.useSafeStorage) {
       const encrypted = safeStorage.encryptString(value)
       this.entries[key] = { encrypted: encrypted.toString('base64'), v: 2 }
@@ -177,17 +196,20 @@ export class EncryptedStore {
   }
 
   has(key: string): boolean {
+    this.ensureInitialized()
     if (!(key in this.entries)) return false
     // Verify the entry is actually readable (not corrupted by re-signing)
     return this.get(key) !== undefined
   }
 
   delete(key: string): void {
+    this.ensureInitialized()
     delete this.entries[key]
     this.saveToDisk()
   }
 
   clear(): void {
+    this.ensureInitialized()
     this.entries = {}
     this.saveToDisk()
   }

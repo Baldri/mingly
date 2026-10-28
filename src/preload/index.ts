@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '../shared/types'
 import type { LLMProvider, AppSettings, TranscriptExportFormat } from '../shared/types'
+import type { NetworkShareConfigInput } from '../shared/file-access-types'
 
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
@@ -182,7 +183,7 @@ const api = {
     listFiles: (directoryId: string, path?: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.FILE_ACCESS_LIST_FILES, directoryId, path),
 
-    addNetworkShare: (config: any) =>
+    addNetworkShare: (config: NetworkShareConfigInput) =>
       ipcRenderer.invoke(IPC_CHANNELS.FILE_ACCESS_ADD_NETWORK_SHARE, config)
   },
 
