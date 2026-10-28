@@ -121,6 +121,16 @@ export type NetworkShareConfigParseResult =
 /** Long enough for a UNC path or a descriptive share name, short enough to log. */
 const MAX_SHARE_FIELD_LENGTH = 1024
 
+/**
+ * C0/C1 controls plus the bidi overrides. These fields are interpolated into
+ * the confirmation dialog that asks the user to grant a volume, so a newline
+ * in `host` could forge the "Eingebunden unter:" line and get consent for a
+ * path the user never saw. Rejected rather than stripped: a share name that
+ * needs a control character is a malformed payload, not a naming choice.
+ */
+// eslint-disable-next-line no-control-regex
+const CONTROL_OR_BIDI_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/
+
 type FieldResult = { ok: true; value: string } | { ok: false; error: string }
 
 function checkStringField(value: unknown, field: string): FieldResult {
@@ -135,6 +145,9 @@ function checkStringField(value: unknown, field: string): FieldResult {
   }
   if (value.includes('\0')) {
     return { ok: false, error: `Network share field '${field}' contains a null byte` }
+  }
+  if (CONTROL_OR_BIDI_CHARS.test(value)) {
+    return { ok: false, error: `Network share field '${field}' contains a control character` }
   }
   return { ok: true, value }
 }

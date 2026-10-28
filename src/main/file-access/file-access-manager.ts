@@ -155,34 +155,62 @@ export class FileAccessManager {
   /**
    * Security: may this path be granted as a network share mount point?
    *
-   * Returns the resolved absolute path, or throws. Three things are checked,
-   * in rising cost:
+   * Returns the real, absolute path that may be granted, or throws. Checks
+   * run in rising cost, and the authoritative ones run on the realpath:
    *
-   * 1. It must be absolute, so the grant does not depend on the main
-   *    process's working directory.
-   * 2. It must not contain the user's home directory — that one rule covers
-   *    '/' and '/Users' as well as the home directory itself, and still
-   *    allows a mapped Windows drive at Z:\ , which is not where the user's
-   *    files live. Note that isPathSafe is deliberately NOT reused here: it
-   *    appends path.sep to defeat sibling prefixes, which at a filesystem
-   *    root yields '//' and makes isPathSafe(home, '/') false — exactly the
+   * 1. Absolute, so the grant does not depend on the main process's working
+   *    directory. Rejected before any filesystem call.
+   * 2. It must not CONTAIN the user's home directory — one rule that covers
+   *    '/', '/Users' and the home directory itself, while still allowing a
+   *    mapped Windows drive at Z:\ , which is not where the user's files
+   *    live. Note that isPathSafe is deliberately NOT reused: it appends
+   *    path.sep to defeat sibling prefixes, which at a filesystem root
+   *    yields '//' and makes isPathSafe(home, '/') false — exactly the
    *    payload this gate exists to refuse.
-   * 3. It must be a directory that exists AND sit on a different device than
-   *    its parent, which is what makes a path a mount point rather than an
-   *    ordinary folder someone created. A filesystem root is its own mount by
-   *    definition and has no parent to compare against.
+   * 3. It must be an existing directory whose st_dev differs from the volume
+   *    holding the user's files AND from its own parent directory.
+   *
+   * Check 3 is where a spelling test is not enough. A network share is by
+   * definition a different filesystem than the one holding $HOME, and st_dev
+   * says that outright; a path prefix only says it about the spellings it
+   * happens to recognise. A bind mount makes the difference concrete: after
+   * `mount --bind /home/user /mnt/backup`, the path /mnt/backup has a
+   * different device than its parent /mnt (so it looks like a real mount) and
+   * '/home/user'.startsWith('/mnt/backup/') is false (so the prefix test sees
+   * nothing wrong) — yet granting it grants the user's home. The device
+   * comparison refuses it. The parent comparison stays because it answers a
+   * different question: whether the path is a mount at all, rather than an
+   * ordinary folder somebody created under /Volumes.
+   *
+   * Everything is checked on the realpath, and the realpath is what gets
+   * granted, so the path that was validated is the path that gets read. With
+   * path.resolve alone a symlink would leave the grant naming one place and
+   * pointing at another — the same validate-then-resolve gap that still
+   * affects READ_FILE and is tracked separately.
+   *
+   * Not adopted from the review, deliberately: filtering by filesystem type
+   * via the OS mount table (no cross-platform Node API, and it would make
+   * this macOS/Linux-specific), refusing every filesystem root (that would
+   * break a mapped Windows share at Z:\, which the device check already
+   * handles correctly), and restricting to /Volumes, /mnt or /media (/Volumes
+   * is user-writable on macOS, so it is not a trust boundary on its own).
    */
   private async assertGrantableMountPoint(candidate: string): Promise<string> {
     if (!path.isAbsolute(candidate)) {
       throw new Error('Mount point must be an absolute path')
     }
 
-    const resolved = path.resolve(candidate)
-    const home = path.resolve(os.homedir())
-    const resolvedPrefix = resolved.endsWith(path.sep) ? resolved : resolved + path.sep
-
-    if (home === resolved || home.startsWith(resolvedPrefix)) {
+    // Cheap reject on the lexical path, so the obvious payloads never reach
+    // the filesystem. Repeated authoritatively on the realpath below.
+    if (this.containsHomeDirectory(path.resolve(candidate), path.resolve(os.homedir()))) {
       throw new Error('Mount point must not be the home directory or one of its parents')
+    }
+
+    let resolved: string
+    try {
+      resolved = await fs.realpath(candidate)
+    } catch {
+      throw new Error(`Mount point does not exist: ${candidate}`)
     }
 
     let stats: Stats
@@ -195,6 +223,21 @@ export class FileAccessManager {
       throw new Error(`Mount point is not a directory: ${resolved}`)
     }
 
+    const home = await fs.realpath(os.homedir())
+    if (this.containsHomeDirectory(resolved, home)) {
+      throw new Error('Mount point must not be the home directory or one of its parents')
+    }
+
+    const [homeStats, rootStats] = await Promise.all([
+      fs.stat(home),
+      fs.stat(path.parse(home).root)
+    ])
+    if (stats.dev === homeStats.dev || stats.dev === rootStats.dev) {
+      throw new Error(`Mount point is not a separate volume from the user's files: ${resolved}`)
+    }
+
+    // A filesystem root is its own mount by definition and has no parent to
+    // compare against.
     if (path.parse(resolved).root !== resolved) {
       const parent = await fs.stat(path.dirname(resolved))
       if (parent.dev === stats.dev) {
@@ -203,6 +246,17 @@ export class FileAccessManager {
     }
 
     return resolved
+  }
+
+  /**
+   * Is `homePath` the directory `candidatePath` itself, or inside it?
+   *
+   * Normalises the separator instead of appending it, so a filesystem root
+   * does not fall out of the containment relation (see assertGrantableMountPoint).
+   */
+  private containsHomeDirectory(candidatePath: string, homePath: string): boolean {
+    const prefix = candidatePath.endsWith(path.sep) ? candidatePath : candidatePath + path.sep
+    return homePath === candidatePath || homePath.startsWith(prefix)
   }
 
   /**
@@ -218,13 +272,14 @@ export class FileAccessManager {
     mountPoint: string
   ): Promise<boolean> {
     const result = await dialog.showMessageBox({
-      message: 'Netzlaufwerk-Zugriff erlauben?',
+      // The path being granted goes in `message`, ahead of any caller-supplied
+      // text, so no share name can push it out of view.
+      message: `Zugriff auf ${mountPoint} erlauben?`,
       detail:
-        `Mingly möchte auf folgendes Netzlaufwerk zugreifen:\n\n` +
-        `${share.protocol.toUpperCase()} · ${share.host}/${share.shareName}\n` +
-        `Eingebunden unter: ${mountPoint}\n\n` +
         `Mingly darf dort lesen und neue Dateien anlegen.\n` +
-        `Keine Dateien werden gelöscht oder überschrieben.`,
+        `Keine Dateien werden gelöscht oder überschrieben.\n\n` +
+        `Angefordert für das Netzlaufwerk:\n` +
+        `${share.protocol.toUpperCase()} · ${share.host}/${share.shareName}`,
       buttons: ['Zugriff erlauben', 'Ablehnen'],
       type: 'question',
       defaultId: 1,

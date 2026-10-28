@@ -31,7 +31,8 @@ const fsMock = vi.hoisted(() => ({
   writeFile: vi.fn(),
   mkdir: vi.fn(),
   access: vi.fn(),
-  stat: vi.fn()
+  stat: vi.fn(),
+  realpath: vi.fn()
 }))
 
 const storeMock = vi.hoisted(() => {
@@ -93,13 +94,20 @@ import { IPC_CHANNELS } from '../../src/shared/types'
 import { registerContentHandlers } from '../../src/main/ipc/content-handlers'
 import { getFileAccessManager } from '../../src/main/file-access/file-access-manager'
 
-/** Make the fs mock answer a mount-point probe for `mountPath`. */
+/**
+ * Make the fs mock answer a mount-point probe for `mountPath`: a real mount
+ * on device 42, with $HOME, the filesystem root and the parent directory all
+ * on device 1.
+ */
 function mockMountPointProbe(mountPath: string): void {
   const parent = path.dirname(mountPath)
+  fsMock.realpath.mockImplementation(async (target: unknown) => String(target))
   fsMock.stat.mockImplementation(async (target: unknown) => {
     const probed = String(target)
     if (probed === mountPath) return { isDirectory: () => true, dev: 42 }
-    if (probed === parent) return { isDirectory: () => true, dev: 1 }
+    if (probed === TEST_HOME || probed === path.parse(TEST_HOME).root || probed === parent) {
+      return { isDirectory: () => true, dev: 1 }
+    }
     throw Object.assign(new Error(`ENOENT: ${probed}`), { code: 'ENOENT' })
   })
 }

@@ -110,6 +110,16 @@ describe('parseNetworkShareConfig', () => {
     if (!result.valid) expect(result.error).toContain('null byte')
   })
 
+  it.each([
+    ['a newline in host', 'host', 'nas\nEingebunden unter: /Volumes/Harmless'],
+    ['a carriage return in the share name', 'shareName', 'share\rfake'],
+    ['a bidi override in the name', 'name', 'NAS\u202e/stnuoM/']
+  ])('rejects %s (dialog-spoofing vector)', (_label, field, value) => {
+    const result = parseNetworkShareConfig({ ...VALID, [field]: value })
+    expect(result.valid).toBe(false)
+    if (!result.valid) expect(result.error).toContain('control character')
+  })
+
   it('rejects an over-long field', () => {
     const result = parseNetworkShareConfig({ ...VALID, host: 'h'.repeat(1025) })
     expect(result.valid).toBe(false)
