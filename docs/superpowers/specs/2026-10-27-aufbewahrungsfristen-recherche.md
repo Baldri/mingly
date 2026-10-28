@@ -170,8 +170,12 @@ ein Gespräch beschreiben. Das ist im Code bereits offen benannt.
 
 ### Zur Vorgabe
 
-Die aktuelle Vorgabe (30 Tage Audio, 365 Tage Transkript) stammt von niemandem —
-sie wurde beim Bauen gesetzt, weil ein Wert nötig war.
+Die ursprüngliche Vorgabe (30 Tage Audio, 365 Tage Transkript) stammte von
+niemandem — sie wurde beim Bauen gesetzt, weil ein Wert nötig war.
+
+> **Entschieden am 28.10.2026:** Die Audio-Vorgabe steht auf **7 Tagen**, mit der
+> Begründung aus dem folgenden Absatz. Die Transkript-Vorgabe von 365 Tagen bleibt
+> ein Platzhalter für eine kundenseitige Entscheidung.
 
 Aus der Recherche ergibt sich kein gesetzlicher Wert, aber ein Massstab: **die
 Vorgabe soll die kürzeste Frist sein, die den Zweck noch erfüllt.** Für die

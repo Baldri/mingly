@@ -98,18 +98,38 @@ export interface RetentionSettings {
 /**
  * What a workspace gets until someone sets something else.
  *
- * The two numbers are not the same thing. The audio is a voice recording, and
- * a voice is a biometric datum (design 8) - and what is deleted is Mingly's own
- * spool COPY, so removing it costs the user nothing they still have (the one
- * case where `audio_path` is the user's own file, a refusal before the copy, is
- * never deleted here at all). The transcript is the work product the user came
- * for; deleting it after a month without anyone having asked would be data loss
- * dressed up as data protection.
+ * The two numbers differ because the two purposes differ, and the purpose is
+ * what the law goes by: Art. 6 Abs. 4 DSG requires personal data to be
+ * destroyed or anonymised as soon as it is no longer needed for the purpose it
+ * was gathered for. There is no retention PERIOD for a recording to look up -
+ * the period is derived from the purpose, which makes the shortest span that
+ * still serves it the only defensible default.
  *
- * They are a default, not a recommendation: nobody has decided these periods
- * for the product yet.
+ * For the recording that span ends with the verified transcript. What is kept
+ * past it serves exactly one purpose: transcribing again when the first run
+ * came out wrong. Seven days is a working week to notice - and what gets
+ * deleted is Mingly's own spool COPY, so removing it costs the user nothing
+ * they still have. (The one case where `audio_path` is the user's own file, a
+ * refusal before the copy was made, is never deleted here at all.)
+ *
+ * The transcript is the work product the user came for. How long a business
+ * keeps its own work product is its documentation question, not ours - so a
+ * year is a placeholder for a decision, and deleting it after a month without
+ * anyone having asked would be data loss dressed up as data protection.
+ *
+ * Both are defaults, not recommendations: the periods belong to the customer,
+ * who is the controller, and the commentary on Art. 6 Abs. 4 expects them to be
+ * written down in a retention policy rather than inherited from a vendor.
+ *
+ * One thing this file used to assert and should not have: that a voice is a
+ * biometric datum. Art. 5 lit. c Ziff. 4 DSG covers biometric data "that
+ * uniquely identifies a natural person", and no source consulted for the
+ * research note addresses the voice at all. It may well be - it is not settled,
+ * and the answer decides whether the stricter regime applies to this whole
+ * feature. Sources and the open questions:
+ * docs/superpowers/specs/2026-10-27-aufbewahrungsfristen-recherche.md
  */
-const DEFAULT_RETENTION: RetentionSettings = { audioDays: 30, transcriptDays: 365 }
+const DEFAULT_RETENTION: RetentionSettings = { audioDays: 7, transcriptDays: 365 }
 
 /**
  * The tenant these two settings functions read and write for.

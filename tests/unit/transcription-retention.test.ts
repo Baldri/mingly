@@ -48,7 +48,7 @@ const FOREIGN_TENANT = 'anderer-mandant'
  * change, including the wrong one (memory note
  * `testinstrument-darf-nicht-aus-dem-pruefling-stammen`).
  */
-const EXPECTED_DEFAULT_AUDIO_DAYS = 30
+const EXPECTED_DEFAULT_AUDIO_DAYS = 7
 const EXPECTED_DEFAULT_TRANSCRIPT_DAYS = 365
 
 describe('Transkriptions-Aufbewahrung', () => {
