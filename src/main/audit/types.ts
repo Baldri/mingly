@@ -10,6 +10,12 @@ export interface ActivityLogEntry {
   entityId: string
   details: Record<string, unknown> | null
   createdAt: string
+  /**
+   * Owning tenant. Optional for the writers that predate the tenant column and
+   * rely on its default; a writer that knows the tenant passes it, because a
+   * later multi-tenant stage cannot reconstruct it afterwards.
+   */
+  tenantId?: string
 }
 
 export interface ActivityLoggerInterface {

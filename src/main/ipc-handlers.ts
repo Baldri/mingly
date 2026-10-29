@@ -32,6 +32,7 @@ import { registerMCPHandlers } from './ipc/mcp-handlers'
 import { registerRAGHandlers } from './ipc/rag-handlers'
 import { registerPrivacyHandlers } from './ipc/privacy-handlers'
 import { registerAgentHandlers } from './ipc/agent-handlers'
+import { registerTranscriptionHandlers } from './ipc/transcription-handlers'
 // Same rule as the one gating credential storage: a provider qualifies by
 // being built in or registered. Two copies of this check with two different
 // lists is how a configured endpoint ends up able to hold a key and unable to
@@ -66,6 +67,7 @@ export async function registerIPCHandlers(): Promise<void> {
   registerRBACHandlers()
   registerBusinessHandlers()
   registerAgentHandlers()
+  registerTranscriptionHandlers()
   await registerContentHandlers()
 
   // ========================================

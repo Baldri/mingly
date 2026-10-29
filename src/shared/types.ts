@@ -391,6 +391,7 @@ export type GatedFeature =
   | 'comparison'            // Pro+: Side-by-side model comparison
   | 'unlimited_conversations' // Pro+: Unlimited conversations per day
   | 'advanced_rag'           // Pro+: Vector DB RAG (Qdrant, ChromaDB, Weaviate, Pinecone)
+  | 'transcription'          // Pro+: Audio transcription via the local transcription service
   | 'team_workspaces'       // Team+: Team workspaces
   | 'shared_rag'            // Team+: Shared RAG knowledge base
   | 'team_rbac'             // Team+: Team RBAC
@@ -416,6 +417,16 @@ export interface TierLimits {
   maxTemplates: number             // 0 = unlimited
   builtinTemplatesOnly: boolean
   maxComparisonModels: number      // 0 = disabled
+  /**
+   * Minutes of AUDIO per month this tier may transcribe — not a number of
+   * files. Compute time is the cost driver for transcription, which is what
+   * sets it apart from the rest of Mingly (design section 9).
+   *
+   * 'unlimited' is spelled out rather than encoded as the 0 the two limits
+   * above use for it: 0 has to mean "none at all" here, because the Free tier
+   * has no transcription, and one field cannot carry both meanings.
+   */
+  maxTranscriptionMinutesPerMonth: number | 'unlimited'
 }
 
 // Comparison Types
@@ -723,4 +734,100 @@ export const IPC_CHANNELS = {
   PRIVACY_NER_STATUS: 'privacy:ner-status',
   PRIVACY_NER_DOWNLOAD: 'privacy:ner-download',
   PRIVACY_NER_DELETE: 'privacy:ner-delete',
+
+  // Transcription (audio → transcript via the local transcription service)
+  TRANSCRIPTION_SUBMIT: 'transcription:submit',
+  TRANSCRIPTION_STATUS: 'transcription:status',
+  TRANSCRIPTION_SEGMENTS: 'transcription:segments',
+  TRANSCRIPTION_CANCEL: 'transcription:cancel',
+  TRANSCRIPTION_DELETE: 'transcription:delete',
+  TRANSCRIPTION_EXPORT: 'transcription:export',
 } as const
+
+// ---------------------------------------------------------------------------
+// Transcription — what crosses the IPC boundary
+//
+// These three live here, not next to the model that stores them: everything a
+// renderer renders belongs in src/shared, because the renderer must not import
+// from src/main (tests/unit/renderer-process-boundary.test.ts, which exists
+// because such an import once pulled sql.js into the renderer's type-check).
+// The job model and the IPC handler module re-export them, so the main process
+// keeps importing them where it always did (the HTTP client takes
+// TranscriptionSegment from the model, like the rest of src/main).
+// ---------------------------------------------------------------------------
+
+/**
+ * A transcription job's state. It is the ONLY place that says whether a job
+ * failed — see `TranscriptionJobView.failureReason`.
+ *
+ * `cancelled` exists on Mingly's side only; the service knows the other four.
+ */
+export type TranscriptionJobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
+
+/**
+ * The states a job can still be WAITING in — the two that are not over.
+ *
+ * One constant for two sides on purpose, because they have to agree. The job
+ * runner refuses to write a wait reason onto a row outside this set
+ * (`recordWaitReason` in transcription/job-runner.ts), and the IPC view fills
+ * `TranscriptionJobView.waitingReason` only for a row inside it (`toView` in
+ * ipc/transcription-handlers.ts). Let the two drift apart and one of two things
+ * happens: a reason is written where nobody can see it — which is how a `done`
+ * job with a missing transcript once ended up explaining itself to nobody — or
+ * a reason is shown on a row that is not waiting for anything. Both sides read
+ * this list so that neither can be changed alone.
+ */
+export const TRANSCRIPTION_WAITING_STATES: readonly TranscriptionJobState[] = [
+  'queued',
+  'running'
+]
+
+/**
+ * The file formats a transcript can be exported as. The name is also the file
+ * extension, which is what `TRANSCRIPTION_EXPORT` builds its default file name
+ * from.
+ *
+ * Here rather than next to the exporter in src/main, for the reason stated
+ * above: the preload bridge types the format, and src/preload is type-checked
+ * with the renderer. transcription/transcript-export.ts re-exports it, so the
+ * main process keeps importing it where it always did.
+ */
+export type TranscriptExportFormat = 'txt' | 'srt'
+
+/** One piece of a transcript, in transcript order. */
+export interface TranscriptionSegment {
+  jobId: string
+  index: number
+  startMs: number
+  endMs: number
+  speaker: string
+  text: string
+}
+
+/**
+ * One transcription job as a caller of the IPC surface sees it.
+ *
+ * The job row's `error` column is split in two here, because it carries two
+ * different things: a reason the job FAILED, and a reason a job that has not
+ * failed is not moving (the runner writes wait reasons there, prefixed, for
+ * want of a column of their own). Which one is filled follows the state, which
+ * is the truth about the job — a caller must never conclude "failed" from a
+ * non-empty message.
+ */
+export interface TranscriptionJobView {
+  id: string
+  workspaceId: string
+  state: TranscriptionJobState
+  /** As the service reports it, 0..1. */
+  progress: number
+  targetId: string
+  /** Why the job failed. Only ever set for state 'failed'. */
+  failureReason?: string
+  /**
+   * Why a job that is still queued or running is not progressing. Never a
+   * failure, and never set on a job that has reached a terminal state.
+   */
+  waitingReason?: string
+  createdAt: number
+  updatedAt: number
+}

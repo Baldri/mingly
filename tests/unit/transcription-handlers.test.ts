@@ -1,0 +1,1273 @@
+/**
+ * Transcription IPC surface tests.
+ *
+ * The handlers are exercised through the channel they are registered on, not
+ * by calling the functions directly: what this task produces is a channel
+ * surface, and "it is registered on the right channel" is exactly the part a
+ * refactor can quietly drop. `ipcMain.handle` is therefore captured rather
+ * than mocked away.
+ *
+ * Everything below the handlers is real - a sql.js database in a temp
+ * directory, the real feature gate, the real job runner, a real HTTP service
+ * on an ephemeral loopback port for the API key. Only the two Electron
+ * surfaces (`ipcMain`, `app.getPath`) are mocked, because there is no Electron
+ * in a unit test.
+ *
+ * Every negative assertion sits next to a positive one in the same test: a
+ * refusal that proves nothing because nothing was reachable in the first place
+ * is not evidence.
+ */
+
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import http from 'http'
+import type { AddressInfo } from 'net'
+
+// Defined through vi.hoisted because the vi.mock factory below is hoisted
+// above the imports and would otherwise close over undefined bindings.
+const { ipcHandlers, electronPaths, saveDialog } = vi.hoisted(() => ({
+  ipcHandlers: new Map<string, (event: unknown, ...args: unknown[]) => unknown>(),
+  electronPaths: { userData: '' },
+  /**
+   * The save dialog the export channel opens. `calls` is recorded rather than
+   * only the answer, because two of the tests below assert that the dialog was
+   * NOT opened at all - a refusal that happens after the user has picked a
+   * location is a different thing from one that happens before.
+   */
+  saveDialog: {
+    result: { canceled: true } as { canceled: boolean; filePath?: string },
+    calls: [] as { defaultPath?: string; filters?: unknown }[]
+  }
+}))
+
+vi.mock('electron', () => ({
+  app: { getPath: () => electronPaths.userData },
+  ipcMain: {
+    handle: (channel: string, handler: (event: unknown, ...args: unknown[]) => unknown): void => {
+      ipcHandlers.set(channel, handler)
+    }
+  },
+  dialog: {
+    showSaveDialog: (options: { defaultPath?: string; filters?: unknown }) => {
+      saveDialog.calls.push(options)
+      return Promise.resolve(saveDialog.result)
+    }
+  }
+}))
+
+import { IPC_CHANNELS } from '../../src/shared/types'
+import {
+  initializeDatabase,
+  closeDatabase,
+  dbAll,
+  dbRun,
+  DEFAULT_TENANT_ID
+} from '../../src/main/database/index'
+import {
+  TranscriptionModel,
+  type TranscriptionJob,
+  type TranscriptionSegment
+} from '../../src/main/database/models/transcription'
+import {
+  registerTranscriptionHandlers,
+  startTranscriptionScheduler,
+  stopTranscriptionScheduler,
+  type TranscriptionJobView
+} from '../../src/main/ipc/transcription-handlers'
+import {
+  applyTranscriptionApiKey,
+  resolveTranscriptionApiKey
+} from '../../src/main/config/transcription-config'
+import { getTranscriptionHttpClient } from '../../src/main/transcription/transcription-http-client'
+import { getFeatureGateManager } from '../../src/main/services/feature-gate-manager'
+import { configureLogger } from '../../src/shared/logger'
+
+const FOREIGN_TENANT = 'anderer-mandant'
+
+interface JobResult {
+  success: boolean
+  error?: string
+  job?: TranscriptionJobView
+}
+
+interface SegmentsResult {
+  success: boolean
+  error?: string
+  segments?: TranscriptionSegment[]
+}
+
+interface DeleteResult {
+  success: boolean
+  error?: string
+  jobId?: string
+}
+
+interface ExportResult {
+  success: boolean
+  error?: string
+  canceled?: boolean
+  filePath?: string
+}
+
+interface RecordedRequest {
+  url: string
+  authorization: string | undefined
+}
+
+const openServers: http.Server[] = []
+
+/**
+ * A service that records how it was asked. It answers a submit with a job id,
+ * or with the status given - 401 is what a service with a key configured says
+ * to a request that carries none.
+ */
+async function startFakeService(status = 200): Promise<{ port: number; requests: RecordedRequest[] }> {
+  const requests: RecordedRequest[] = []
+  const server = http.createServer((req, res) => {
+    req.on('data', () => undefined)
+    req.on('end', () => {
+      requests.push({ url: req.url ?? '', authorization: req.headers.authorization })
+      res.writeHead(status, { 'Content-Type': 'application/json' })
+      res.end(
+        status === 200
+          ? JSON.stringify({ job_id: 'svc-1' })
+          : JSON.stringify({ detail: 'Not authenticated' })
+      )
+    })
+  })
+  openServers.push(server)
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  return { port: (server.address() as AddressInfo).port, requests }
+}
+
+/** Wait for a condition, bounded, on real timers. */
+async function waitFor(condition: () => boolean, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!condition() && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 10))
+  }
+  if (!condition()) throw new Error(`condition not met within ${timeoutMs} ms`)
+}
+
+function segment(jobId: string, text: string): TranscriptionSegment {
+  return { jobId, index: 0, startMs: 0, endMs: 900, speaker: 'S0', text }
+}
+
+/** A segment with its own place in the transcript, for the export tests. */
+function segmentAt(
+  jobId: string,
+  index: number,
+  startMs: number,
+  endMs: number,
+  speaker: string,
+  text: string
+): TranscriptionSegment {
+  return { jobId, index, startMs, endMs, speaker, text }
+}
+
+/**
+ * The timestamp the default export name is expected to carry, built from a
+ * DIFFERENT instrument than the handler: ICU's sv-SE locale prints local time
+ * as `YYYY-MM-DD HH:MM:SS`, where the handler pads the components by hand. A
+ * copy of the handler's own arithmetic would make the assertion unfalsifiable.
+ */
+function expectedStamp(epochMs: number): string {
+  return new Date(epochMs).toLocaleString('sv-SE').replace(' ', '-').replace(/:/g, '')
+}
+
+describe('Transkriptions-IPC', () => {
+  let tmpDir: string
+  let userDataDir: string
+  /** A directory the user has granted Mingly access to; recordings live here. */
+  let grantedDir: string
+
+  async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
+    const handler = ipcHandlers.get(channel)
+    if (handler === undefined) throw new Error(`no handler registered for ${channel}`)
+    return (await handler(null, ...args)) as T
+  }
+
+  /** A directory that reached the allowlist as a network share - no dialog. */
+  let networkShareDir: string
+  /** A granted directory the user gave CREATE permission to, not read. */
+  let createOnlyDir: string
+
+  /** A recording where the user granted access. */
+  function writeAudio(name: string): string {
+    const file = path.join(grantedDir, name)
+    fs.writeFileSync(file, Buffer.alloc(64, 1))
+    return file
+  }
+
+  /** A recording in one of the other granted directories. */
+  function writeAudioIn(directory: string, name: string): string {
+    const file = path.join(directory, name)
+    fs.writeFileSync(file, Buffer.alloc(64, 1))
+    return file
+  }
+
+  /** A file somewhere the user never granted anything. */
+  function writeOutside(name: string): string {
+    const file = path.join(tmpDir, name)
+    fs.writeFileSync(file, Buffer.alloc(64, 1))
+    return file
+  }
+
+  beforeAll(() => {
+    configureLogger({ level: 'error' })
+    // One stable userData directory for the whole file: the feature gate
+    // singleton fixes its config path on construction, so a per-test
+    // directory would be gone by the time it writes.
+    userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-transcription-ipc-userdata-'))
+    electronPaths.userData = userDataDir
+
+    // Grant one directory through the real path the FileAccessManager loads
+    // from, rather than mocking it away: `file-access.json` in userData is
+    // what a directory the user picked leaves behind.
+    grantedDir = path.join(userDataDir, 'aufnahmen')
+    networkShareDir = path.join(userDataDir, 'netzlaufwerk')
+    createOnlyDir = path.join(userDataDir, 'nur-schreiben')
+    for (const dir of [grantedDir, networkShareDir, createOnlyDir]) {
+      fs.mkdirSync(dir, { recursive: true })
+    }
+    fs.writeFileSync(
+      path.join(userDataDir, 'file-access.json'),
+      JSON.stringify({
+        allowedDirectories: [
+          {
+            id: 'granted-1',
+            path: grantedDir,
+            name: 'Aufnahmen',
+            location: 'local',
+            permissions: ['read'],
+            recursive: true,
+            grantedAt: Date.now(),
+            accessCount: 0
+          },
+          // In the allowlist WITHOUT a dialog: addNetworkShare writes such an
+          // entry straight from renderer input (file-access-manager.ts).
+          {
+            id: 'smb://x/y',
+            path: networkShareDir,
+            name: 'Netzlaufwerk',
+            location: 'network-smb',
+            permissions: ['read', 'create'],
+            recursive: true,
+            grantedAt: Date.now(),
+            accessCount: 0
+          },
+          // Granted for writing AI output, never for reading.
+          {
+            id: 'granted-2',
+            path: createOnlyDir,
+            name: 'Nur Schreiben',
+            location: 'local',
+            permissions: ['create'],
+            recursive: true,
+            grantedAt: Date.now(),
+            accessCount: 0
+          }
+        ]
+      })
+    )
+
+    registerTranscriptionHandlers()
+  })
+
+  afterAll(() => {
+    fs.rmSync(userDataDir, { recursive: true, force: true })
+    for (const server of openServers) server.close()
+  })
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-transcription-ipc-'))
+    await initializeDatabase(tmpDir)
+    vi.stubEnv('TRANSCRIPTION_SPOOL_DIR', path.join(tmpDir, 'spool'))
+    // A cancelled dialog is the default, so a test that forgets to point the
+    // dialog somewhere cannot write a file by accident.
+    saveDialog.result = { canceled: true }
+    saveDialog.calls = []
+    // The transcription feature needs a paid tier; the tier test sets Free itself.
+    getFeatureGateManager().setTier('pro')
+  })
+
+  afterEach(() => {
+    stopTranscriptionScheduler()
+    vi.useRealTimers()
+    vi.unstubAllEnvs()
+    vi.restoreAllMocks()
+    applyTranscriptionApiKey(undefined)
+    closeDatabase()
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  // ── Feature gate ───────────────────────────────────────────────
+
+  it('verweigert den Zugriff unter der erforderlichen Abo-Stufe', async () => {
+    const audio = writeAudio('a.wav')
+    getFeatureGateManager().setTier('free')
+
+    const denied = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', audio, 'critical')
+
+    expect(denied.success).toBe(false)
+    // The refusal names the tier it needs; the gate spells the tier the way
+    // the subscription does, in lower case.
+    expect(denied.error).toMatch(/requires pro plan/i)
+    expect(denied.error).toContain('transcription')
+    // The gate sits in FRONT of the work: nothing was queued, nothing copied.
+    expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
+
+    // Positive control, same run: the identical call succeeds on the tier the
+    // feature requires, so the refusal above is the gate and not a broken call.
+    getFeatureGateManager().setTier('pro')
+    const allowed = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', audio, 'critical')
+
+    expect(allowed.success).toBe(true)
+    expect(allowed.job?.state).toBe('queued')
+    expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(1)
+  })
+
+  it('verweigert auch das Lesen unter der erforderlichen Abo-Stufe', async () => {
+    const job = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/a.wav', 'local')
+    TranscriptionModel.saveSegments(job.id, [segment(job.id, 'Text')])
+    getFeatureGateManager().setTier('free')
+
+    const status = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_STATUS, job.id)
+    const segments = await invoke<SegmentsResult>(IPC_CHANNELS.TRANSCRIPTION_SEGMENTS, job.id)
+
+    expect(status.success).toBe(false)
+    expect(segments.success).toBe(false)
+    expect(segments.segments).toBeUndefined()
+
+    getFeatureGateManager().setTier('pro')
+    expect((await invoke<SegmentsResult>(IPC_CHANNELS.TRANSCRIPTION_SEGMENTS, job.id)).success).toBe(true)
+  })
+
+  // ── Tenant isolation ───────────────────────────────────────────
+
+  it('gibt Segmente nur fuer den eigenen Mandanten heraus', async () => {
+    const own = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/own.wav', 'local')
+    TranscriptionModel.saveSegments(own.id, [segment(own.id, 'eigener Text')])
+    const foreign = TranscriptionModel.createJob(FOREIGN_TENANT, 'ws9', '/spool/fremd.wav', 'local')
+    TranscriptionModel.saveSegments(foreign.id, [segment(foreign.id, 'fremder Text')])
+
+    // Positive control first: the own transcript IS handed out, so an empty
+    // answer below cannot come from a query that finds nothing at all.
+    const mine = await invoke<SegmentsResult>(IPC_CHANNELS.TRANSCRIPTION_SEGMENTS, own.id)
+    expect(mine.success).toBe(true)
+    expect(mine.segments?.map((s) => s.text)).toEqual(['eigener Text'])
+
+    const theirs = await invoke<SegmentsResult>(IPC_CHANNELS.TRANSCRIPTION_SEGMENTS, foreign.id)
+    expect(theirs.success).toBe(false)
+    expect(theirs.segments).toBeUndefined()
+    expect(JSON.stringify(theirs)).not.toContain('fremder Text')
+  })
+
+  it('gibt den Status eines fremden Jobs nicht heraus', async () => {
+    const foreign = TranscriptionModel.createJob(FOREIGN_TENANT, 'ws9', '/spool/fremd.wav', 'local')
+    TranscriptionModel.setState(foreign.id, 'failed', 'fremde Fehlermeldung')
+    const own = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/own.wav', 'local')
+
+    expect((await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_STATUS, own.id)).success).toBe(true)
+
+    const theirs = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_STATUS, foreign.id)
+    expect(theirs.success).toBe(false)
+    expect(theirs.job).toBeUndefined()
+    expect(JSON.stringify(theirs)).not.toContain('fremde Fehlermeldung')
+  })
+
+  // ── Ruling 33: the state is the truth, not the error field ─────
+
+  it('meldet einen wartenden Job nicht als gescheitert', async () => {
+    const waiting = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/a.wav', 'local')
+    // Exactly what the job runner writes while a job cannot be handed over.
+    TranscriptionModel.setError(waiting.id, 'Wartet: Transkriptionsdienst nicht erreichbar')
+
+    const queued = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_STATUS, waiting.id)
+
+    expect(queued.job?.state).toBe('queued')
+    expect(queued.job?.failureReason).toBeUndefined()
+    expect(queued.job?.waitingReason).toBe('Transkriptionsdienst nicht erreichbar')
+
+    // Positive control: a job that really failed does surface as failed, so
+    // the assertion above is not "the fields are simply never filled".
+    const broken = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/b.wav', 'local')
+    TranscriptionModel.setState(broken.id, 'failed', 'Die Audiodatei ist leer (0 Bytes)')
+
+    const failed = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_STATUS, broken.id)
+
+    expect(failed.job?.state).toBe('failed')
+    expect(failed.job?.failureReason).toBe('Die Audiodatei ist leer (0 Bytes)')
+    expect(failed.job?.waitingReason).toBeUndefined()
+  })
+
+  it('nennt einen abgeschlossenen oder stornierten Job nicht wartend', async () => {
+    const cancelled = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/a.wav', 'local')
+    TranscriptionModel.setState(cancelled.id, 'cancelled')
+    // A wait reason that landed just before the state changed; the row keeps it.
+    TranscriptionModel.setError(cancelled.id, 'Wartet: Transkriptionsdienst nicht erreichbar')
+    const done = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/b.wav', 'local')
+    TranscriptionModel.setState(done.id, 'done')
+    TranscriptionModel.setError(done.id, 'Wartet: Transkriptionsdienst nicht erreichbar')
+
+    const cancelledView = (await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_STATUS, cancelled.id)).job
+    const doneView = (await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_STATUS, done.id)).job
+
+    // Nothing is waiting for anything any more; both fields stay empty.
+    expect(cancelledView?.waitingReason).toBeUndefined()
+    expect(cancelledView?.failureReason).toBeUndefined()
+    expect(doneView?.waitingReason).toBeUndefined()
+    expect(doneView?.failureReason).toBeUndefined()
+
+    // Positive control: the identical reason on a job that IS waiting shows up.
+    const queued = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/c.wav', 'local')
+    TranscriptionModel.setError(queued.id, 'Wartet: Transkriptionsdienst nicht erreichbar')
+    const queuedView = (await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_STATUS, queued.id)).job
+
+    expect(queuedView?.waitingReason).toBe('Transkriptionsdienst nicht erreichbar')
+  })
+
+  // ── Cancellation ───────────────────────────────────────────────
+
+  it('storniert einen wartenden Job', async () => {
+    const job = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/a.wav', 'local')
+
+    const result = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_CANCEL, job.id)
+
+    expect(result.success).toBe(true)
+    expect(result.job?.state).toBe('cancelled')
+    expect(TranscriptionModel.getJob(job.id, DEFAULT_TENANT_ID)?.state).toBe('cancelled')
+  })
+
+  it('storniert keinen Job eines anderen Mandanten', async () => {
+    const foreign = TranscriptionModel.createJob(FOREIGN_TENANT, 'ws9', '/spool/fremd.wav', 'local')
+
+    const result = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_CANCEL, foreign.id)
+
+    expect(result.success).toBe(false)
+    expect(TranscriptionModel.getJob(foreign.id, FOREIGN_TENANT)?.state).toBe('queued')
+  })
+
+  it('storniert einen abgeschlossenen Job nicht', async () => {
+    const job = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/a.wav', 'local')
+    TranscriptionModel.setState(job.id, 'done')
+
+    const result = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_CANCEL, job.id)
+
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/done/)
+    expect(TranscriptionModel.getJob(job.id, DEFAULT_TENANT_ID)?.state).toBe('done')
+  })
+
+  // ── Deletion ───────────────────────────────────────────────────
+
+  /**
+   * A recording where a job's `audio_path` actually points: the spool copy.
+   * The deletion confines itself to that directory, so a job pointing anywhere
+   * else is refused rather than deleted.
+   */
+  function writeSpooled(name: string): string {
+    const spoolDir = path.join(tmpDir, 'spool')
+    fs.mkdirSync(spoolDir, { recursive: true, mode: 0o700 })
+    const file = path.join(spoolDir, name)
+    fs.writeFileSync(file, Buffer.alloc(64, 1), { mode: 0o600 })
+    return file
+  }
+
+  it('loescht einen Auftrag samt Aufnahme und Transkript', async () => {
+    const audio = writeSpooled('zu-loeschen.wav')
+    const job = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', audio, 'local')
+    TranscriptionModel.saveSegments(job.id, [segment(job.id, 'Text')])
+
+    const result = await invoke<DeleteResult>(IPC_CHANNELS.TRANSCRIPTION_DELETE, job.id)
+
+    expect(result.success).toBe(true)
+    expect(result.jobId).toBe(job.id)
+    expect(fs.existsSync(audio)).toBe(false)
+    expect(TranscriptionModel.getJob(job.id, DEFAULT_TENANT_ID)).toBeNull()
+    expect(TranscriptionModel.getSegments(job.id, DEFAULT_TENANT_ID)).toHaveLength(0)
+  })
+
+  it('loescht keinen Auftrag eines anderen Mandanten', async () => {
+    const audio = writeSpooled('fremd.wav')
+    const foreign = TranscriptionModel.createJob(FOREIGN_TENANT, 'ws9', audio, 'local')
+    TranscriptionModel.saveSegments(foreign.id, [segment(foreign.id, 'fremder Text')])
+
+    const result = await invoke<DeleteResult>(IPC_CHANNELS.TRANSCRIPTION_DELETE, foreign.id)
+
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/nicht gefunden/)
+    expect(fs.existsSync(audio)).toBe(true)
+    expect(TranscriptionModel.getJob(foreign.id, FOREIGN_TENANT)).not.toBeNull()
+    expect(TranscriptionModel.getSegments(foreign.id, FOREIGN_TENANT)).toHaveLength(1)
+
+    // Positivkontrolle im selben Lauf: der eigene Auftrag geht ueber denselben
+    // Kanal weg, die Verweigerung oben ist also der Mandantenfilter.
+    const own = TranscriptionModel.createJob(
+      DEFAULT_TENANT_ID,
+      'ws1',
+      writeSpooled('eigen.wav'),
+      'local'
+    )
+    expect((await invoke<DeleteResult>(IPC_CHANNELS.TRANSCRIPTION_DELETE, own.id)).success).toBe(true)
+  })
+
+  it('loescht auch unterhalb der Abo-Stufe, die das Transkribieren verlangt', async () => {
+    const audio = writeSpooled('trotz-free.wav')
+    const job = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', audio, 'local')
+    getFeatureGateManager().setTier('free')
+
+    // Positivkontrolle im selben Lauf: das LESEN ist auf dieser Stufe gesperrt,
+    // die Loeschung unten ist also die Ausnahme und nicht ein stummer Gate.
+    expect((await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_STATUS, job.id)).success).toBe(false)
+
+    const result = await invoke<DeleteResult>(IPC_CHANNELS.TRANSCRIPTION_DELETE, job.id)
+
+    expect(result.success).toBe(true)
+    expect(fs.existsSync(audio)).toBe(false)
+    expect(TranscriptionModel.getJob(job.id, DEFAULT_TENANT_ID)).toBeNull()
+  })
+
+  // ── Export (txt / SRT) ─────────────────────────────────────────
+
+  /** Every activity log row of one tenant, for the export audit assertions. */
+  function auditEntries(tenantId: string): Record<string, unknown>[] {
+    return dbAll('SELECT * FROM activity_log WHERE tenant_id = ?', [tenantId])
+  }
+
+  function exportEntries(jobId: string, tenantId = DEFAULT_TENANT_ID): Record<string, unknown>[] {
+    return auditEntries(tenantId).filter(
+      (entry) => entry.entity_id === jobId && entry.action === 'transcription.exported'
+    )
+  }
+
+  /** Where the next save dialog pretends the user pointed. */
+  function saveTo(name: string): string {
+    const target = path.join(tmpDir, 'Kundenakte Meier', name)
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    saveDialog.result = { canceled: false, filePath: target }
+    return target
+  }
+
+  /** A finished job with a transcript — the only kind the export accepts. */
+  function doneJob(
+    segments: (jobId: string) => TranscriptionSegment[],
+    tenantId = DEFAULT_TENANT_ID,
+    workspaceId = 'ws1'
+  ): TranscriptionJob {
+    const job = TranscriptionModel.createJob(tenantId, workspaceId, '/spool/a.wav', 'local')
+    TranscriptionModel.saveSegments(job.id, segments(job.id))
+    TranscriptionModel.setState(job.id, 'done')
+    return TranscriptionModel.getJob(job.id, tenantId) as TranscriptionJob
+  }
+
+  it('schreibt ein fertiges Transkript als SRT in die gewaehlte Datei', async () => {
+    const job = doneJob((id) => [
+      segmentAt(id, 0, 0, 1_500, 'SPEAKER_00', 'Guten Tag'),
+      segmentAt(id, 1, 1_500, 3_250, 'SPEAKER_01', 'Gruezi')
+    ])
+    const target = saveTo('transkript.srt')
+
+    const result = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'srt')
+
+    expect(result.success).toBe(true)
+    expect(result.filePath).toBe(target)
+    expect(fs.readFileSync(target, 'utf-8')).toBe(
+      '1\n00:00:00,000 --> 00:00:01,500\nSPEAKER_00: Guten Tag\n\n' +
+        '2\n00:00:01,500 --> 00:00:03,250\nSPEAKER_01: Gruezi\n\n'
+    )
+  })
+
+  it('schreibt ein fertiges Transkript als Text in die gewaehlte Datei', async () => {
+    const job = doneJob((id) => [segmentAt(id, 0, 0, 900, 'SPEAKER_00', 'Guten Tag')])
+    const target = saveTo('transkript.txt')
+
+    const result = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')
+
+    expect(result.success).toBe(true)
+    expect(fs.readFileSync(target, 'utf-8')).toBe('SPEAKER_00: Guten Tag\n')
+  })
+
+  it('exportiert das Transkript eines anderen Mandanten nicht', async () => {
+    const foreign = doneJob(
+      (id) => [segmentAt(id, 0, 0, 900, 'SPEAKER_00', 'fremder Text')],
+      FOREIGN_TENANT,
+      'ws9'
+    )
+    const target = saveTo('fremd.txt')
+
+    const result = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, foreign.id, 'txt')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/nicht gefunden/)
+    expect(fs.existsSync(target)).toBe(false)
+    // The dialog never opened, so nothing about the foreign job reached the
+    // screen either - not even its default file name.
+    expect(saveDialog.calls).toHaveLength(0)
+    expect(JSON.stringify(result)).not.toContain('fremder Text')
+    expect(exportEntries(foreign.id, FOREIGN_TENANT)).toHaveLength(0)
+
+    // Positivkontrolle im selben Lauf: der eigene Auftrag geht ueber denselben
+    // Kanal heraus, die Verweigerung oben ist also der Mandantenfilter.
+    const own = doneJob((id) => [segmentAt(id, 0, 0, 900, 'SPEAKER_00', 'eigener Text')])
+    const ownTarget = saveTo('eigen.txt')
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, own.id, 'txt')).success).toBe(true)
+    expect(fs.readFileSync(ownTarget, 'utf-8')).toContain('eigener Text')
+  })
+
+  it('exportiert einen Auftrag, der nicht abgeschlossen ist, mit sichtbarem Grund nicht', async () => {
+    // WITH segments, although a waiting job has none: that way the refusal
+    // below can only be the state check and not an empty transcript.
+    const job = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/a.wav', 'local')
+    TranscriptionModel.saveSegments(job.id, [segmentAt(job.id, 0, 0, 900, 'SPEAKER_00', 'Guten Tag')])
+    const target = saveTo('zu-frueh.txt')
+
+    const result = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/abgeschlossen/)
+    // The state is named, so the caller learns WHY and not just that it failed.
+    expect(result.error).toContain('queued')
+    expect(fs.existsSync(target)).toBe(false)
+    expect(saveDialog.calls).toHaveLength(0)
+    expect(exportEntries(job.id)).toHaveLength(0)
+
+    // Positivkontrolle im selben Lauf: derselbe Auftrag, fertig gemeldet, geht
+    // heraus - die Verweigerung oben haengt am Zustand und an nichts sonst.
+    TranscriptionModel.setState(job.id, 'done')
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')).success).toBe(true)
+    expect(fs.readFileSync(target, 'utf-8')).toBe('SPEAKER_00: Guten Tag\n')
+  })
+
+  it('exportiert einen abgeschlossenen Auftrag ohne Transkript nicht als leere Datei', async () => {
+    // 'done' does NOT imply a transcript, measured on the code rather than
+    // assumed: `observe` sets the state FIRST and saves the segments second
+    // (job-runner.ts), and the HTTP client accepts an empty segment list - it
+    // only checks that `segments` is a list (transcription-http-client.ts).
+    // A service answering 'done' with no segments produces exactly this row,
+    // and `exportTranscript([], 'txt')` returns the empty string, so without
+    // this check the user would get a file claiming an empty transcript.
+    const job = TranscriptionModel.createJob(DEFAULT_TENANT_ID, 'ws1', '/spool/a.wav', 'local')
+    TranscriptionModel.setState(job.id, 'done')
+    const target = saveTo('leer.txt')
+
+    const result = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/kein Transkript/)
+    expect(fs.existsSync(target)).toBe(false)
+    expect(saveDialog.calls).toHaveLength(0)
+    expect(exportEntries(job.id)).toHaveLength(0)
+
+    // Positivkontrolle im selben Lauf: derselbe Auftrag mit einem Segment geht
+    // heraus - die Verweigerung oben haengt am leeren Transkript und an nichts
+    // sonst, der Zustand ist in beiden Faellen 'done'.
+    TranscriptionModel.saveSegments(job.id, [
+      segmentAt(job.id, 0, 0, 900, 'SPEAKER_00', 'Guten Tag')
+    ])
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')).success).toBe(true)
+    expect(fs.readFileSync(target, 'utf-8')).toBe('SPEAKER_00: Guten Tag\n')
+  })
+
+  it('exportiert nicht unterhalb der Abo-Stufe, die das Transkribieren verlangt', async () => {
+    const job = doneJob((id) => [segmentAt(id, 0, 0, 900, 'SPEAKER_00', 'Guten Tag')])
+    const target = saveTo('gesperrt.txt')
+    getFeatureGateManager().setTier('free')
+
+    const result = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/requires pro plan/i)
+    expect(result.error).toContain('transcription')
+    expect(fs.existsSync(target)).toBe(false)
+    expect(saveDialog.calls).toHaveLength(0)
+    expect(exportEntries(job.id)).toHaveLength(0)
+
+    // Positivkontrolle im selben Lauf: auf der verlangten Stufe geht derselbe
+    // Aufruf durch - und das LOESCHEN geht auf 'free' weiterhin, die Asymmetrie
+    // der beiden Kanaele ist also gewollt und nicht ein vergessener Gate.
+    getFeatureGateManager().setTier('pro')
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')).success).toBe(true)
+
+    // Through writeSpooled, because the deletion needs a resolvable spool
+    // directory before it will delete anything at all (retention.ts).
+    const andererJob = TranscriptionModel.createJob(
+      DEFAULT_TENANT_ID,
+      'ws1',
+      writeSpooled('trotz-free.wav'),
+      'local'
+    )
+    getFeatureGateManager().setTier('free')
+    expect((await invoke<DeleteResult>(IPC_CHANNELS.TRANSCRIPTION_DELETE, andererJob.id)).success).toBe(true)
+  })
+
+  it('weist ein unbekanntes Exportformat zurueck, statt es zu deuten', async () => {
+    const job = doneJob((id) => [segmentAt(id, 0, 0, 900, 'SPEAKER_00', 'Guten Tag')])
+    const target = saveTo('format.txt')
+
+    const rejected = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'pdf')
+
+    expect(rejected.success).toBe(false)
+    expect(rejected.error).toMatch(/Exportformat/)
+    // The refusal says what IS allowed, as the protection level's does.
+    expect(rejected.error).toContain('txt')
+    expect(rejected.error).toContain('srt')
+    expect(fs.existsSync(target)).toBe(false)
+    expect(saveDialog.calls).toHaveLength(0)
+
+    // Positivkontrolle im selben Lauf: beide erlaubten Formate gehen durch.
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')).success).toBe(true)
+    saveTo('format.srt')
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'srt')).success).toBe(true)
+  })
+
+  it('reicht eine Verweigerung aus exportTranscript als Fehler durch, statt abzustuerzen', async () => {
+    // A cue that ends before it starts: one of the five conditions
+    // exportTranscript refuses. Nothing between the model and the export
+    // prevents such a row, so this is the reachable case.
+    const job = doneJob((id) => [segmentAt(id, 0, 2_000, 1_000, 'SPEAKER_00', 'Guten Tag')])
+    const target = saveTo('kaputt.srt')
+
+    const result = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'srt')
+
+    expect(result.success).toBe(false)
+    // German sentence for the user, the measured reason verbatim behind it.
+    expect(result.error).toMatch(/kann nicht exportiert werden/)
+    expect(result.error).toMatch(/before it starts/)
+    // Rendered BEFORE the dialog: the refusal costs no dialog and leaves no
+    // half-written file behind.
+    expect(saveDialog.calls).toHaveLength(0)
+    expect(fs.existsSync(target)).toBe(false)
+    expect(exportEntries(job.id)).toHaveLength(0)
+
+    // Positivkontrolle im selben Lauf: derselbe Kanal, dasselbe Format, mit
+    // einer heilen Cue - der Fehler oben ist der Inhalt und nicht der Weg.
+    const heil = doneJob((id) => [segmentAt(id, 0, 1_000, 2_000, 'SPEAKER_00', 'Guten Tag')])
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, heil.id, 'srt')).success).toBe(true)
+  })
+
+  it('schreibt beim Abbruch des Speicherdialogs keine Datei und keinen Audit-Eintrag', async () => {
+    const job = doneJob((id) => [segmentAt(id, 0, 0, 900, 'SPEAKER_00', 'Guten Tag')])
+    const target = path.join(tmpDir, 'nie-geschrieben.txt')
+    saveDialog.result = { canceled: true, filePath: target }
+
+    const result = await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')
+
+    expect(result.success).toBe(false)
+    expect(result.canceled).toBe(true)
+    // An abort is not a failure: nothing to show the user as an error.
+    expect(result.error).toBeUndefined()
+    // The dialog DID open - the abort is the user's, not an earlier refusal.
+    expect(saveDialog.calls).toHaveLength(1)
+    expect(fs.existsSync(target)).toBe(false)
+    expect(exportEntries(job.id)).toHaveLength(0)
+
+    // Positivkontrolle im selben Lauf: derselbe Aufruf mit einem bestaetigten
+    // Dialog schreibt Datei UND Eintrag, der Nullbefund oben ist also der
+    // Abbruch und nicht ein Audit, das nie etwas schreibt.
+    const confirmed = saveTo('doch-geschrieben.txt')
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'txt')).success).toBe(true)
+    expect(fs.existsSync(confirmed)).toBe(true)
+    expect(exportEntries(job.id)).toHaveLength(1)
+  })
+
+  it('nennt im Audit-Eintrag Format und Umfang, aber weder Transkripttext noch Zielpfad', async () => {
+    const job = doneJob((id) => [
+      segmentAt(id, 0, 0, 900, 'SPEAKER_00', 'Streng vertraulicher Satz'),
+      segmentAt(id, 1, 900, 1_800, 'SPEAKER_01', 'Noch einer')
+    ])
+    const target = saveTo('audit.srt')
+
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'srt')).success).toBe(true)
+
+    const entries = exportEntries(job.id)
+    expect(entries).toHaveLength(1)
+    const entry = entries[0]
+    expect(entry.actor_type).toBe('user')
+    expect(entry.entity_type).toBe('transcription_job')
+    expect(JSON.parse(entry.details as string)).toEqual({
+      workspaceId: 'ws1',
+      format: 'srt',
+      segmentCount: 2
+    })
+
+    // Neither the content nor the place it went: the entry outlives the job
+    // (the deletion leaves it standing), and the path names the user's own
+    // directories - here a client's name.
+    const serialised = JSON.stringify(entries)
+    expect(serialised).not.toContain('Streng vertraulicher Satz')
+    expect(serialised).not.toContain('SPEAKER_00')
+    expect(serialised).not.toContain(target)
+    expect(serialised).not.toContain('Kundenakte Meier')
+  })
+
+  it('bildet den Standard-Dateinamen aus dem Erstellzeitpunkt des Auftrags', async () => {
+    const job = doneJob((id) => [segmentAt(id, 0, 0, 900, 'SPEAKER_00', 'Guten Tag')])
+    // Pinned on the row rather than through a fake clock: the handler reads
+    // `created_at`, and faking Date would also move everything else in the
+    // pass.
+    const madeAt = Date.UTC(2026, 9, 27, 12, 35, 12)
+    dbRun('UPDATE transcription_jobs SET created_at = ? WHERE id = ?', [madeAt, job.id])
+    saveTo('egal.srt')
+
+    expect((await invoke<ExportResult>(IPC_CHANNELS.TRANSCRIPTION_EXPORT, job.id, 'srt')).success).toBe(true)
+
+    expect(saveDialog.calls).toHaveLength(1)
+    expect(saveDialog.calls[0].defaultPath).toBe(`Transkript-${expectedStamp(madeAt)}.srt`)
+    // Nothing in the name a file system reads as structure: it is built from
+    // digits and hyphens, so there is no title to strip.
+    expect(saveDialog.calls[0].defaultPath).not.toMatch(/[/\\:]/)
+    // The dialog offers the format that was asked for, not a free choice.
+    expect(saveDialog.calls[0].filters).toEqual([
+      { name: 'SRT-Untertitel', extensions: ['srt'] }
+    ])
+  })
+
+  // ── Input validation at the trust boundary ─────────────────────
+
+  it('weist eine unbekannte Schutzstufe zurueck, statt sie zu deuten', async () => {
+    const audio = writeAudio('a.wav')
+
+    // 'CRITICAL' is not a level: the policy core treats an unknown level as
+    // "no rule applies" and permits every target (measured, see
+    // audio-residency.ts). It must not get that far.
+    const rejected = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', audio, 'CRITICAL')
+
+    expect(rejected.success).toBe(false)
+    expect(rejected.error).toMatch(/Schutzstufe/)
+    expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
+    expect(TranscriptionModel.listByState('failed', DEFAULT_TENANT_ID)).toHaveLength(0)
+
+    // Positive control: the lower-case level the type allows goes through.
+    const accepted = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', audio, 'critical')
+    expect(accepted.success).toBe(true)
+  })
+
+  // ── The path is renderer input, not a trusted file name ────────
+  //
+  // Mingly renders LLM answers, RAG documents and MCP content, so the renderer
+  // is the less trusted side. A submitted path that is not confined would let
+  // anything that reaches it have any audio or video file on the machine
+  // transcribed - and the transcript handed back over the segments channel.
+  // The spool copy would carry it past the path confinement the service
+  // enforces, because the service only ever sees the spool path.
+  //
+  // The same mistake was made once in this app and fixed after an audit; the
+  // rule lives in content-handlers.ts for READ_FILE (audit 2026-08-21).
+
+  it('verweigert eine Aufnahme ausserhalb der freigegebenen Verzeichnisse', async () => {
+    const outside = writeOutside('fremde-aufnahme.wav')
+
+    const refused = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', outside)
+
+    expect(refused.success).toBe(false)
+    // Nothing was queued and nothing copied: the refusal happens before the
+    // runner ever sees the path.
+    expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
+    expect(TranscriptionModel.listByState('failed', DEFAULT_TENANT_ID)).toHaveLength(0)
+
+    // Positive control in the same run: the identical call for a recording
+    // inside the granted directory IS queued, so the refusal above is the
+    // confinement and not a handler that refuses everything.
+    const inside = writeAudio('eigene-aufnahme.wav')
+    const accepted = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', inside)
+
+    expect(accepted.success).toBe(true)
+    expect(accepted.job?.state).toBe('queued')
+  })
+
+  it('verweigert ein ..-Segment, auch wenn die Datei in der Freigabe liegt', async () => {
+    // Isolates the traversal check from the containment check: the resolved
+    // path lands INSIDE the granted directory and carries an allowed
+    // extension, so containment and extension both accept it and only
+    // validateFilePath can refuse. Spelled out rather than built with
+    // path.join, which would normalise the '..' away before the handler sees
+    // it - the unnormalised string is what an attacker sends.
+    const inside = writeAudio('legitim.wav')
+    fs.mkdirSync(path.join(grantedDir, 'unterordner'), { recursive: true })
+    const traversal = `${grantedDir}/unterordner/../${path.basename(inside)}`
+
+    const refused = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', traversal)
+
+    expect(traversal).toContain('../')
+    expect(path.resolve(traversal)).toBe(inside)
+    expect(refused.success).toBe(false)
+    expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
+
+    // Positive control: the same file submitted by its plain name is accepted.
+    expect((await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', inside)).success).toBe(true)
+  })
+
+  it('verweigert einen Symlink im freigegebenen Verzeichnis, der hinausfuehrt', async () => {
+    // The case the resolution exists for: the submitted path passes every
+    // string check, and the file it names is somewhere else entirely.
+    const target = writeOutside('vertraulich.wav')
+    const link = path.join(grantedDir, 'sieht-harmlos-aus.wav')
+    fs.symlinkSync(target, link)
+
+    const refused = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', link)
+
+    expect(refused.success).toBe(false)
+    expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
+
+    fs.unlinkSync(link)
+  })
+
+  it('verweigert eine Datei, die keine Audio- oder Videodatei ist', async () => {
+    const notAudio = writeAudio('schluessel.txt')
+
+    const refused = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', notAudio)
+
+    expect(refused.success).toBe(false)
+    expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
+  })
+
+  // ── Ruling 35: not every grant is a source ─────────────────────
+  //
+  // An allowlist is only as strong as the weakest way an entry gets into it.
+  // FILE_ACCESS_ADD_NETWORK_SHARE takes its configuration from the renderer
+  // unchecked, and `addNetworkShare` turns it into a grant with
+  // `recursive: true` - no dialog, no confirmation, and no check that the path
+  // is a mount point at all. A renderer can grant itself `/` that way.
+
+  it('nimmt ein Netzlaufwerk nicht als Aufnahmequelle an, obwohl es freigegeben ist', async () => {
+    const onShare = writeAudioIn(networkShareDir, 'vom-netzlaufwerk.wav')
+
+    const refused = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', onShare)
+
+    expect(refused.success).toBe(false)
+    expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
+
+    // Positive control in the same run: the dialog-granted source stays a
+    // source - so the refusal above is the grant's origin and not a handler
+    // that refuses everything.
+    const fromDialog = writeAudio('aus-dem-dialog.wav')
+    const accepted = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', fromDialog)
+
+    expect(accepted.success).toBe(true)
+    expect(accepted.job?.state).toBe('queued')
+  })
+
+  it('nimmt ein nur zum Schreiben freigegebenes Verzeichnis nicht als Quelle an', async () => {
+    const inCreateOnly = writeAudioIn(createOnlyDir, 'nur-schreiben.wav')
+
+    const refused = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', inCreateOnly)
+
+    expect(refused.success).toBe(false)
+    expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
+
+    // Positive control: the same file in a readable directory goes through.
+    const readable = writeAudio('lesbar.wav')
+    expect((await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', readable)).success).toBe(true)
+  })
+
+  it('nennt in der Verweigerung weder den Pfad noch die gescheiterte Pruefung', async () => {
+    const outside = writeOutside('streng-geheim.wav')
+    const notAudio = writeAudio('auch-geheim.txt')
+
+    const outsideRefusal = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', outside)
+    const extensionRefusal = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', notAudio)
+
+    // Two different checks, one message: otherwise the refusal answers "does
+    // this path exist" and "which rule did I hit".
+    expect(outsideRefusal.error).toBe(extensionRefusal.error)
+    expect(outsideRefusal.error).not.toContain('streng-geheim')
+    expect(outsideRefusal.error).not.toContain(tmpDir)
+    expect(extensionRefusal.error).not.toContain('auch-geheim')
+    expect(extensionRefusal.error).not.toContain(grantedDir)
+  })
+
+  it('nimmt einen Job ohne erklaerte Schutzstufe an und behandelt ihn streng', async () => {
+    const audio = writeAudio('a.wav')
+
+    const result = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', audio)
+
+    expect(result.success).toBe(true)
+    // 'local' is the on-device target: the strict side, not a remote one.
+    expect(result.job?.targetId).toBe('local')
+  })
+
+  // ── Ruling 22: the API key reaches the service ──────────────────
+
+  it('verweigert einen unbrauchbaren Schluessel beim Setzen, ohne den Wert zu nennen', () => {
+    // A key with characters a header cannot carry used to get as far as the
+    // first request, where the client throws a plain Error - which the runner
+    // rethrows, which aborts the whole pass and lands in a log warning. The
+    // job row then says nothing at all. It fails here instead, once, visibly.
+    const malformed = 'schluessel\nmit-zeilenumbruch'
+
+    expect(() => applyTranscriptionApiKey(malformed)).toThrow(/TRANSCRIPTION_API_KEY/)
+    try {
+      applyTranscriptionApiKey(malformed)
+      expect.unreachable('a malformed key must not be accepted')
+    } catch (error) {
+      // The message is logged and shown; the key must not travel with it.
+      expect((error as Error).message).not.toContain('schluessel')
+      expect((error as Error).message).not.toContain('zeilenumbruch')
+    }
+
+    // Positive control: a usable key still goes through the same function.
+    expect(() => applyTranscriptionApiKey('schluessel-4711')).not.toThrow()
+  })
+
+  it('verweigert auch Steuerzeichen, die erst im Request auffallen wuerden', () => {
+    // Measured against this Node: `new Headers().set` accepts \u0001 and
+    // \u007f, and the request then fails inside fetch with
+    // UND_ERR_INVALID_ARG - which the HTTP client turns into
+    // "service unreachable". A misconfigured key would be reported as an
+    // outage, which is exactly what the client's own comment forbids.
+    expect(() => applyTranscriptionApiKey('mit\u0001steuerzeichen')).toThrow(/TRANSCRIPTION_API_KEY/)
+    expect(() => applyTranscriptionApiKey('mit\u007fdel')).toThrow(/TRANSCRIPTION_API_KEY/)
+
+    // And it stays silent where the request path is fine with the value:
+    // measured HTTP 200 for a tab and for Latin-1 above ASCII, so refusing
+    // those would be a false alarm on a working configuration. Latin-1 is as
+    // far as that measurement reaches, and as far as this assertion claims -
+    // NOT "every non-ASCII character". Above U+00FF the request path refuses
+    // too, which the next test is about.
+    expect(() => applyTranscriptionApiKey('mit\tTabulator')).not.toThrow()
+    expect(() => applyTranscriptionApiKey('mit-umlaut-ü')).not.toThrow()
+  })
+
+  it('verweigert Zeichen jenseits von Latin-1, mit einem eigenen Grund', () => {
+    // Measured on this Node: `Headers.set` throws a TypeError above U+00FF -
+    // for `Ā` (U+0100), `€` (U+20AC) and an emoji alike - while `ü` and `ÿ`
+    // pass and reach the service with HTTP 200. The check used to cover C0 and
+    // DEL only, so such a key was ACCEPTED where it is configured and turned up
+    // once per job as a wait reason instead, which is the outcome this function
+    // exists to prevent.
+    expect(() => applyTranscriptionApiKey('schluessel-mit-€')).toThrow(/TRANSCRIPTION_API_KEY/)
+
+    // An astral character is ONE codepoint held in two UTF-16 units. The rule
+    // is about codepoints, so it has to be judged once rather than through its
+    // surrogate halves.
+    expect(() => applyTranscriptionApiKey('schluessel-mit-\u{1F600}')).toThrow(/Latin-1/)
+
+    // The two reasons have to stay apart: a stray line break is a different
+    // mistake from the wrong value pasted whole, and the message says which one
+    // it is. Asserted on the TEXT, not merely on "it throws".
+    expect(() => applyTranscriptionApiKey('schluessel-mit-€')).toThrow(/Latin-1/)
+    expect(() => applyTranscriptionApiKey('schluessel-mit-€')).not.toThrow(/Steuerzeichen/)
+    expect(() => applyTranscriptionApiKey('schluessel\nmit-umbruch')).toThrow(/Steuerzeichen/)
+    expect(() => applyTranscriptionApiKey('schluessel\nmit-umbruch')).not.toThrow(/Latin-1/)
+
+    // The direction that falls if anyone widens the rule to "everything
+    // non-ASCII": Latin-1 above ASCII, and a tab in the middle, still pass.
+    expect(() => applyTranscriptionApiKey('schluessel-mit-ü')).not.toThrow()
+    expect(() => applyTranscriptionApiKey('schluessel-mit-ÿ')).not.toThrow()
+    expect(() => applyTranscriptionApiKey('schluessel\tmit-tabulator')).not.toThrow()
+  })
+
+  it('macht einen unbrauchbaren Schluessel am Job sichtbar, statt still zu warten', async () => {
+    // End to end through the real chain, because this is the claim the pass
+    // makes: an unusable key is logged and the pass goes ahead; the service
+    // answers 401 to the unauthenticated request; the runner records that as a
+    // wait reason; and the view shows it. Nothing about it was measured before.
+    const service = await startFakeService(401)
+    getTranscriptionHttpClient().updateConfig({ host: '127.0.0.1', port: service.port, protocol: 'http' })
+    vi.stubEnv('TRANSCRIPTION_API_KEY', 'kaputter\nschluessel')
+    const audio = writeAudio('mit-kaputtem-schluessel.wav')
+
+    const submitted = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', audio)
+    const jobId = submitted.job?.id
+    expect(jobId).toBeDefined()
+
+    // The real runner, driven by the real scheduler: one pass, no successor.
+    startTranscriptionScheduler({ intervalMs: 600_000 })
+    await waitFor(() => TranscriptionModel.getJob(jobId as string, DEFAULT_TENANT_ID)?.error !== undefined)
+    stopTranscriptionScheduler()
+
+    const view = (await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_STATUS, jobId)).job
+
+    expect(service.requests[0].authorization).toBeUndefined()
+    expect(view?.state).toBe('queued')
+    expect(view?.waitingReason).toContain('401')
+    expect(view?.failureReason).toBeUndefined()
+  })
+
+  it('schickt den Schluessel aus TRANSCRIPTION_API_KEY an den Dienst', async () => {
+    const service = await startFakeService()
+    const client = getTranscriptionHttpClient()
+    client.updateConfig({ host: '127.0.0.1', port: service.port, protocol: 'http' })
+
+    vi.stubEnv('TRANSCRIPTION_API_KEY', 'schluessel-4711')
+    applyTranscriptionApiKey(resolveTranscriptionApiKey())
+    await client.submit('/spool/a.wav')
+
+    expect(service.requests[0].authorization).toBe('Bearer schluessel-4711')
+
+    // Negative control in the same run: without the variable no header is
+    // sent AND the request still happened, so the assertion above cannot pass
+    // on an unsent request.
+    vi.stubEnv('TRANSCRIPTION_API_KEY', '')
+    applyTranscriptionApiKey(resolveTranscriptionApiKey())
+    await client.submit('/spool/b.wav')
+
+    expect(service.requests).toHaveLength(2)
+    expect(service.requests[1].authorization).toBeUndefined()
+  })
+
+  it('setzt den Schluessel vor jedem Durchlauf des Zeitgebers', async () => {
+    vi.useFakeTimers()
+    const updateConfig = vi.spyOn(getTranscriptionHttpClient(), 'updateConfig')
+    vi.stubEnv('TRANSCRIPTION_API_KEY', 'schluessel-vor-dem-durchlauf')
+    const runner = {
+      resumeInterrupted: () => Promise.resolve(),
+      tick: () => Promise.resolve()
+    }
+
+    startTranscriptionScheduler({ intervalMs: 10, runner })
+    await vi.advanceTimersByTimeAsync(1)
+
+    expect(updateConfig).toHaveBeenCalledWith({ apiKey: 'schluessel-vor-dem-durchlauf' })
+  })
+
+  it('arbeitet die Warteschlange weiter, wenn der konfigurierte Schluessel unbrauchbar ist', async () => {
+    // The point of I1: an unusable key is an operator's problem, not a reason
+    // to stop working the queue. Passes keep running; the request then gets a
+    // 401, which the runner records as a visible wait reason on the job.
+    vi.useFakeTimers()
+    vi.stubEnv('TRANSCRIPTION_API_KEY', 'kaputter\nschluessel')
+    let ticks = 0
+    const runner = {
+      resumeInterrupted: () => Promise.resolve(),
+      tick: (): Promise<void> => {
+        ticks += 1
+        return Promise.resolve()
+      }
+    }
+
+    startTranscriptionScheduler({ intervalMs: 10, runner })
+    await vi.advanceTimersByTimeAsync(25)
+
+    expect(ticks).toBeGreaterThan(1)
+  })
+
+  // ── Ruling 31: the next pass is scheduled after the previous one ──
+
+  it('plant den naechsten Durchlauf erst nach dem vorigen, statt sie aufzustauen', async () => {
+    vi.useFakeTimers()
+    let release: () => void = () => undefined
+    const ticks: number[] = []
+    const runner = {
+      resumeInterrupted: () => Promise.resolve(),
+      tick: (): Promise<void> => {
+        ticks.push(ticks.length)
+        return new Promise<void>((resolve) => {
+          release = resolve
+        })
+      }
+    }
+
+    startTranscriptionScheduler({ intervalMs: 10, runner })
+    // 100 interval periods: a setInterval would have started a hundred passes
+    // behind the one that has not finished.
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(ticks).toHaveLength(1)
+
+    // Positive control: once the pass finishes, the next one happens - the
+    // count above is a queue of one, not a dead scheduler.
+    release()
+    await vi.advanceTimersByTimeAsync(20)
+
+    expect(ticks).toHaveLength(2)
+  })
+
+  it('nimmt beim Start unterbrochene Jobs wieder auf', async () => {
+    vi.useFakeTimers()
+    const calls: string[] = []
+    const runner = {
+      resumeInterrupted: (): Promise<void> => {
+        calls.push('resume')
+        return Promise.resolve()
+      },
+      tick: (): Promise<void> => {
+        calls.push('tick')
+        return Promise.resolve()
+      }
+    }
+
+    startTranscriptionScheduler({ intervalMs: 10, runner })
+    await vi.advanceTimersByTimeAsync(1)
+
+    // Resumption BEFORE the first ordinary pass: a job left running by the
+    // previous process has to be back in the queue before anything observes it.
+    expect(calls).toEqual(['resume', 'tick'])
+
+    await vi.advanceTimersByTimeAsync(10)
+    expect(calls).toEqual(['resume', 'tick', 'tick'])
+  })
+
+  it('laesst eine gestoppte Kette den Taktgeber nicht uebernehmen', async () => {
+    // Stop while a pass is in flight, start again, then let the old pass
+    // finish. With a single module-level flag the old chain sees "running"
+    // again, schedules its own successor and overwrites the new chain's timer
+    // handle: two live chains, only one of them cancellable.
+    vi.useFakeTimers()
+    let releaseOld: () => void = () => undefined
+    let oldTicks = 0
+    let newTicks = 0
+    const oldRunner = {
+      resumeInterrupted: () => Promise.resolve(),
+      tick: (): Promise<void> => {
+        oldTicks += 1
+        return new Promise<void>((resolve) => {
+          releaseOld = resolve
+        })
+      }
+    }
+    const newRunner = {
+      resumeInterrupted: () => Promise.resolve(),
+      tick: (): Promise<void> => {
+        newTicks += 1
+        return Promise.resolve()
+      }
+    }
+
+    startTranscriptionScheduler({ intervalMs: 10, runner: oldRunner })
+    await vi.advanceTimersByTimeAsync(1)
+    expect(oldTicks).toBe(1)
+
+    stopTranscriptionScheduler()
+    startTranscriptionScheduler({ intervalMs: 10, runner: newRunner })
+    releaseOld()
+    await vi.advanceTimersByTimeAsync(100)
+
+    // The old chain ran once and never again; the new one owns the clock.
+    expect(oldTicks).toBe(1)
+    expect(newTicks).toBeGreaterThan(1)
+
+    // And the new chain is the one a stop can actually cancel.
+    stopTranscriptionScheduler()
+    const afterStop = newTicks
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(newTicks).toBe(afterStop)
+    expect(oldTicks).toBe(1)
+  })
+
+  it('hoert nach stopTranscriptionScheduler auf', async () => {
+    vi.useFakeTimers()
+    let ticks = 0
+    const runner = {
+      resumeInterrupted: () => Promise.resolve(),
+      tick: (): Promise<void> => {
+        ticks += 1
+        return Promise.resolve()
+      }
+    }
+
+    startTranscriptionScheduler({ intervalMs: 10, runner })
+    await vi.advanceTimersByTimeAsync(25)
+    const before = ticks
+    expect(before).toBeGreaterThan(1)
+
+    stopTranscriptionScheduler()
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(ticks).toBe(before)
+  })
+})

@@ -5,6 +5,13 @@ import { createLogger } from '../../shared/logger'
 
 const log = createLogger('Database')
 
+/**
+ * Tenant that owns all data of a single-tenant installation.
+ * Migration 11 stores this value as the column default of every tenant_id,
+ * so it must never change once a database has been migrated.
+ */
+export const DEFAULT_TENANT_ID = 'default'
+
 let db: SqlJsDatabase | null = null
 let dbPath: string = ''
 let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -185,7 +192,7 @@ export function dbGet(sql: string, params: any[] = []): Record<string, any> | nu
 
 // ── Migrations ───────────────────────────────────────────────────
 
-function getSchemaVersion(database: SqlJsDatabase): number {
+export function getSchemaVersion(database: SqlJsDatabase): number {
   // Use a metadata table instead of PRAGMA user_version (more reliable in sql.js)
   try {
     const stmt = database.prepare('SELECT value FROM _meta WHERE key = ?')
@@ -280,6 +287,30 @@ function runMigrations(database: SqlJsDatabase): void {
     log.info('Running migration 10: Add project_id and rag_collection_name to conversations')
     migration10(database)
     setSchemaVersion(database, 10)
+  }
+
+  if (version < 11) {
+    log.info('Running migration 11: Add tenant_id to all tables')
+    migration11(database)
+    setSchemaVersion(database, 11)
+  }
+
+  if (version < 12) {
+    log.info('Running migration 12: Create transcription_jobs and transcription_segments tables')
+    migration12(database)
+    setSchemaVersion(database, 12)
+  }
+
+  if (version < 13) {
+    log.info('Running migration 13: Create transcription_retention table and job retention columns')
+    migration13(database)
+    setSchemaVersion(database, 13)
+  }
+
+  if (version < 14) {
+    log.info('Running migration 14: Drop the tenant_id column default on the transcription tables')
+    migration14(database)
+    setSchemaVersion(database, 14)
   }
 }
 
@@ -461,9 +492,7 @@ function migration5(database: SqlJsDatabase): void {
 
 function migration6(database: SqlJsDatabase): void {
   // Add billing_type column to tracking_events (api | subscription | free)
-  database.run(`
-    ALTER TABLE tracking_events ADD COLUMN billing_type TEXT NOT NULL DEFAULT 'api'
-  `)
+  addColumnIfMissing(database, 'tracking_events', 'billing_type', "TEXT NOT NULL DEFAULT 'api'")
 
   // Create a convenience view that aggregates costs per conversation
   database.run(`
@@ -547,25 +576,294 @@ function migration8(database: SqlJsDatabase): void {
 
 function migration9(database: SqlJsDatabase): void {
   // Add template_id to conversations for prompt template association
-  database.run(`
-    ALTER TABLE conversations ADD COLUMN template_id TEXT
-  `)
+  addColumnIfMissing(database, 'conversations', 'template_id', 'TEXT')
 
   log.info('Migration 9 completed: template_id column added to conversations')
 }
 
 function migration10(database: SqlJsDatabase): void {
   // Link conversations to RAG-Wissen projects for per-conversation context injection
-  database.run(`
-    ALTER TABLE conversations ADD COLUMN project_id TEXT
-  `)
-  database.run(`
-    ALTER TABLE conversations ADD COLUMN rag_collection_name TEXT
-  `)
+  addColumnIfMissing(database, 'conversations', 'project_id', 'TEXT')
+  addColumnIfMissing(database, 'conversations', 'rag_collection_name', 'TEXT')
   database.run(`
     CREATE INDEX IF NOT EXISTS idx_conversations_project
     ON conversations(project_id)
   `)
 
   log.info('Migration 10 completed: project_id and rag_collection_name added to conversations')
+}
+
+function migration11(database: SqlJsDatabase): void {
+  // Every row belongs to a tenant so the product can later run multi-tenant
+  // without a data migration per customer. `_meta` is excluded on purpose:
+  // it holds schema metadata, not user data.
+  const tenantTables = [
+    'conversations',
+    'messages',
+    'settings',
+    'tracking_events',
+    'message_attachments',
+    'prompt_templates',
+    'comparison_sessions',
+    'comparison_results',
+    'conversation_sessions',
+    'activity_log'
+  ]
+
+  // The column default (not NULL) assigns existing rows to the default tenant,
+  // so legacy data never ends up without an owner or with a foreign one.
+  for (const table of tenantTables) {
+    addColumnIfMissing(
+      database,
+      table,
+      'tenant_id',
+      `TEXT NOT NULL DEFAULT '${DEFAULT_TENANT_ID}'`
+    )
+  }
+
+  log.info('Migration 11 completed: tenant_id column added to all tables')
+}
+
+function migration12(database: SqlJsDatabase): void {
+  // Transcription jobs. tenant_id follows the migration-11 convention (same
+  // column definition), so the "every table carries a tenant" rule holds for
+  // tables created after it as well.
+  database.run(`
+    CREATE TABLE IF NOT EXISTS transcription_jobs (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT_ID}',
+      workspace_id TEXT NOT NULL,
+      audio_path TEXT NOT NULL,
+      state TEXT NOT NULL,
+      progress REAL NOT NULL DEFAULT 0,
+      target_id TEXT NOT NULL,
+      error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+
+  // Serves listByState: one tenant, one state, oldest first
+  database.run(`
+    CREATE INDEX IF NOT EXISTS idx_transcription_jobs_state
+    ON transcription_jobs(tenant_id, state, created_at)
+  `)
+
+  // `segment_index` instead of `index`, which is a reserved SQL word.
+  // The foreign key is declared like the ones on messages and attachments, but
+  // is NOT enforced at runtime: sql.js resets PRAGMA foreign_keys to 0 on every
+  // export(), i.e. on every saveDatabase(). Whoever deletes a job must delete
+  // its segments explicitly; the cascade only applies once enforcement is on.
+  database.run(`
+    CREATE TABLE IF NOT EXISTS transcription_segments (
+      job_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT_ID}',
+      segment_index INTEGER NOT NULL,
+      start_ms INTEGER NOT NULL,
+      end_ms INTEGER NOT NULL,
+      speaker TEXT NOT NULL,
+      text TEXT NOT NULL,
+      PRIMARY KEY (job_id, segment_index),
+      FOREIGN KEY (job_id) REFERENCES transcription_jobs(id) ON DELETE CASCADE
+    )
+  `)
+
+  log.info('Migration 12 completed: transcription_jobs and transcription_segments tables created')
+}
+
+function migration13(database: SqlJsDatabase): void {
+  // Retention periods per workspace, in a table of their own rather than in
+  // `settings`: that table's PRIMARY KEY is `key` alone, so it is global. A
+  // tenant_id column would not make a key unique per tenant, and two tenants
+  // holding the same key would collide on the primary key.
+  //
+  // The primary key is (tenant_id, workspace_id), so one workspace of one
+  // tenant has exactly one pair of periods, and an UPSERT cannot grow a second
+  // row for it.
+  database.run(`
+    CREATE TABLE IF NOT EXISTS transcription_retention (
+      tenant_id TEXT NOT NULL DEFAULT '${DEFAULT_TENANT_ID}',
+      workspace_id TEXT NOT NULL,
+      audio_days INTEGER NOT NULL,
+      transcript_days INTEGER NOT NULL,
+      PRIMARY KEY (tenant_id, workspace_id)
+    )
+  `)
+
+  // When the audio of this job was removed by the retention run, NULL while it
+  // is still there. Without it the two periods cannot run apart: a job whose
+  // audio has expired but whose transcript has not would be found again by
+  // every later run, and the count it returns would be a lie. The file system
+  // is not that marker - a file can be missing for reasons the retention run
+  // did not cause, and a missing file must not count as a deletion for ever.
+  addColumnIfMissing(database, 'transcription_jobs', 'audio_deleted_at', 'INTEGER')
+
+  // How often this job has been handed to the service. UNUSED in this
+  // migration's task - the column exists so that the cap can be wired without a
+  // second migration. The reason it is needed: the runner's in-memory `tracked`
+  // entry is dropped on requeue, i.e. exactly on the retry, so nothing counts
+  // attempts today, and a job with a permanently wrong configuration repeats
+  // without end - with a database write per job per pass, every five seconds.
+  addColumnIfMissing(database, 'transcription_jobs', 'attempts', 'INTEGER NOT NULL DEFAULT 0')
+
+  log.info('Migration 13 completed: transcription_retention table and job retention columns added')
+}
+
+/**
+ * Take the column default off `tenant_id` on the three transcription tables.
+ *
+ * Migrations 12 and 13 gave the column `DEFAULT '<default tenant>'`, following
+ * migration 11, which needed one: it added the column to tables that already
+ * held rows, and the default is what assigned those rows an owner. A table
+ * created WITH the column never had that problem, and the default only hides a
+ * caller that forgot the tenant - it silently files the row under the default
+ * tenant instead of failing. Without it, `NOT NULL` makes that caller fail
+ * loudly, which is the point.
+ *
+ * Why a migration of its own rather than an edit to 12 and 13: a migration is a
+ * snapshot. Editing one in place would leave two installations that both report
+ * schema version 13 with different schemas - including Holger's own database,
+ * which a packaged build has already migrated.
+ *
+ * SQLite cannot drop a default in place, so each table is rebuilt.
+ */
+function migration14(database: SqlJsDatabase): void {
+  // Foreign keys MUST be off while a parent table is dropped. `initializeDatabase`
+  // turns them ON immediately before `runMigrations`, and `DROP TABLE
+  // transcription_jobs` then performs an implicit DELETE that the ON DELETE
+  // CASCADE on `transcription_segments` follows. Measured on this sql.js
+  // (2026-10-28): with the pragma on, dropping the parent left 0 of 1 segments;
+  // with it off, 1 of 1. A rebuild that forgets this deletes every transcript
+  // in the installation.
+  const hadForeignKeys = foreignKeysEnabled(database)
+  database.run('PRAGMA foreign_keys = OFF')
+
+  try {
+    rebuildTable(
+      database,
+      'transcription_jobs',
+      `CREATE TABLE transcription_jobs_new (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        audio_path TEXT NOT NULL,
+        state TEXT NOT NULL,
+        progress REAL NOT NULL DEFAULT 0,
+        target_id TEXT NOT NULL,
+        error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        audio_deleted_at INTEGER,
+        attempts INTEGER NOT NULL DEFAULT 0
+      )`,
+      'id, tenant_id, workspace_id, audio_path, state, progress, target_id, error, ' +
+        'created_at, updated_at, audio_deleted_at, attempts'
+    )
+
+    // The index went with the old table.
+    database.run(`
+      CREATE INDEX IF NOT EXISTS idx_transcription_jobs_state
+      ON transcription_jobs(tenant_id, state, created_at)
+    `)
+
+    rebuildTable(
+      database,
+      'transcription_segments',
+      `CREATE TABLE transcription_segments_new (
+        job_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        segment_index INTEGER NOT NULL,
+        start_ms INTEGER NOT NULL,
+        end_ms INTEGER NOT NULL,
+        speaker TEXT NOT NULL,
+        text TEXT NOT NULL,
+        PRIMARY KEY (job_id, segment_index),
+        FOREIGN KEY (job_id) REFERENCES transcription_jobs(id) ON DELETE CASCADE
+      )`,
+      'job_id, tenant_id, segment_index, start_ms, end_ms, speaker, text'
+    )
+
+    rebuildTable(
+      database,
+      'transcription_retention',
+      `CREATE TABLE transcription_retention_new (
+        tenant_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        audio_days INTEGER NOT NULL,
+        transcript_days INTEGER NOT NULL,
+        PRIMARY KEY (tenant_id, workspace_id)
+      )`,
+      'tenant_id, workspace_id, audio_days, transcript_days'
+    )
+  } finally {
+    database.run(`PRAGMA foreign_keys = ${hadForeignKeys ? 'ON' : 'OFF'}`)
+  }
+
+  log.info('Migration 14 completed: tenant_id default dropped on the transcription tables')
+}
+
+/** Whether foreign key enforcement is on right now. */
+function foreignKeysEnabled(database: SqlJsDatabase): boolean {
+  const stmt = database.prepare('PRAGMA foreign_keys')
+  let enabled = false
+  if (stmt.step()) enabled = Number(stmt.getAsObject().foreign_keys) === 1
+  stmt.free()
+  return enabled
+}
+
+/**
+ * Rebuild one table under a new definition, carrying its rows across.
+ *
+ * Repeatable like the rest of the migrations: the scratch table is dropped
+ * first, so a run that died halfway does not block the next one, and rebuilding
+ * an already rebuilt table is a no-op in effect. The column list is written out
+ * on both sides rather than relying on `SELECT *`, so a future column added to
+ * one side and not the other fails here instead of shifting values silently.
+ *
+ * The caller is responsible for foreign keys being OFF and for recreating any
+ * index, both of which go with the dropped table.
+ */
+function rebuildTable(
+  database: SqlJsDatabase,
+  table: string,
+  createScratch: string,
+  columns: string
+): void {
+  database.run(`DROP TABLE IF EXISTS ${table}_new`)
+  database.run(createScratch)
+  database.run(`INSERT INTO ${table}_new (${columns}) SELECT ${columns} FROM ${table}`)
+  database.run(`DROP TABLE ${table}`)
+  database.run(`ALTER TABLE ${table}_new RENAME TO ${table}`)
+}
+
+/**
+ * Add a column only if the table does not have it yet.
+ *
+ * `CREATE TABLE IF NOT EXISTS` makes a migration repeatable; `ALTER TABLE ADD
+ * COLUMN` does not, and migrations run here WITHOUT an enclosing transaction.
+ * A migration that fails after its first ALTER therefore leaves the schema
+ * half applied and its version unwritten - and the next start replays it and
+ * dies on "duplicate column name", with no way out from inside the app. The
+ * column list is read instead of assumed, because that is the state the
+ * decision depends on.
+ */
+function addColumnIfMissing(
+  database: SqlJsDatabase,
+  table: string,
+  column: string,
+  definition: string
+): void {
+  const stmt = database.prepare(`PRAGMA table_info(${table})`)
+  let present = false
+  while (stmt.step()) {
+    if (stmt.getAsObject().name === column) present = true
+  }
+  stmt.free()
+
+  if (present) {
+    log.info('Column already present, skipping ALTER', { table, column })
+    return
+  }
+
+  database.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
 }

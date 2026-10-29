@@ -1,6 +1,15 @@
 # Dependencies
 node_modules/
 
+# Python virtualenvs and bytecode caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Audio spool of the transcription service (never commit recordings)
+transcription-server/spool/
+
 # Build output
 dist/
 dist-electron/
