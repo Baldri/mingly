@@ -18,6 +18,7 @@ import {
   AI_OUTPUT_FOLDER,
   isPathSafe
 } from '../../shared/file-access-types'
+import { isRealPathWithin } from './real-path-guard'
 
 /**
  * Why a proposed network-share mount point was refused.
@@ -361,9 +362,15 @@ export class FileAccessManager {
       throw new Error('Read permission not granted for this directory')
     }
 
-    // 3. Security: Validate path is within allowed directory
+    // 3. Security: Validate path is within allowed directory, by spelling and
+    // then in fact. isPathSafe follows no symlink, so a link inside the grant
+    // used to read whatever it pointed at; the same message covers both because
+    // both are the same attempt and a distinct one would leak which it was.
     const fullPath = path.join(allowedDir.path, request.filePath)
     if (!isPathSafe(fullPath, allowedDir.path)) {
+      throw new Error('Path traversal attempt detected')
+    }
+    if (!(await isRealPathWithin(fullPath, allowedDir.path))) {
       throw new Error('Path traversal attempt detected')
     }
 
@@ -408,9 +415,15 @@ export class FileAccessManager {
       throw new Error('Create permission not granted for this directory')
     }
 
-    // 3. Security: Validate path is within allowed directory
+    // 3. Security: Validate path is within allowed directory, by spelling and
+    // then in fact. The target does not exist yet, so the real-path check
+    // resolves the deepest existing ancestor — which is what a symlinked
+    // subdirectory would be.
     const fullPath = path.join(allowedDir.path, request.filePath)
     if (!isPathSafe(fullPath, allowedDir.path)) {
+      throw new Error('Path traversal attempt detected')
+    }
+    if (!(await isRealPathWithin(fullPath, allowedDir.path))) {
       throw new Error('Path traversal attempt detected')
     }
 
@@ -463,6 +476,9 @@ export class FileAccessManager {
 
     const fullPath = path.join(allowedDir.path, relativePath)
     if (!isPathSafe(fullPath, allowedDir.path)) {
+      throw new Error('Path traversal attempt detected')
+    }
+    if (!(await isRealPathWithin(fullPath, allowedDir.path))) {
       throw new Error('Path traversal attempt detected')
     }
 

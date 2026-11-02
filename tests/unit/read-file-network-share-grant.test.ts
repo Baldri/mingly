@@ -121,6 +121,10 @@ function readFileChannel(): (event: unknown, filePath: string) => Promise<any> {
 describe('READ_FILE after an attempted network-share grant', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
+    // Same reason as in file-access-manager.test.ts: the fs double must answer
+    // realpath now that containment compares resolved paths. mockMountPointProbe
+    // narrows it per test where the probe is the point.
+    fsMock.realpath.mockImplementation(async (target: unknown) => String(target))
     harness.ipcHandlers.clear()
     storeMock.clear()
 

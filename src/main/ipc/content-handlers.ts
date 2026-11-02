@@ -11,6 +11,7 @@ import { MessageModel } from '../database/models/message'
 import { validateFilePath } from '../security/input-validator'
 import { getFileAccessManager } from '../file-access/file-access-manager'
 import { isPathWithinAllowedDirs } from '../../shared/file-access-types'
+import { isRealPathWithinAny } from '../file-access/real-path-guard'
 import { wrapHandler, requireFeature } from './ipc-utils'
 
 export async function registerContentHandlers(): Promise<void> {
@@ -204,6 +205,13 @@ export async function registerContentHandlers(): Promise<void> {
       // (security audit 2026-08-21).
       const allowedDirs = getFileAccessManager().getAllowedDirectories().map((d) => d.path)
       if (!isPathWithinAllowedDirs(filePath, allowedDirs)) {
+        return { success: false, error: 'Access denied: file is not within a granted directory' }
+      }
+      // The check above compares spellings; this one compares the paths the
+      // filesystem will actually use, so a symlink inside a granted directory
+      // can no longer read what it points at. Same message on purpose — a
+      // distinct one would tell the renderer which check refused it.
+      if (!(await isRealPathWithinAny(filePath, allowedDirs))) {
         return { success: false, error: 'Access denied: file is not within a granted directory' }
       }
       const content = await fs.readFile(filePath, 'utf-8')
