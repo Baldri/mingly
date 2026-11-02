@@ -246,8 +246,9 @@ describe('Transkriptions-IPC', () => {
             grantedAt: Date.now(),
             accessCount: 0
           },
-          // In the allowlist WITHOUT a dialog: addNetworkShare writes such an
-          // entry straight from renderer input (file-access-manager.ts).
+          // A network share the user confirmed: since #34 addNetworkShare
+          // checks the mount point and asks a dialog before it writes such an
+          // entry (file-access-manager.ts).
           {
             id: 'smb://x/y',
             path: networkShareDir,
@@ -924,27 +925,20 @@ describe('Transkriptions-IPC', () => {
     expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
   })
 
-  // ── Ruling 35: not every grant is a source ─────────────────────
+  // ── Ruling 35 lifted: the grant origin is no longer the weak spot ──
   //
-  // An allowlist is only as strong as the weakest way an entry gets into it.
-  // FILE_ACCESS_ADD_NETWORK_SHARE takes its configuration from the renderer
-  // unchecked, and `addNetworkShare` turns it into a grant with
-  // `recursive: true` - no dialog, no confirmation, and no check that the path
-  // is a mount point at all. A renderer can grant itself `/` that way.
+  // The exclusion stood while FILE_ACCESS_ADD_NETWORK_SHARE turned renderer
+  // input into a recursive grant unchecked. Since #34 (merge c494a54)
+  // `addNetworkShare` validates the mount point and asks a dialog in the main
+  // process that defaults to refusing, so the renderer can no longer put a
+  // directory into the allowlist by itself. What the list holds is what the
+  // user confirmed - and a confirmed network drive is a legitimate place to
+  // keep a recording.
 
-  it('nimmt ein Netzlaufwerk nicht als Aufnahmequelle an, obwohl es freigegeben ist', async () => {
+  it('nimmt ein per Dialog freigegebenes Netzlaufwerk als Aufnahmequelle an', async () => {
     const onShare = writeAudioIn(networkShareDir, 'vom-netzlaufwerk.wav')
 
-    const refused = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', onShare)
-
-    expect(refused.success).toBe(false)
-    expect(TranscriptionModel.listByState('queued', DEFAULT_TENANT_ID)).toHaveLength(0)
-
-    // Positive control in the same run: the dialog-granted source stays a
-    // source - so the refusal above is the grant's origin and not a handler
-    // that refuses everything.
-    const fromDialog = writeAudio('aus-dem-dialog.wav')
-    const accepted = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', fromDialog)
+    const accepted = await invoke<JobResult>(IPC_CHANNELS.TRANSCRIPTION_SUBMIT, 'ws1', onShare)
 
     expect(accepted.success).toBe(true)
     expect(accepted.job?.state).toBe('queued')
