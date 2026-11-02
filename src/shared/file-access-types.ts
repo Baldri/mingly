@@ -27,8 +27,42 @@ export interface AllowedDirectory {
 
   // Security
   grantedAt: number
+  /**
+   * When the user themselves confirmed this grant, in the main process.
+   *
+   * Written ONLY where a confirmation actually fell: the OS directory picker
+   * in requestDirectoryAccess, and confirmNetworkShareGrant's dialog in
+   * addNetworkShare. Optional because entries persisted before the field
+   * existed do not have it, and that absence is the point — see
+   * isPersistedGrantTrusted.
+   */
+  confirmedAt?: number
   lastAccessed?: number
   accessCount: number
+}
+
+/**
+ * Security: may a persisted entry be loaded back into the trusted allowlist?
+ *
+ * PR #34 (2026-10-29) stopped the renderer from granting itself an arbitrary
+ * directory through FILE_ACCESS_ADD_NETWORK_SHARE, but it could not undo the
+ * grants an injected renderer had already written to file-access.json. Since
+ * the entry carried no evidence of a confirmation, after the update a
+ * pre-#34 network grant looked exactly like one the user had confirmed in a
+ * dialog, and the next start trusted it again (security audit 2026-11-02).
+ *
+ * A network grant therefore needs the marker. Local grants do not: they can
+ * only come from the OS directory picker, which is itself the user's gesture,
+ * and no renderer payload reaches that route. Their behaviour is unchanged.
+ *
+ * Fails closed on a missing or unusable marker. The defect being guarded
+ * against IS an absent field, so `undefined` has to mean "not confirmed"
+ * rather than "unknown" — the inverse of the fail-open hole the policy engine
+ * had on an unrecognised level.
+ */
+export function isPersistedGrantTrusted(dir: AllowedDirectory): boolean {
+  if (dir.location === 'local') return true
+  return typeof dir.confirmedAt === 'number' && Number.isFinite(dir.confirmedAt) && dir.confirmedAt > 0
 }
 
 export interface FileAccessRequest {

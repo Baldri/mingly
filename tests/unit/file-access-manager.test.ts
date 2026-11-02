@@ -57,6 +57,7 @@ const fsMock = vi.hoisted(() => ({
 vi.mock('fs/promises', () => ({ default: fsMock, ...fsMock }))
 
 import { FileAccessManager, MOUNT_POINT_REFUSED_MESSAGE } from '../../src/main/file-access/file-access-manager'
+import type { FileAccessPermission } from '../../src/shared/file-access-types'
 import fsPromises from 'fs/promises'
 import path from 'path'
 
@@ -529,6 +530,167 @@ describe('FileAccessManager', () => {
       // The dialog must name the path it is about to grant, ahead of any
       // caller-supplied text.
       expect(mockShowMessageBox.mock.calls[0][0].message).toContain('/Volumes/NAS')
+    })
+  })
+
+  /**
+   * Security regression (audit 2026-11-02): PR #34 closed the door but did
+   * not clear out who was already inside. loadAllowedDirectories() took
+   * file-access.json back unchecked, and AllowedDirectory carried no evidence
+   * of a user confirmation — confirmNetworkShareGrant only ever ran INSIDE
+   * addNetworkShare, at granting time. So a network grant that an injected
+   * renderer had written before #34 was, after the update, indistinguishable
+   * from one the user had confirmed in a dialog, and the next start trusted
+   * it again.
+   *
+   * The invariant under test: a persisted NETWORK grant is only trusted if it
+   * carries the marker that is written where the confirmation actually fell.
+   */
+  describe('loadAllowedDirectories', () => {
+    /** Exactly what addNetworkShare persisted before #34 existed. */
+    const LEGACY_NETWORK_GRANT = {
+      id: 'smb://192.168.1.100/share',
+      path: '/Volumes/NAS',
+      name: 'NAS',
+      location: 'network-smb' as const,
+      permissions: ['read', 'create'] as FileAccessPermission[],
+      recursive: true,
+      networkHost: '192.168.1.100',
+      shareName: 'share',
+      grantedAt: 1_700_000_000_000,
+      accessCount: 0
+    }
+
+    const LOCAL_GRANT = {
+      id: 'local-docs',
+      path: '/home/testuser/documents',
+      name: 'documents',
+      location: 'local' as const,
+      permissions: ['read'] as FileAccessPermission[],
+      recursive: true,
+      grantedAt: 1_700_000_000_000,
+      accessCount: 0
+    }
+
+    /** Seed the persisted store, then load it the way a restart would. */
+    function restartWith(...dirs: unknown[]): FileAccessManager {
+      mockStoreData.set('allowedDirectories', dirs)
+      return new FileAccessManager()
+    }
+
+    it('does not trust a network grant persisted without a confirmation marker', async () => {
+      // Resolves rather than throws, so a read that gets through is visible as
+      // a read and not as some unrelated fs error.
+      vi.mocked(fsPromises.readFile).mockResolvedValue('secret' as never)
+
+      const reloaded = restartWith(LEGACY_NETWORK_GRANT)
+
+      expect(reloaded.getAllowedDirectories()).toEqual([])
+      await expect(
+        reloaded.readFile({ directoryId: LEGACY_NETWORK_GRANT.id, filePath: 'notes.txt', operation: 'read' })
+      ).rejects.toThrow('Directory access not granted')
+    })
+
+    it('rejects a marker that is not a usable timestamp', () => {
+      // The marker's job is to be absent on a legacy entry, so anything that
+      // is not a real timestamp has to count as absent too.
+      for (const confirmedAt of [0, -1, NaN, 'yes', null, {}]) {
+        const reloaded = restartWith({ ...LEGACY_NETWORK_GRANT, confirmedAt })
+        expect(reloaded.getAllowedDirectories()).toEqual([])
+      }
+    })
+
+    it('keeps the dropped grant on record instead of destroying it', () => {
+      // networkShares is in-memory only, so this entry is the sole surviving
+      // record of the host, share and username the user typed. Deleting it
+      // outright would cost them that, with nothing to re-grant from.
+      const reloaded = restartWith(LEGACY_NETWORK_GRANT)
+
+      expect(reloaded.getUnconfirmedDirectories()).toEqual([LEGACY_NETWORK_GRANT])
+    })
+
+    it('does not re-trust a dropped grant on the next start', () => {
+      restartWith(LEGACY_NETWORK_GRANT)
+
+      // The pruned list is written back, so the second start sees a clean
+      // allowlist and the record is not duplicated.
+      const second = new FileAccessManager()
+      expect(second.getAllowedDirectories()).toEqual([])
+      expect(second.getUnconfirmedDirectories()).toEqual([LEGACY_NETWORK_GRANT])
+    })
+
+    // Positive control: without these, every assertion above would also pass
+    // on a load that simply dropped everything.
+    it('keeps a network grant that carries the confirmation marker', async () => {
+      const confirmed = { ...LEGACY_NETWORK_GRANT, confirmedAt: 1_700_000_001_000 }
+      vi.mocked(fsPromises.readFile).mockResolvedValue('payload' as never)
+
+      const reloaded = restartWith(confirmed)
+
+      expect(reloaded.getAllowedDirectories()).toEqual([confirmed])
+      expect(reloaded.getUnconfirmedDirectories()).toEqual([])
+      await expect(
+        reloaded.readFile({ directoryId: confirmed.id, filePath: 'notes.txt', operation: 'read' })
+      ).resolves.toBe('payload')
+    })
+
+    // Positive control: local grants come from the OS directory picker, which
+    // is itself the user's gesture. Their behaviour must not change.
+    it('keeps a local grant that predates the marker', async () => {
+      vi.mocked(fsPromises.readFile).mockResolvedValue('local payload' as never)
+
+      const reloaded = restartWith(LOCAL_GRANT)
+
+      expect(reloaded.getAllowedDirectories()).toEqual([LOCAL_GRANT])
+      await expect(
+        reloaded.readFile({ directoryId: LOCAL_GRANT.id, filePath: 'notes.txt', operation: 'read' })
+      ).resolves.toBe('local payload')
+    })
+
+    it('drops only the unconfirmed entry out of a mixed store', () => {
+      const confirmed = {
+        ...LEGACY_NETWORK_GRANT,
+        id: 'smb://10.0.0.5/confirmed',
+        path: '/Volumes/Confirmed',
+        confirmedAt: 1_700_000_002_000
+      }
+
+      const reloaded = restartWith(LEGACY_NETWORK_GRANT, confirmed, LOCAL_GRANT)
+
+      expect(reloaded.getAllowedDirectories().map((d) => d.id)).toEqual([confirmed.id, LOCAL_GRANT.id])
+      expect(reloaded.getUnconfirmedDirectories().map((d) => d.id)).toEqual([LEGACY_NETWORK_GRANT.id])
+    })
+  })
+
+  /**
+   * The marker is only worth something if it is written exactly where the
+   * user's confirmation actually fell, so these pin both routes.
+   */
+  describe('confirmation marker at granting time', () => {
+    it('marks a directory the user picked in the OS dialog', async () => {
+      mockShowOpenDialog.mockResolvedValueOnce({
+        canceled: false,
+        filePaths: ['/home/testuser/documents']
+      })
+
+      const granted = await manager.requestDirectoryAccess(['read'])
+
+      expect(granted!.confirmedAt).toBeGreaterThan(0)
+    })
+
+    it('marks a network share the user confirmed in the dialog', async () => {
+      mockMountPointProbe('/Volumes/NAS')
+      mockShowMessageBox.mockResolvedValueOnce({ response: 0 })
+
+      await manager.addNetworkShare({
+        name: 'NAS',
+        protocol: 'smb',
+        host: '192.168.1.100',
+        shareName: 'share',
+        mountPoint: '/Volumes/NAS'
+      })
+
+      expect(manager.getAllowedDirectories()[0].confirmedAt).toBeGreaterThan(0)
     })
   })
 
