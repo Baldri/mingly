@@ -16,7 +16,8 @@ import {
   ALLOWED_READ_EXTENSIONS,
   ALLOWED_CREATE_EXTENSIONS,
   AI_OUTPUT_FOLDER,
-  isPathSafe
+  isPathSafe,
+  isPersistedGrantTrusted
 } from '../../shared/file-access-types'
 import { isMissingPathError, isRealPathWithin } from './real-path-guard'
 
@@ -37,6 +38,13 @@ export type MountPointRejection =
 /** The single message every mount-point refusal shows the caller. */
 export const MOUNT_POINT_REFUSED_MESSAGE = 'Mount point cannot be granted'
 
+/**
+ * Where grants dropped by loadAllowedDirectories are parked.
+ *
+ * A separate key, never read back into allowedDirs, so nothing trusts it.
+ */
+const UNCONFIRMED_DIRECTORIES_KEY = 'unconfirmedDirectories'
+
 export class FileAccessManager {
   private store: SimpleStore
   private allowedDirs: Map<string, AllowedDirectory> = new Map()
@@ -48,14 +56,73 @@ export class FileAccessManager {
   }
 
   /**
-   * Load saved allowed directories
+   * Load saved allowed directories.
+   *
+   * This used to take file-access.json back unchanged, which made the file
+   * itself the weakest link in the grant chain: addNetworkShare's
+   * confirmation dialog only guards the moment of GRANTING, so a network
+   * entry written before that dialog existed came back fully trusted on the
+   * next start. The entry is now required to carry the marker that is written
+   * where the confirmation actually fell (isPersistedGrantTrusted).
+   *
+   * Chosen over re-validating each path here: assertGrantableMountPoint is
+   * async, this runs in the constructor, and the device and realpath checks
+   * answer whether a path COULD be granted, never whether the user DID grant
+   * it. Checking a marker is both the right question and a synchronous one,
+   * so the singleton keeps its eager construction.
+   *
+   * Unconfirmed entries are dropped from the allowlist but parked under a
+   * separate key rather than deleted: networkShares is in-memory only, so
+   * such an entry is the sole surviving record of the host, share and
+   * username the user typed. Silently keeping it would be the hole; silently
+   * destroying it would cost them the grant with nothing left to re-grant
+   * from. The pruned list is written back so the drop happens once and does
+   * not depend on this check running again.
    */
   private loadAllowedDirectories(): void {
     const saved = this.store.get('allowedDirectories', []) as AllowedDirectory[]
+    const dropped: AllowedDirectory[] = []
+
     saved.forEach(dir => {
-      this.allowedDirs.set(dir.id, dir)
+      if (isPersistedGrantTrusted(dir)) {
+        this.allowedDirs.set(dir.id, dir)
+        return
+      }
+      dropped.push(dir)
+      console.warn(
+        `📁 ⚠️ Dropped unconfirmed ${dir.location} grant (needs re-granting): ${dir.path}`
+      )
     })
-    console.log(`📁 Loaded ${saved.length} allowed directories`)
+
+    if (dropped.length > 0) {
+      this.parkUnconfirmedDirectories(dropped)
+      this.saveAllowedDirectories()
+    }
+
+    console.log(`📁 Loaded ${this.allowedDirs.size} allowed directories`)
+  }
+
+  /**
+   * Keep dropped grants on record, merged by id so a repeated load cannot
+   * duplicate an entry.
+   */
+  private parkUnconfirmedDirectories(dropped: AllowedDirectory[]): void {
+    const byId = new Map<string, AllowedDirectory>()
+    for (const dir of [...this.getUnconfirmedDirectories(), ...dropped]) {
+      byId.set(dir.id, dir)
+    }
+    this.store.set(UNCONFIRMED_DIRECTORIES_KEY, Array.from(byId.values()))
+  }
+
+  /**
+   * Grants that were dropped for want of a confirmation marker.
+   *
+   * Read-only bookkeeping: these are NOT part of the allowlist and no read
+   * path consults them. They exist so the user can be told which share to
+   * grant again instead of finding it gone.
+   */
+  getUnconfirmedDirectories(): AllowedDirectory[] {
+    return this.store.get(UNCONFIRMED_DIRECTORIES_KEY, []) as AllowedDirectory[]
   }
 
   /**
@@ -95,6 +162,9 @@ export class FileAccessManager {
         permissions,
         recursive: true,
         grantedAt: Date.now(),
+        // The user picked this directory themselves in the OS dialog, which
+        // is the confirmation. Nothing a caller supplied reaches this route.
+        confirmedAt: Date.now(),
         accessCount: 0
       }
 
@@ -156,6 +226,12 @@ export class FileAccessManager {
         shareName: config.shareName,
         username: config.username,
         grantedAt: Date.now(),
+        // Set here and nowhere else for a network grant: this line is only
+        // reached once confirmNetworkShareGrant has returned true, so the
+        // marker means a human said yes to THIS mount point. Writing it
+        // anywhere a caller can reach without a dialog would re-open the hole
+        // loadAllowedDirectories closes.
+        confirmedAt: Date.now(),
         accessCount: 0
       }
 
