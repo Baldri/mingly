@@ -1,0 +1,41 @@
+# Mingly Transcription Server dependencies.
+#
+# Two blocks, because they have very different standing:
+#
+# 1. The service layer below was installed and exercised on 2026-10-25
+#    (Python 3.14.6, macOS arm64). These versions are verified.
+# 2. The pipeline layer was NOT installed on that machine. The versions are
+#    taken from upstream TranscriboZH, which runs them in production, but they
+#    are unverified here. torch 2.5.1 publishes wheels for cp39-cp313 only
+#    (checked against PyPI on 2026-10-25), so a real deployment needs
+#    Python 3.12 or 3.13 — upstream pins 3.12.7. Python 3.14 will NOT work.
+#
+# pyannote's diarization weights are access-gated on Hugging Face and need
+# HF_AUTH_TOKEN plus accepted model conditions. See README.md.
+
+# --- Service layer (verified) ---
+fastapi==0.162.0
+uvicorn==0.54.0
+pydantic==2.14.1
+
+# --- Pipeline layer (from upstream, unverified on this machine) ---
+# whisperx 3.2.0 pins the faster-whisper release whose get_prompt signature the
+# patch in pipeline.py matches. Read the note on get_prompt before raising it.
+whisperx==3.2.0
+pyannote.audio==3.1.1
+pyannote.core==5.0.0
+pyannote.database==5.0.1
+pyannote.metrics==3.2.1
+pyannote.pipeline==3.0.1
+speechbrain==0.5.16
+pandas==2.2.2
+numpy==1.26.3
+
+# torch is deliberately left unpinned here: the right build depends on the
+# accelerator. Upstream uses torch==2.5.0+cu124 from the PyTorch CUDA index for
+# GPU hosts and torch==2.5.1 for Apple Silicon. Install it explicitly for the
+# target machine before installing this file.
+torch
+
+# --- Test-only (pytest is not needed to run the service) ---
+pytest==9.1.1

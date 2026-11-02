@@ -66,6 +66,64 @@ describe('ActivityLogger', () => {
       expect(params[6]).toBeNull() // details should be null
     })
 
+    it('leaves tenant_id out of the statement when the caller knows no tenant', () => {
+      logger.log({
+        actorType: 'user',
+        actorId: 'local',
+        action: 'conversation.create',
+        entityType: 'conversation',
+        entityId: 'conv_123',
+        details: null
+      })
+
+      // The writers that predate the tenant column must keep the statement they
+      // always had, so the column default assigns the installation's tenant.
+      expect(dbRun).toHaveBeenCalledOnce()
+      const [sql, params] = (dbRun as ReturnType<typeof vi.fn>).mock.calls[0]
+      expect(sql).not.toContain('tenant_id')
+      expect(params as unknown[]).toHaveLength(8)
+    })
+
+    it('writes the tenant explicitly when the caller knows it', () => {
+      logger.log({
+        actorType: 'system',
+        actorId: 'transcription-job-runner',
+        action: 'transcription.queued',
+        entityType: 'transcription_job',
+        entityId: 'job_1',
+        tenantId: 'tenant-a',
+        details: null
+      })
+
+      expect(dbRun).toHaveBeenCalledOnce()
+      const [sql, params] = (dbRun as ReturnType<typeof vi.fn>).mock.calls[0]
+      expect(sql).toContain('tenant_id')
+      const values = params as unknown[]
+      expect(values).toHaveLength(9)
+      expect(values[8]).toBe('tenant-a')
+    })
+
+    it('does not throw when details cannot be serialised', () => {
+      // Serialising `details` happens inside the same swallow as the insert:
+      // a circular object (or a BigInt) must not take the caller down with it.
+      const circular: Record<string, unknown> = { action: 'transcription.queued' }
+      circular.self = circular
+
+      expect(() =>
+        logger.log({
+          actorType: 'system',
+          actorId: 'transcription-job-runner',
+          action: 'transcription.queued',
+          entityType: 'transcription_job',
+          entityId: 'job_1',
+          tenantId: 'tenant-a',
+          details: circular
+        })
+      ).not.toThrow()
+
+      expect(dbRun).not.toHaveBeenCalled()
+    })
+
     it('should not throw on database error', () => {
       ;(dbRun as ReturnType<typeof vi.fn>).mockImplementation(() => {
         throw new Error('DB write failed')

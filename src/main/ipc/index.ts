@@ -16,3 +16,8 @@ export { registerRBACHandlers } from './rbac-handlers'
 export { registerMCPHandlers } from './mcp-handlers'
 export { registerRAGHandlers } from './rag-handlers'
 export { registerPrivacyHandlers } from './privacy-handlers'
+export {
+  registerTranscriptionHandlers,
+  startTranscriptionScheduler,
+  stopTranscriptionScheduler
+} from './transcription-handlers'

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '../shared/types'
-import type { LLMProvider, AppSettings } from '../shared/types'
+import type { LLMProvider, AppSettings, TranscriptExportFormat } from '../shared/types'
 import type { NetworkShareConfigInput } from '../shared/file-access-types'
 
 // Expose protected methods that allow the renderer process to use
@@ -683,6 +683,19 @@ const api = {
       ipcRenderer.on('privacy:ner-progress', listener)
       return () => ipcRenderer.removeListener('privacy:ner-progress', listener)
     },
+  },
+
+  // Transcription (audio → transcript via the local transcription service)
+  //
+  // The EXPORT only. The other five transcription channels — submit, status,
+  // segments, cancel, delete — are registered in the main process and have no
+  // bridge here, so the renderer cannot reach them yet. That is the state this
+  // change found and deliberately left alone, not an oversight: bridging a
+  // channel is a decision about what the renderer may do, and those five
+  // include the one that hands out transcript content.
+  transcription: {
+    export: (jobId: string, format: TranscriptExportFormat) =>
+      ipcRenderer.invoke(IPC_CHANNELS.TRANSCRIPTION_EXPORT, jobId, format)
   },
 
   // Platform Info

@@ -37,6 +37,7 @@ const FEATURE_MIN_TIER: Record<GatedFeature, SubscriptionTier> = {
   comparison: 'pro',
   unlimited_conversations: 'pro',
   advanced_rag: 'pro',
+  transcription: 'pro',
 
   // Team+ features
   team_workspaces: 'team',
@@ -68,30 +69,41 @@ const TIER_LEVEL: Record<SubscriptionTier, number> = {
 }
 
 // Per-tier limits
+//
+// DEBT: maxTranscriptionMinutesPerMonth is declared but not metered — nothing
+// in the app knows how long a recording is yet → enforce it in the submit path
+// as soon as a transcription job carries an audio duration, and replace the
+// numbers once a price per tier is decided (design section 9 leaves pricing
+// open). Until then the gate above decides WHETHER a tier may transcribe, and
+// this field only says how much it is meant to get.
 const TIER_LIMITS: Record<SubscriptionTier, TierLimits> = {
   free: {
     maxConversationsPerDay: 3,
     maxTemplates: 0,           // only built-ins
     builtinTemplatesOnly: true,
-    maxComparisonModels: 0     // disabled
+    maxComparisonModels: 0,    // disabled
+    maxTranscriptionMinutesPerMonth: 0  // no transcription on Free at all
   },
   pro: {
     maxConversationsPerDay: 0, // unlimited
     maxTemplates: 0,           // unlimited
     builtinTemplatesOnly: false,
-    maxComparisonModels: 3
+    maxComparisonModels: 3,
+    maxTranscriptionMinutesPerMonth: 600   // 10 hours of audio
   },
   team: {
     maxConversationsPerDay: 0,
     maxTemplates: 0,
     builtinTemplatesOnly: false,
-    maxComparisonModels: 3
+    maxComparisonModels: 3,
+    maxTranscriptionMinutesPerMonth: 3000  // 50 hours of audio
   },
   enterprise: {
     maxConversationsPerDay: 0,
     maxTemplates: 0,
     builtinTemplatesOnly: false,
-    maxComparisonModels: 3
+    maxComparisonModels: 3,
+    maxTranscriptionMinutesPerMonth: 'unlimited'
   }
 }
 
