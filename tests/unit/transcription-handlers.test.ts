@@ -249,6 +249,13 @@ describe('Transkriptions-IPC', () => {
           // A network share the user confirmed: since #34 addNetworkShare
           // checks the mount point and asks a dialog before it writes such an
           // entry (file-access-manager.ts).
+          //
+          // `confirmedAt` is the evidence of that dialog, which #37 made the
+          // condition for loading a network grant back into the allowlist at
+          // all. Without the marker this entry would no longer model what the
+          // test below asserts - a grant the user confirmed - but a grant
+          // persisted before the dialog existed. That is a different case, and
+          // one that must NOT count as a trust root.
           {
             id: 'smb://x/y',
             path: networkShareDir,
@@ -257,6 +264,7 @@ describe('Transkriptions-IPC', () => {
             permissions: ['read', 'create'],
             recursive: true,
             grantedAt: Date.now(),
+            confirmedAt: Date.now(),
             accessCount: 0
           },
           // Granted for writing AI output, never for reading.
