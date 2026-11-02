@@ -20,6 +20,13 @@
  * /tmp/x, where the realpath of a genuine file inside it
  * (/private/tmp/x/echt.txt) is not within the stored grant string '/tmp/x'.
  *
+ * Not every failure of realpath means "not there". ENOENT and ENOTDIR do, and
+ * those are tolerated because a file about to be created has no realpath yet.
+ * EACCES, ELOOP, EIO and the rest mean the filesystem would not say where the
+ * path leads, and answering with the unresolved spelling would put exactly the
+ * weaker check back that this module exists to replace. Those resolve to null,
+ * which no containment test accepts.
+ *
  * What this does NOT close: the check and the subsequent open are two
  * operations, so a symlink swapped in between them still wins the race.
  * Closing that needs an openat2/RESOLVE_BENEATH-style primitive, which node
@@ -31,6 +38,23 @@ import path from 'path'
 import { isPathSafe } from '../../shared/file-access-types'
 
 /**
+ * errno codes that mean the path simply is not there, as opposed to the
+ * filesystem refusing to answer.
+ *
+ * ENOENT: no such entry — the ordinary case for a file about to be created,
+ * and also what a dangling symlink reports. ENOTDIR: a path component is a
+ * file, so nothing below it can exist either. Everything else (EACCES, ELOOP,
+ * EIO, ENAMETOOLONG, ...) is a refusal to resolve, not an absence, and a
+ * containment check must not treat it as one.
+ */
+const MISSING_PATH_CODES: ReadonlySet<string> = new Set(['ENOENT', 'ENOTDIR'])
+
+export function isMissingPathError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code
+  return typeof code === 'string' && MISSING_PATH_CODES.has(code)
+}
+
+/**
  * Resolve `target` through symlinks, tolerating a tail that does not exist.
  *
  * A file about to be created has no realpath of its own, and createFile may
@@ -39,7 +63,7 @@ import { isPathSafe } from '../../shared/file-access-types'
  * to it, so the answer is a real path for the part that exists and a literal
  * one for the part that cannot have a symlink yet.
  */
-export async function resolveRealPath(target: string): Promise<string> {
+export async function resolveRealPath(target: string): Promise<string | null> {
   const absolute = path.resolve(target)
   const missing: string[] = []
   let current = absolute
@@ -48,7 +72,10 @@ export async function resolveRealPath(target: string): Promise<string> {
     try {
       const real = await fs.realpath(current)
       return missing.length === 0 ? real : path.join(real, ...missing)
-    } catch {
+    } catch (error) {
+      if (!isMissingPathError(error)) {
+        return null
+      }
       const parent = path.dirname(current)
       if (parent === current) {
         // Nothing along the path exists, so there is no symlink to follow.
@@ -66,6 +93,9 @@ export async function isRealPathWithin(requestedPath: string, allowedDir: string
     resolveRealPath(requestedPath),
     resolveRealPath(allowedDir)
   ])
+  if (realRequested === null || realAllowed === null) {
+    return false
+  }
   return isPathSafe(realRequested, realAllowed)
 }
 
@@ -78,6 +108,11 @@ export async function isRealPathWithinAny(
     return false
   }
   const realRequested = await resolveRealPath(requestedPath)
+  if (realRequested === null) {
+    return false
+  }
+  // A grant that cannot be resolved drops out of the comparison instead of
+  // failing the whole call: it can match nothing, but the other grants still can.
   const realAllowed = await Promise.all(allowedDirs.map((dir) => resolveRealPath(dir)))
-  return realAllowed.some((dir) => isPathSafe(realRequested, dir))
+  return realAllowed.some((dir) => dir !== null && isPathSafe(realRequested, dir))
 }

@@ -73,7 +73,7 @@ vi.mock('../../src/main/services/comparison-service', () => ({
 }))
 
 import { FileAccessManager, getFileAccessManager } from '../../src/main/file-access/file-access-manager'
-import { resolveRealPath } from '../../src/main/file-access/real-path-guard'
+import { isRealPathWithin, resolveRealPath } from '../../src/main/file-access/real-path-guard'
 import { registerContentHandlers } from '../../src/main/ipc/content-handlers'
 import { IPC_CHANNELS } from '../../src/shared/types'
 
@@ -258,4 +258,57 @@ describe('READ_FILE against symlinks in a granted directory', () => {
     expect(await readFileChannel()({}, path.join(granted, 'echt.txt')))
       .toEqual({ success: true, content: INSIDE })
   })
+})
+
+/**
+ * The one refusal class that a real filesystem can produce portably: a
+ * directory without search permission. EACCES, ELOOP and EIO on demand are
+ * not portable, so the deterministic classification lives in
+ * real-path-guard-error-classes.test.ts with a mocked fs.
+ *
+ * skipIf(win32): chmod does not take away traversal on Windows, so the
+ * precondition below could not hold there — not a failure, not measurable.
+ * CI runs the suite on macOS and Ubuntu, where it is.
+ */
+describe('resolveRealPath when the filesystem refuses to answer', () => {
+  let blocked: string
+
+  beforeEach(async () => {
+    blocked = path.join(granted, 'gesperrt')
+    await fs.mkdir(blocked)
+    await fs.writeFile(path.join(blocked, 'ziel.txt'), SECRET, 'utf-8')
+    await fs.chmod(blocked, 0o000)
+  })
+
+  afterEach(async () => {
+    // Hand the permission back, or the outer cleanup cannot traverse it.
+    await fs.chmod(blocked, 0o700).catch(() => undefined)
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'answers null instead of falling back to the unresolved spelling',
+    async () => {
+      const target = path.join(blocked, 'ziel.txt')
+
+      // Precondition in the same run: this environment really does produce
+      // EACCES. root ignores the mode bits, and then the assertion below would
+      // pass without measuring anything.
+      const code = await fs.realpath(target).then(
+        () => 'kein Fehler',
+        (error: NodeJS.ErrnoException) => error.code
+      )
+      expect(code, 'Umgebung kann kein EACCES erzeugen (als root gestartet?)').toBe('EACCES')
+
+      expect(await resolveRealPath(target)).toBeNull()
+      expect(await isRealPathWithin(target, granted)).toBe(false)
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps resolving a readable sibling, so the refusal is not blanket',
+    async () => {
+      expect(await resolveRealPath(path.join(granted, 'echt.txt')))
+        .toBe(path.join(await fs.realpath(granted), 'echt.txt'))
+    }
+  )
 })
