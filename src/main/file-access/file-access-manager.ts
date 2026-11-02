@@ -19,7 +19,7 @@ import {
   isPathSafe,
   isPersistedGrantTrusted
 } from '../../shared/file-access-types'
-import { isRealPathWithin } from './real-path-guard'
+import { isMissingPathError, isRealPathWithin } from './real-path-guard'
 
 /**
  * Why a proposed network-share mount point was refused.
@@ -30,6 +30,7 @@ export type MountPointRejection =
   | 'not-absolute'
   | 'contains-home'
   | 'missing'
+  | 'unreadable'
   | 'not-a-directory'
   | 'not-separate-volume'
   | 'not-a-mount'
@@ -299,18 +300,21 @@ export class FileAccessManager {
       this.rejectMountPoint('contains-home', candidate)
     }
 
+    // Refused either way; the reason only decides what the log says. A path
+    // the filesystem would not resolve is not an absent path, and calling it
+    // 'missing' sends whoever reads the log looking for the wrong thing.
     let resolved: string
     try {
       resolved = await fs.realpath(candidate)
-    } catch {
-      this.rejectMountPoint('missing', candidate)
+    } catch (error) {
+      this.rejectMountPoint(isMissingPathError(error) ? 'missing' : 'unreadable', candidate)
     }
 
     let stats: Stats
     try {
       stats = await fs.stat(resolved)
-    } catch {
-      this.rejectMountPoint('missing', resolved)
+    } catch (error) {
+      this.rejectMountPoint(isMissingPathError(error) ? 'missing' : 'unreadable', resolved)
     }
     if (!stats.isDirectory()) {
       this.rejectMountPoint('not-a-directory', resolved)
