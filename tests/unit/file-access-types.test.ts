@@ -227,6 +227,14 @@ describe('hasPermission', () => {
     expect(hasPermission(dir, 'read')).toBe(false)
     expect(hasPermission(dir, 'create')).toBe(false)
   })
+  it('a permissions field that is not a list grants nothing', () => {
+    for (const bad of [undefined, null, 'read', { 0: 'read' }]) {
+      const dir = { ...base, permissions: bad as unknown as AllowedDirectory['permissions'] }
+      for (const needed of ['read', 'create', 'edit'] as const) {
+        expect(hasPermission(dir, needed)).toBe(false)
+      }
+    }
+  })
   it('an empty permission list grants nothing', () => {
     for (const needed of ['read', 'create', 'edit'] as const) {
       expect(hasPermission(base, needed)).toBe(false)

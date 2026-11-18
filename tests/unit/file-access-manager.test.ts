@@ -778,6 +778,36 @@ describe('FileAccessManager', () => {
         expect(reloaded!.getAllowedDirectories().map((d) => d.id)).toEqual([LOCAL_GRANT.id])
       })
 
+      // The marker MUST be present here: without it the entry takes the park
+      // path and never reaches the code that handles a kept entry.
+      it.each([
+        ['undefined', undefined],
+        ['null', null],
+        ['a string', 'read'],
+        ['an object', { 0: 'read' }]
+      ])('keeps a confirmed grant whose permissions is %s as an empty list', (_label, permissions) => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+        try {
+          const malformed = { ...LOCAL_GRANT, id: 'malformed-confirmed', permissions, confirmedAt: 1_700_000_005_000 }
+          const valid = { ...LOCAL_GRANT, id: 'valid-after', confirmedAt: 1_700_000_005_000 }
+
+          let reloaded: FileAccessManager | undefined
+          expect(() => { reloaded = restartWith(malformed, valid) }).not.toThrow()
+
+          const dirs = reloaded!.getAllowedDirectories()
+          expect(dirs.map((d) => d.id)).toEqual([malformed.id, valid.id])
+          expect(dirs[0].permissions).toEqual([])
+          expect(dirs[1]).toEqual(valid)
+          expect(reloaded!.getUnconfirmedDirectories()).toEqual([])
+
+          // The junk list is not persisted back in a shape its type forbids.
+          const stored = mockStoreData.get('allowedDirectories', []) as Array<{ id: string; permissions: unknown }>
+          expect(stored.find((d) => d.id === malformed.id)!.permissions).toEqual([])
+        } finally {
+          warn.mockRestore()
+        }
+      })
+
       it('does not rewrite the store when nothing was reduced or dropped', () => {
         mockStoreData.set.mockClear()
 

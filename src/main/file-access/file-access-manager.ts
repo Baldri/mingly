@@ -90,7 +90,12 @@ export class FileAccessManager {
     const dropped: AllowedDirectory[] = []
     let reduced = false
 
-    saved.forEach(dir => {
+    saved.forEach(raw => {
+      // Normalise once at the boundary: the store value is an unchecked cast,
+      // and a permission list that is not a list is an empty one. Everything
+      // below, including what gets stored, works on the normalised entry.
+      const malformed = !Array.isArray(raw.permissions)
+      const dir: AllowedDirectory = malformed ? { ...raw, permissions: [] } : raw
       const surviving = survivingPermissions(dir)
       // Park only what is genuinely unconfirmed. A confirmed grant with an
       // empty permission list is kept as it is: it grants nothing, and
@@ -110,6 +115,10 @@ export class FileAccessManager {
         reduced = true
         this.allowedDirs.set(dir.id, { ...dir, permissions: surviving })
         return
+      }
+      if (malformed) {
+        console.warn(`📁 ⚠️ Grant had a malformed permission list, now empty: ${dir.path}`)
+        reduced = true
       }
       this.allowedDirs.set(dir.id, dir)
     })
