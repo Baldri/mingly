@@ -9,13 +9,13 @@ describe('sensitivity ordering', () => {
   })
 
   it('atLeast is true when the first level reaches the threshold', () => {
-    expect(atLeast('high', 'high')).toBe(true)
-    expect(atLeast('critical', 'high')).toBe(true)
+    expect(atLeast(SENSITIVITY_ORDER, 'high', 'high')).toBe(true)
+    expect(atLeast(SENSITIVITY_ORDER, 'critical', 'high')).toBe(true)
   })
 
   it('atLeast is false below the threshold', () => {
-    expect(atLeast('medium', 'high')).toBe(false)
-    expect(atLeast('low', 'medium')).toBe(false)
+    expect(atLeast(SENSITIVITY_ORDER, 'medium', 'high')).toBe(false)
+    expect(atLeast(SENSITIVITY_ORDER, 'low', 'medium')).toBe(false)
   })
 
   it('maxSensitivity returns the highest level present', () => {
