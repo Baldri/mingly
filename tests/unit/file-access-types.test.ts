@@ -126,3 +126,100 @@ describe('parseNetworkShareConfig', () => {
     if (!result.valid) expect(result.error).toContain('exceeds')
   })
 })
+
+import { survivingPermissions, hasPermission } from '../../src/shared/file-access-types'
+import type { AllowedDirectory } from '../../src/shared/file-access-types'
+
+// Security: `edit` lets the agent overwrite an EXISTING file, so a persisted
+// grant may only keep it when the confirmation marker proves the user
+// confirmed it. Local grants used to bypass the marker check entirely.
+describe('survivingPermissions', () => {
+  const localDir: AllowedDirectory = {
+    id: 'local-docs',
+    path: '/a/docs',
+    name: 'docs',
+    location: 'local',
+    permissions: ['read'],
+    recursive: true,
+    grantedAt: 1_700_000_000_000,
+    accessCount: 0
+  }
+  const networkDir: AllowedDirectory = {
+    ...localDir,
+    id: 'smb://nas/share',
+    location: 'network-smb',
+    permissions: ['read', 'create']
+  }
+
+  it('a local grant without the marker keeps read and create but loses edit', () => {
+    const dir: AllowedDirectory = { ...localDir, permissions: ['read', 'create', 'edit'], confirmedAt: undefined }
+    expect(survivingPermissions(dir)).toEqual(['read', 'create'])
+  })
+  it('a local grant with the marker keeps edit', () => {
+    const dir: AllowedDirectory = { ...localDir, permissions: ['read', 'edit'], confirmedAt: Date.now() }
+    expect(survivingPermissions(dir)).toEqual(['read', 'edit'])
+  })
+  it('a network grant without the marker survives with nothing', () => {
+    expect(survivingPermissions({ ...networkDir, confirmedAt: undefined })).toEqual([])
+  })
+  it('a network grant with the marker keeps every permission', () => {
+    const dir: AllowedDirectory = { ...networkDir, permissions: ['read', 'edit'], confirmedAt: Date.now() }
+    expect(survivingPermissions(dir)).toEqual(['read', 'edit'])
+  })
+  it('a local grant without the marker and without edit is unchanged', () => {
+    expect(survivingPermissions({ ...localDir, permissions: ['read-create'] })).toEqual(['read-create'])
+  })
+  it('an unusable marker is treated as absent', () => {
+    for (const bad of [0, -1, NaN, Infinity, '1700000000000' as unknown as number]) {
+      expect(survivingPermissions({ ...localDir, permissions: ['edit'], confirmedAt: bad })).toEqual([])
+    }
+  })
+  it('does not mutate the stored permission list', () => {
+    const permissions: AllowedDirectory['permissions'] = ['read', 'edit']
+    survivingPermissions({ ...localDir, permissions })
+    expect(permissions).toEqual(['read', 'edit'])
+  })
+})
+
+describe('hasPermission', () => {
+  const base: AllowedDirectory = {
+    id: 'd',
+    path: '/a/docs',
+    name: 'docs',
+    location: 'local',
+    permissions: [],
+    recursive: true,
+    grantedAt: 1,
+    accessCount: 0
+  }
+
+  it('read-create implies read and create but never edit', () => {
+    const dir: AllowedDirectory = { ...base, permissions: ['read-create'] }
+    expect(hasPermission(dir, 'read')).toBe(true)
+    expect(hasPermission(dir, 'create')).toBe(true)
+    expect(hasPermission(dir, 'edit')).toBe(false)
+  })
+  it('plain read implies neither create nor edit', () => {
+    const dir: AllowedDirectory = { ...base, permissions: ['read'] }
+    expect(hasPermission(dir, 'read')).toBe(true)
+    expect(hasPermission(dir, 'create')).toBe(false)
+    expect(hasPermission(dir, 'edit')).toBe(false)
+  })
+  it('plain create implies neither read nor edit', () => {
+    const dir: AllowedDirectory = { ...base, permissions: ['create'] }
+    expect(hasPermission(dir, 'create')).toBe(true)
+    expect(hasPermission(dir, 'read')).toBe(false)
+    expect(hasPermission(dir, 'edit')).toBe(false)
+  })
+  it('only an explicit edit entry grants edit, and edit grants nothing else', () => {
+    const dir: AllowedDirectory = { ...base, permissions: ['edit'] }
+    expect(hasPermission(dir, 'edit')).toBe(true)
+    expect(hasPermission(dir, 'read')).toBe(false)
+    expect(hasPermission(dir, 'create')).toBe(false)
+  })
+  it('an empty permission list grants nothing', () => {
+    for (const needed of ['read', 'create', 'edit'] as const) {
+      expect(hasPermission(base, needed)).toBe(false)
+    }
+  })
+})

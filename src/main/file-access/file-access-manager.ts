@@ -17,7 +17,8 @@ import {
   ALLOWED_CREATE_EXTENSIONS,
   AI_OUTPUT_FOLDER,
   isPathSafe,
-  isPersistedGrantTrusted
+  survivingPermissions,
+  hasPermission
 } from '../../shared/file-access-types'
 import { isMissingPathError, isRealPathWithin } from './real-path-guard'
 
@@ -63,7 +64,7 @@ export class FileAccessManager {
    * confirmation dialog only guards the moment of GRANTING, so a network
    * entry written before that dialog existed came back fully trusted on the
    * next start. The entry is now required to carry the marker that is written
-   * where the confirmation actually fell (isPersistedGrantTrusted).
+   * where the confirmation actually fell (survivingPermissions).
    *
    * Chosen over re-validating each path here: assertGrantableMountPoint is
    * async, this runs in the constructor, and the device and realpath checks
@@ -78,24 +79,41 @@ export class FileAccessManager {
    * destroying it would cost them the grant with nothing left to re-grant
    * from. The pruned list is written back so the drop happens once and does
    * not depend on this check running again.
+   *
+   * A marker-less LOCAL grant is not dropped: it stays with `edit` removed and
+   * its other permissions intact, and the reduced list is written back for the
+   * same reason. Only `edit` needs the marker locally (survivingPermissions).
    */
   private loadAllowedDirectories(): void {
     const saved = this.store.get('allowedDirectories', []) as AllowedDirectory[]
     const dropped: AllowedDirectory[] = []
+    let reduced = false
 
     saved.forEach(dir => {
-      if (isPersistedGrantTrusted(dir)) {
-        this.allowedDirs.set(dir.id, dir)
+      const surviving = survivingPermissions(dir)
+      if (surviving.length === 0) {
+        dropped.push(dir)
+        console.warn(
+          `📁 ⚠️ Dropped unconfirmed ${dir.location} grant (needs re-granting): ${dir.path}`
+        )
         return
       }
-      dropped.push(dir)
-      console.warn(
-        `📁 ⚠️ Dropped unconfirmed ${dir.location} grant (needs re-granting): ${dir.path}`
-      )
+      if (surviving.length < dir.permissions.length) {
+        const lost = dir.permissions.filter(permission => !surviving.includes(permission))
+        console.warn(
+          `📁 ⚠️ Unconfirmed ${dir.location} grant lost permission ${lost.join(', ')} (needs re-granting): ${dir.path}`
+        )
+        reduced = true
+        this.allowedDirs.set(dir.id, { ...dir, permissions: surviving })
+        return
+      }
+      this.allowedDirs.set(dir.id, dir)
     })
 
     if (dropped.length > 0) {
       this.parkUnconfirmedDirectories(dropped)
+    }
+    if (dropped.length > 0 || reduced) {
       this.saveAllowedDirectories()
     }
 
@@ -438,7 +456,7 @@ export class FileAccessManager {
     }
 
     // 2. Security: Verify permission
-    if (!allowedDir.permissions.includes('read') && !allowedDir.permissions.includes('read-create')) {
+    if (!hasPermission(allowedDir, 'read')) {
       throw new Error('Read permission not granted for this directory')
     }
 
@@ -491,7 +509,7 @@ export class FileAccessManager {
     }
 
     // 2. Security: Verify permission
-    if (!allowedDir.permissions.includes('create') && !allowedDir.permissions.includes('read-create')) {
+    if (!hasPermission(allowedDir, 'create')) {
       throw new Error('Create permission not granted for this directory')
     }
 

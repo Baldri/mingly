@@ -660,6 +660,98 @@ describe('FileAccessManager', () => {
       expect(reloaded.getAllowedDirectories().map((d) => d.id)).toEqual([confirmed.id, LOCAL_GRANT.id])
       expect(reloaded.getUnconfirmedDirectories().map((d) => d.id)).toEqual([LEGACY_NETWORK_GRANT.id])
     })
+
+    // `edit` overwrites an existing file, so unlike the other permissions it
+    // may not ride on a local grant that carries no evidence of confirmation.
+    describe('the edit permission', () => {
+      const LOCAL_EDIT_GRANT = {
+        ...LOCAL_GRANT,
+        id: 'local-edit',
+        permissions: ['read', 'create', 'edit'] as FileAccessPermission[]
+      }
+
+      it('keeps a marker-less local grant on the allowlist without edit', async () => {
+        vi.mocked(fsPromises.readFile).mockResolvedValue('still readable' as never)
+
+        const reloaded = restartWith(LOCAL_EDIT_GRANT)
+
+        const dirs = reloaded.getAllowedDirectories()
+        expect(dirs.map((d) => d.id)).toEqual([LOCAL_EDIT_GRANT.id])
+        expect(dirs[0].permissions).toEqual(['read', 'create'])
+        // Reduced, not dropped: the other permissions still work.
+        await expect(
+          reloaded.readFile({ directoryId: LOCAL_EDIT_GRANT.id, filePath: 'notes.txt', operation: 'read' })
+        ).resolves.toBe('still readable')
+        // A reduction is not a drop, so nothing is parked.
+        expect(reloaded.getUnconfirmedDirectories()).toEqual([])
+      })
+
+      it('keeps edit on a local grant that carries the marker (positive control)', () => {
+        const confirmed = { ...LOCAL_EDIT_GRANT, confirmedAt: 1_700_000_003_000 }
+
+        const reloaded = restartWith(confirmed)
+
+        expect(reloaded.getAllowedDirectories()).toEqual([confirmed])
+      })
+
+      it('still parks a marker-less network grant entirely, edit or not', () => {
+        // Regression on PR #37: the network path must not be softened into
+        // "keep with fewer permissions".
+        const networkWithEdit = {
+          ...LEGACY_NETWORK_GRANT,
+          permissions: ['read', 'create', 'edit'] as FileAccessPermission[]
+        }
+
+        const reloaded = restartWith(networkWithEdit)
+
+        expect(reloaded.getAllowedDirectories()).toEqual([])
+        expect(reloaded.getUnconfirmedDirectories()).toEqual([networkWithEdit])
+      })
+
+      it('persists the reduced permission list so the reduction happens once', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+        try {
+          restartWith(LOCAL_EDIT_GRANT)
+
+          const stored = mockStoreData.get('allowedDirectories', []) as Array<{ id: string; permissions: string[] }>
+          expect(stored.map((d) => [d.id, d.permissions])).toEqual([[LOCAL_EDIT_GRANT.id, ['read', 'create']]])
+          const firstLoadWarnings = warn.mock.calls.length
+          expect(firstLoadWarnings).toBeGreaterThan(0)
+
+          warn.mockClear()
+          const second = new FileAccessManager()
+
+          expect(second.getAllowedDirectories()[0].permissions).toEqual(['read', 'create'])
+          expect(warn).not.toHaveBeenCalled()
+        } finally {
+          warn.mockRestore()
+        }
+      })
+
+      it('names the path and the lost permission in the warning', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+        try {
+          restartWith(LOCAL_EDIT_GRANT)
+
+          const text = warn.mock.calls.map((c) => c.join(' ')).join('\n')
+          expect(text).toContain(LOCAL_EDIT_GRANT.path)
+          expect(text).toContain('edit')
+        } finally {
+          warn.mockRestore()
+        }
+      })
+
+      it('does not rewrite the store when nothing was reduced or dropped', () => {
+        mockStoreData.set.mockClear()
+
+        restartWith(LOCAL_GRANT)
+
+        // restartWith itself seeds the store once; a load that persists again
+        // would show up as a second write to the same key.
+        const writes = mockStoreData.set.mock.calls.filter((c) => c[0] === 'allowedDirectories')
+        expect(writes).toHaveLength(1)
+      })
+    })
   })
 
   /**
