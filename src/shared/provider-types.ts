@@ -209,6 +209,19 @@ export const CUSTOM_PROVIDER_TEMPLATES = {
  */
 export type Residency = 'CH' | 'EU' | 'US' | 'on-device' | 'unknown'
 
+/**
+ * Whether content sent to a provider with this residency leaves the machine.
+ *
+ * `on-device` is the only value for which it does not. `CH` is a rented
+ * datacentre in Geneva: the content still goes away, so it is cloud and
+ * needs consent. `undefined` (provider absent from the registry) and
+ * `unknown` (forced by `registerTenant`) are cloud as well — an unknown
+ * origin is no licence to skip the checks. Fail closed.
+ */
+export function residencyIsCloud(residency: Residency | undefined): boolean {
+  return residency !== 'on-device'
+}
+
 /** How the endpoint is operated. */
 export type HostingMode = 'rented' | 'self-hosted' | 'local'
 

@@ -7,7 +7,8 @@ import { describe, it, expect } from 'vitest'
 import {
   BUILT_IN_PROVIDERS,
   createCustomProvider,
-  CUSTOM_PROVIDER_TEMPLATES
+  CUSTOM_PROVIDER_TEMPLATES,
+  residencyIsCloud
 } from '../../src/shared/provider-types'
 import type { BuiltInProvider } from '../../src/shared/provider-types'
 
@@ -106,5 +107,24 @@ describe('CUSTOM_PROVIDER_TEMPLATES', () => {
     const tmpl = CUSTOM_PROVIDER_TEMPLATES['text-generation-webui']
     expect(tmpl.id).toBe('text-generation-webui')
     expect(tmpl.apiBase).toContain('5000')
+  })
+})
+
+describe('residencyIsCloud', () => {
+  it('on-device is the only residency that is not cloud', () => {
+    expect(residencyIsCloud('on-device')).toBe(false)
+  })
+
+  it('a Swiss rented datacenter counts as cloud', () => {
+    expect(residencyIsCloud('CH')).toBe(true)
+  })
+
+  it('an unknown or absent residency counts as cloud', () => {
+    expect(residencyIsCloud('unknown')).toBe(true)
+    expect(residencyIsCloud(undefined)).toBe(true)
+  })
+
+  it('US and EU residencies stay classified as cloud', () => {
+    for (const r of ['US', 'EU'] as const) expect(residencyIsCloud(r)).toBe(true)
   })
 })
