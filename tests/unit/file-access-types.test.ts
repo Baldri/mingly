@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { isPathSafe } from '../../src/shared/file-access-types'
+import { isPathSafe, survivingPermissions, hasPermission } from '../../src/shared/file-access-types'
+import type { AllowedDirectory } from '../../src/shared/file-access-types'
 
 // Security regression: the granted-directory permission model used a bare
 // startsWith(), so a sibling dir sharing the name prefix (/a/photos-evil)
@@ -127,9 +128,6 @@ describe('parseNetworkShareConfig', () => {
   })
 })
 
-import { survivingPermissions, hasPermission } from '../../src/shared/file-access-types'
-import type { AllowedDirectory } from '../../src/shared/file-access-types'
-
 // Security: `edit` lets the agent overwrite an EXISTING file, so a persisted
 // grant may only keep it when the confirmation marker proves the user
 // confirmed it. Local grants used to bypass the marker check entirely.
@@ -172,6 +170,18 @@ describe('survivingPermissions', () => {
   it('an unusable marker is treated as absent', () => {
     for (const bad of [0, -1, NaN, Infinity, '1700000000000' as unknown as number]) {
       expect(survivingPermissions({ ...localDir, permissions: ['edit'], confirmedAt: bad })).toEqual([])
+    }
+  })
+  // The store value arrives through an unchecked cast, and this runs from the
+  // FileAccessManager constructor: a malformed entry must grant nothing, never
+  // throw at startup.
+  it('returns [] when permissions is not a list, with or without a valid marker', () => {
+    for (const bad of [undefined, null, 'read', { 0: 'read' }]) {
+      for (const confirmedAt of [undefined, Date.now()]) {
+        const dir = { ...localDir, permissions: bad as unknown as AllowedDirectory['permissions'], confirmedAt }
+        expect(() => survivingPermissions(dir)).not.toThrow()
+        expect(survivingPermissions(dir)).toEqual([])
+      }
     }
   })
   it('does not mutate the stored permission list', () => {

@@ -741,6 +741,43 @@ describe('FileAccessManager', () => {
         }
       })
 
+      it('keeps a confirmed grant with no permissions instead of parking it as unconfirmed', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+        try {
+          const confirmedEmpty = { ...LOCAL_GRANT, id: 'confirmed-empty', permissions: [], confirmedAt: 1_700_000_004_000 }
+
+          const reloaded = restartWith(confirmedEmpty)
+
+          expect(reloaded.getAllowedDirectories()).toEqual([confirmedEmpty])
+          expect(reloaded.getUnconfirmedDirectories()).toEqual([])
+          expect(warn).not.toHaveBeenCalled()
+        } finally {
+          warn.mockRestore()
+        }
+      })
+
+      it('parks a marker-less local grant whose only permission was edit', () => {
+        const editOnly = { ...LOCAL_GRANT, id: 'edit-only', permissions: ['edit'] as FileAccessPermission[] }
+
+        const reloaded = restartWith(editOnly)
+
+        expect(reloaded.getAllowedDirectories()).toEqual([])
+        expect(reloaded.getUnconfirmedDirectories()).toEqual([editOnly])
+      })
+
+      it('constructs without throwing on a malformed permissions field and still loads the valid entry', () => {
+        const malformed = [undefined, null, 'read', { 0: 'read' }].map((permissions, i) => ({
+          ...LOCAL_GRANT,
+          id: `malformed-${i}`,
+          permissions
+        }))
+
+        let reloaded: FileAccessManager | undefined
+        expect(() => { reloaded = restartWith(...malformed, LOCAL_GRANT) }).not.toThrow()
+
+        expect(reloaded!.getAllowedDirectories().map((d) => d.id)).toEqual([LOCAL_GRANT.id])
+      })
+
       it('does not rewrite the store when nothing was reduced or dropped', () => {
         mockStoreData.set.mockClear()
 

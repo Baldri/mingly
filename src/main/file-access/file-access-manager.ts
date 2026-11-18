@@ -18,6 +18,7 @@ import {
   AI_OUTPUT_FOLDER,
   isPathSafe,
   survivingPermissions,
+  hasConfirmationMarker,
   hasPermission
 } from '../../shared/file-access-types'
 import { isMissingPathError, isRealPathWithin } from './real-path-guard'
@@ -91,7 +92,10 @@ export class FileAccessManager {
 
     saved.forEach(dir => {
       const surviving = survivingPermissions(dir)
-      if (surviving.length === 0) {
+      // Park only what is genuinely unconfirmed. A confirmed grant with an
+      // empty permission list is kept as it is: it grants nothing, and
+      // "needs re-granting" would be untrue for it.
+      if (surviving.length === 0 && !hasConfirmationMarker(dir)) {
         dropped.push(dir)
         console.warn(
           `📁 ⚠️ Dropped unconfirmed ${dir.location} grant (needs re-granting): ${dir.path}`

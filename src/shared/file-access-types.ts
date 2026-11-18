@@ -71,11 +71,22 @@ export interface AllowedDirectory {
  * had on an unrecognised level.
  */
 export function survivingPermissions(dir: AllowedDirectory): FileAccessPermission[] {
-  const confirmed =
-    typeof dir.confirmedAt === 'number' && Number.isFinite(dir.confirmedAt) && dir.confirmedAt > 0
-  if (confirmed) return [...dir.permissions]
+  // The store value arrives through an unchecked cast and this runs from the
+  // FileAccessManager constructor: a permission list that is not a list grants
+  // nothing, it must not throw at startup.
+  if (!Array.isArray(dir.permissions)) return []
+  if (hasConfirmationMarker(dir)) return [...dir.permissions]
   if (dir.location !== 'local') return []
   return dir.permissions.filter(permission => permission !== 'edit')
+}
+
+/**
+ * Does the entry carry a usable confirmation marker? Fails closed: anything
+ * but a positive finite number counts as absent. Kept as the single place
+ * this is decided.
+ */
+export function hasConfirmationMarker(dir: AllowedDirectory): boolean {
+  return typeof dir.confirmedAt === 'number' && Number.isFinite(dir.confirmedAt) && dir.confirmedAt > 0
 }
 
 /**
@@ -84,6 +95,7 @@ export function survivingPermissions(dir: AllowedDirectory): FileAccessPermissio
  * explicit `edit` entry grants it.
  */
 export function hasPermission(dir: AllowedDirectory, needed: 'read' | 'create' | 'edit'): boolean {
+  if (!Array.isArray(dir.permissions)) return false
   if (needed === 'edit') return dir.permissions.includes('edit')
   return dir.permissions.includes(needed) || dir.permissions.includes('read-create')
 }
