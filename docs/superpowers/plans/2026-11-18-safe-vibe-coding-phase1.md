@@ -1169,7 +1169,7 @@ Entscheid 1 zieht dieses Stück Oberfläche in Phase 1. Minimal gehalten: kein W
 
 **Files:**
 - Create: `src/renderer/components/CodingDiffDialog.tsx`, `src/renderer/components/CodingModePicker.tsx`, `src/renderer/stores/coding-store.ts`
-- Modify: `src/renderer/components/MessageInput.tsx` (Umschalter), `src/renderer/components/ChatLayout.tsx` (Dialoge einhängen), `src/renderer/components/SensitiveDataConsentDialog.tsx` (dritte Option)
+- Modify: `src/renderer/components/MessageInput.tsx` (Umschalter), `src/renderer/components/ChatLayout.tsx` (Dialoge einhängen), `src/renderer/components/SensitiveDataConsentDialog.tsx` (dritte Option), `src/renderer/components/FileAccessTab.tsx:57-61` (`getPermissionLabel` kennt `edit` nicht)
 - Test: `tests/unit/coding-store.test.ts`
 
 **Interfaces:**
@@ -1183,6 +1183,7 @@ Zu bauen:
 - **Diff-Dialog**: Paket eines Schritts, Datei und Zeilenzahlen erkennbar, Annehmen / Ablehnen-mit-Grund. Bei Ablehnung wird der Grund zum Tool-Ergebnis für den Agenten.
 - **Dritte Option im Zustimmungs-Dialog**: "diese Datei aus dem Kontext werfen und weiterlaufen", und nur die Optionen anzeigen, die `CodingConsentRequest.offers` nennt — insbesondere `anonymize` nicht, wenn es nicht trägt.
 - **Rückgängig** und **Audit-Export** als Schaltflächen am abgeschlossenen Run.
+- **`getPermissionLabel` muss `edit` nennen** (`FileAccessTab.tsx:57-61`). Die Kaskade prüft heute nur `read`, `create` und `read-create`; ein Grant mit `['read','create','edit']` fällt auf «Read + Create» und die gefährlichste Berechtigung ist unsichtbar. Aufgefallen beim Review von Task 3, dort bewusst nicht behoben (Datei lag ausserhalb) — hier ist es Pflicht, nicht Politur: ein Produkt, dessen Argument «ich kann nachweisen, was der Agent darf» ist, darf eine erteilte Schreibberechtigung nicht verschweigen. Test: ein Grant mit `edit` erzeugt ein Label, das `edit` enthält.
 
 - [ ] **Step 1: Store-Tests schreiben**
 
@@ -1230,12 +1231,20 @@ npx tsc --noEmit > /tmp/tc1.log 2>&1; echo "run1: $?"; npx tsc -p tsconfig.main.
 ```
 `npm run typecheck` verkettet mit `&&`; ein Fehler im zweiten Lauf verschwindet hinter dem ersten. Und: ein grüner Lauf kann **null Dateien** geprüft haben. Einmal mit einem absichtlichen Typfehler in `src/main/coding/path-policy.ts` provozieren und belegen, dass der zweite Lauf rot wird — dann zurücknehmen.
 
-- [ ] **A2: Volle Suite grün, ohne ausgelassene oder gelockerte Tests**
+- [ ] **A2: Volle Suite grün, kein von diesem Plan hinzugefügter Skip**
 
 ```bash
 npx vitest run > /tmp/suite.log 2>&1; echo $?
 ```
-Exit-Code **und** Log. Nie hinter einer Pipe: `$?` gehört dem letzten Glied, und eine Zusammenfassung kann eine Datei, die nicht importiert, als `PASS` zeigen. `grep -c "\.skip\|todo\|xit(" tests/unit/coding-*.test.ts tests/unit/agent-loop-guard.test.ts` muss `0` sein.
+Exit-Code **und** Log. Nie hinter einer Pipe: `$?` gehört dem letzten Glied, und eine Zusammenfassung kann eine Datei, die nicht importiert, als `PASS` zeigen.
+
+**Korrektur am 2026-11-19, gemessen statt angenommen:** die Suite hat **vor** diesem Plan schon 29 übersprungene Tests, alle umgebungsbedingt und keiner weggedrückt — `it.skipIf(process.platform === 'win32')` in `tests/unit/symlink-escape-real-fs.test.ts:288,307`, die 3-Layer-Phase in `tests/red-team/red-team.test.ts:487` (`run3Layer`), und `describe.skipIf(SKIP)` in `tests/integration/privacy-anonymizer-round-trip.test.ts:34` sowie `privacy-ner-integration.test.ts:135` (brauchen ein geladenes NER-Modell). Das ist **nicht prüfbar**, nicht «rot» — die ursprüngliche Formulierung «ohne ausgelassene Tests» war damit nie erfüllbar und hätte am Ende zur Lockerung des Kriteriums gedrängt, also genau zu dem, was es verhindern soll.
+
+Gemessen wird deshalb die **Differenz**, nicht der Absolutwert:
+```bash
+git diff origin/main..HEAD -- tests/ | grep -nE "^\+.*(\.skip|\.todo|xit\(|xdescribe)"
+```
+Muss leer sein. Zusätzlich darf die Zahl der übersprungenen Tests gegenüber `origin/main` nicht steigen.
 
 - [ ] **A3–A4: Der rote Test und seine Positivkontrolle** — `tests/unit/agent-loop-guard.test.ts`, Tests 1 und 2. Die Ausgabe des roten Laufs aus Task 4 Step 6 in die PR-Beschreibung.
 - [ ] **A5: Unbekannter Modus → `off`** — `tests/unit/coding-types.test.ts`
