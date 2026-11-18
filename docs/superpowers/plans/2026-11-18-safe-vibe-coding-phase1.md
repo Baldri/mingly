@@ -169,6 +169,11 @@ Reihenfolge ist bindend in einem Punkt: **Task 4 (Guard im Loop) ist fertig, bev
   export type CodingMode = 'off' | 'read-only' | 'propose' | 'propose-run'
   export const CODING_MODE_ORDER: Record<CodingMode, number>   // off 0, read-only 1, propose 2, propose-run 3
   export function parseCodingMode(raw: unknown): CodingMode     // alles Unbekannte -> 'off'
+  /** Was ein Coding-Run ueber sein Projekt weiss. Liegt in src/shared/, weil
+   *  agent-executor, tool-registry UND der Renderer den Typ brauchen — in
+   *  agent-executor waere er ein Zyklus, denn agent-executor importiert aus
+   *  tool-registry. */
+  export interface CodingRunOptions { directoryId: string; projectPath: string; mode: CodingMode }
   ```
   ```ts
   // src/main/policy/policy-types.ts — eine Funktion, zwei Skalen
@@ -345,7 +350,7 @@ Der Kern des Features. Nach diesem Task ist der Nachweis erbracht, **bevor** es 
 - Test: `tests/unit/coding-guard.test.ts` (neu), `tests/unit/agent-loop-guard.test.ts` (neu)
 
 **Interfaces:**
-- Consumes: `guardInput`, `guardDispatch`, `postflightGuard`, `GuardDeps`, `SensitiveScan` aus `src/main/security/request-guard.ts`; `AgentToolResult` aus `src/shared/types.ts`.
+- Consumes: `guardInput`, `guardDispatch`, `postflightGuard`, `GuardDeps`, `SensitiveScan` aus `src/main/security/request-guard.ts`; `AgentToolResult` aus `src/shared/types.ts`; `CodingRunOptions` aus `src/shared/coding-types.ts` (Task 2).
 - Produces:
   ```ts
   // src/main/agent/coding-guard.ts
@@ -362,8 +367,10 @@ Der Kern des Features. Nach diesem Task ist der Nachweis erbracht, **bevor** es 
   ): Promise<LoopGuardOutcome>
   ```
   ```ts
-  // src/main/agent/agent-executor.ts — additive 6. Parameter
-  export interface CodingRunOptions { directoryId: string; projectPath: string; mode: CodingMode }
+  // src/main/agent/agent-executor.ts — additive 6. Parameter.
+  // CodingRunOptions kommt aus src/shared/coding-types.ts (Task 2), NICHT von hier:
+  // tool-registry braucht den Typ auch, und agent-executor importiert aus
+  // tool-registry — die Gegenrichtung waere ein Zyklus.
   async execute(task: string, provider: string, model: string,
                 conversationHistory?: Message[], systemPrompt?: string,
                 coding?: CodingRunOptions): Promise<AgentRun>
@@ -858,7 +865,11 @@ git commit -m "feat(coding): add list_files and read_file inside the project gra
     | { kind: 'proposed'; editId: string }
     | { kind: 'rejected'; reason: string }
   export interface EditProposalStore {
-    propose(runId: string, stepNumber: number, edit: Omit<ProposedEdit,'diff'|'addedLines'|'removedLines'>): ProposeOutcome
+    /** `fileContent` wird vom Handler gelesen und hereingegeben, damit der Store
+     *  synchron und ohne Dateisystem testbar bleibt. */
+    propose(runId: string, stepNumber: number,
+            edit: Omit<ProposedEdit,'diff'|'addedLines'|'removedLines'>,
+            fileContent: string): ProposeOutcome
     pending(runId: string): ProposedEdit[]
     /** Abnahme oder Ablehnung des ganzen Schritt-Pakets. */
     resolve(runId: string, accepted: boolean, reason?: string): void
@@ -888,7 +899,8 @@ it('proposes an edit without touching the file', async () => {
   expect(store.pending(runId)).toHaveLength(1)
 })
 it('rejects an old text that occurs twice and says how often', () => {
-  const out = store.propose(runId, 1, { path:'a.ts', oldText:'return x', newText:'return y' })
+  const out = store.propose(runId, 1, { path:'a.ts', oldText:'return x', newText:'return y' },
+                            'function a(){ return x }\nfunction b(){ return x }')
   expect(out).toEqual({ kind:'rejected', reason: expect.stringContaining('2') })
 })
 it('rejects an old text that does not occur', () => { /* reason enthaelt '0' */ })
@@ -948,9 +960,10 @@ git commit -m "feat(coding): edit_file proposes a diff instead of writing"
 
 Ablauf, abschliessend:
 1. **Erneute Prüfung** von Grant und Modus, unmittelbar vor der ersten Schreibung. Zwischen Abnahme und Schreibung liegt beliebig viel Zeit; wurde der Grant entzogen oder der Modus gesenkt, wird `refused` zurückgegeben und nichts geschrieben (Review Focus 5).
-2. **Snapshot** aller betroffenen Dateien nach `ws.snapshotDir`, **bevor** die erste überschrieben wird. Scheitert der Snapshot, wird nichts geschrieben.
-3. Je Datei `writeFileAtomic`: in eine temporäre Datei **im selben Verzeichnis** schreiben, dann `rename`. `rename` innerhalb eines Dateisystems ist atomar; ein Abbruch lässt die Datei vollständig alt oder vollständig neu (Review Focus 4). Eine temporäre Datei in `/tmp` wäre es nicht, weil `rename` über Dateisystemgrenzen kopiert.
-4. `undoRun` stellt aus dem Snapshot wieder her und gibt die wiederhergestellten Pfade zurück. Kein Git nötig — funktioniert auch ohne Repo.
+2. **Erneute Prüfung des `oldText`** gegen den **aktuellen** Dateiinhalt. `propose` hat gegen den Inhalt zum Vorschlagszeitpunkt geprüft; hat der Nutzer die Datei zwischenzeitlich selbst geändert, trifft die Ersetzung etwas anderes als im abgenommenen Diff. Kommt `oldText` nicht mehr genau einmal vor → `refused`, nichts geschrieben.
+3. **Snapshot** aller betroffenen Dateien nach `ws.snapshotDir`, **bevor** die erste überschrieben wird. Scheitert der Snapshot, wird nichts geschrieben.
+4. Je Datei `writeFileAtomic`: in eine temporäre Datei **im selben Verzeichnis** schreiben, dann `rename`. `rename` innerhalb eines Dateisystems ist atomar; ein Abbruch lässt die Datei vollständig alt oder vollständig neu (Review Focus 4). Eine temporäre Datei in `/tmp` wäre es nicht, weil `rename` über Dateisystemgrenzen kopiert.
+5. `undoRun` stellt aus dem Snapshot wieder her und gibt die wiederhergestellten Pfade zurück. Kein Git nötig — funktioniert auch ohne Repo.
 
 - [ ] **Step 1: Die failing tests schreiben**
 
@@ -965,6 +978,10 @@ it('refuses when the grant lost edit between acceptance and write', async () => 
   expect(await readFile(abs,'utf8')).toBe(original)
 })
 it('refuses when the mode dropped to off between acceptance and write', async () => { /* Review Focus 5 */ })
+it('refuses when the user edited the file between proposal and acceptance', async () => {
+  // oldText kommt nicht mehr genau einmal vor -> nichts schreiben
+  expect(await readFile(abs,'utf8')).toBe(userEditedContent)
+})
 it('leaves the file fully old or fully new when the write is interrupted', async () => {
   // Review Focus 4: rename schlaegt fehl -> Original unveraendert, kein Teilinhalt
   expect(await readFile(abs,'utf8')).toBe(original)
@@ -1006,16 +1023,19 @@ git commit -m "feat(coding): snapshot, write atomically, and undo a whole run"
 - Test: `tests/unit/coding-command-allowlist.test.ts`
 
 **Interfaces:**
-- Consumes: Task 7, `ProjectWorkspace` (Task 6).
+- Consumes: Task 7; `projectPath` aus `CodingRunOptions` (Task 2) — **nicht** `ProjectWorkspace`, das Arbeitsverzeichnis des Befehls ist die Projektwurzel, nicht `.mingly/`.
 - Produces:
   ```ts
   export type CommandPlan =
     | { kind: 'run'; file: string; args: string[]; cwd: string }
     | { kind: 'refused'; reason: string }
+  /** `npmScripts` kommt aus der package.json des Projekts und wird hereingegeben,
+   *  damit die Funktion rein und synchron bleibt. Leer = keine Skripte erlaubt. */
   export function planCommand(
     raw: string,
     projectPath: string,
-    interpreterPaths: Readonly<Record<string, string>>
+    interpreterPaths: Readonly<Record<string, string>>,
+    npmScripts?: readonly string[]
   ): CommandPlan
   export function registerRunCommand(registry: ToolRegistry): void
   ```
