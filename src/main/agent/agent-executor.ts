@@ -127,6 +127,9 @@ export class AgentExecutor {
    * @param systemPrompt - System prompt (optional)
    * @param coding - Coding-run context (optional). Left out by the comparison
    *                 and subagent callers, which therefore get no coding run.
+   *                 Nothing in this task consumes it: the loop guard treats
+   *                 every run alike. It is the switch later tasks read for the
+   *                 coding tool surface and the consent channel.
    */
   async execute(
     task: string,
@@ -296,7 +299,7 @@ export class AgentExecutor {
           rawToolResults.map((r) => ({
             toolName: llmResponse.toolCalls.find((tc) => tc.id === r.toolCallId)?.name ?? 'unknown'
           })),
-          { provider, model, conversationId: run.conversationId, coding },
+          { provider, model, conversationId: run.conversationId },
           getGuardDeps(),
         )
         if (loopGuard.kind === 'blocked') {

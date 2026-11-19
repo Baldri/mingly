@@ -17,7 +17,6 @@ import {
   type GuardDeps,
   type SensitiveScan,
 } from '../security/request-guard'
-import type { CodingRunOptions } from '../../shared/coding-types'
 import type { AgentToolResult } from '../../shared/types'
 
 /** Where a tool result came from — for the reason text and for Task 5's consent dialog. */
@@ -44,17 +43,18 @@ export type LoopGuardOutcome =
 /**
  * What the guard needs to know about the step it is guarding.
  *
- * Every check here runs for every agent run: comparison and subagent runs push
- * tool results to a provider just as unguarded as a coding run does. `coding`
- * therefore changes **no** decision in this file — it is carried so a run can
- * be identified downstream (Task 5's consent channel, Task 9's tool surface),
- * and the tests pin that a run with and without it behaves identically.
+ * Deliberately no coding context: every check here runs for every agent run —
+ * comparison and subagent runs push tool results to a provider just as
+ * unguarded as a coding run does, and the provider-switch refusal below holds
+ * for all of them. A `coding` field would teach the next reader that this file
+ * treats coding runs differently, which it does not. File attribution travels
+ * through `origins`; a later task that genuinely needs project context here
+ * adds it in the commit that reads it.
  */
 export interface LoopGuardContext {
   provider: string
   model: string
   conversationId?: string
-  coding?: CodingRunOptions
 }
 
 function describeOrigin(origin: ToolResultOrigin | undefined): string {
