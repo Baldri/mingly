@@ -250,9 +250,14 @@ export class AgentExecutor {
             `Coding mode mismatch: run claims "${String(coding.mode)}" but the stored mode is "${storedMode}"`
           )
         }
-        const workspace = await ensureProjectWorkspace(coding.projectPath, runId)
-        contextDir = workspace.contextDir
-        toolCtx = { coding }
+        // Mode `off` is a plain run: no workspace (creating one could even
+        // throw in a project where a plain run works), no tool context. The
+        // mismatch check above still applies to it.
+        if (storedMode !== 'off') {
+          const workspace = await ensureProjectWorkspace(coding.projectPath, runId)
+          contextDir = workspace.contextDir
+          toolCtx = { coding }
+        }
       }
 
       // Get available tools

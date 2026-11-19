@@ -129,6 +129,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  fs.chmodSync(projectPath, 0o700)
   fs.rmSync(projectPath, { recursive: true, force: true })
 })
 
@@ -253,6 +254,67 @@ describe('coding run mode and tool context', () => {
       projectPath,
       mode: 'auto' as unknown as CodingMode,
     })
+
+    expect(run.status).toBe('failed')
+    expect(llmCallCount).toBe(0)
+  })
+})
+
+describe('coding run with mode off behaves like a plain run', () => {
+  const offCoding = () => ({ directoryId: 'dir-1', projectPath, mode: 'off' as const })
+
+  it('leaves no .mingly directory behind and offers no tool context', async () => {
+    storedModes['dir-1'] = 'off'
+    llmResponses = [toolCallStep('tc-1')]
+
+    const run = await executor.execute('task', 'anthropic', 'm', [], undefined, offCoding())
+
+    expect(run.status).toBe('completed')
+    expect(fs.existsSync(path.join(projectPath, '.mingly'))).toBe(false)
+    expect(ensureSpy).not.toHaveBeenCalled()
+    expect(toolListCtx[0]).toBeUndefined()
+    expect(registryCalls[0].ctx).toBeUndefined()
+  })
+
+  it('externalizes to the temp directory, not into the project', async () => {
+    storedModes['dir-1'] = 'off'
+    llmResponses = [toolCallStep('tc-1')]
+
+    await executor.execute('task', 'anthropic', 'm', [], undefined, offCoding())
+
+    const paths = externalizedPaths(seenToolMessages[1])
+    expect(paths).toHaveLength(1)
+    expect(paths[0].startsWith(path.join(os.tmpdir(), 'mingly-agent') + path.sep)).toBe(true)
+  })
+
+  it('succeeds in a project where the workspace could not be created', async () => {
+    storedModes['dir-1'] = 'off'
+    fs.chmodSync(projectPath, 0o500)
+    llmResponses = [toolCallStep('tc-1')]
+
+    const run = await executor.execute('task', 'anthropic', 'm', [], undefined, offCoding())
+
+    expect(run.status).toBe('completed')
+  })
+
+  it('control: the same non-writable project DOES fail a read-only run', async () => {
+    storedModes['dir-1'] = 'read-only'
+    fs.chmodSync(projectPath, 0o500)
+
+    const run = await executor.execute('task', 'anthropic', 'm', [], undefined, {
+      directoryId: 'dir-1',
+      projectPath,
+      mode: 'read-only',
+    })
+
+    expect(run.status).toBe('failed')
+    expect(llmCallCount).toBe(0)
+  })
+
+  it('a mode mismatch still ends the run when the claim is off', async () => {
+    storedModes['dir-1'] = 'propose'
+
+    const run = await executor.execute('task', 'anthropic', 'm', [], undefined, offCoding())
 
     expect(run.status).toBe('failed')
     expect(llmCallCount).toBe(0)
