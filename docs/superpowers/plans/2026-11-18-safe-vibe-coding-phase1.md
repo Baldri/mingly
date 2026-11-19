@@ -1065,6 +1065,17 @@ git commit -m "feat(coding): snapshot, write atomically, and undo a whole run"
 
 ### Task 12: `run_command` und die Wahrheit im README
 
+**Pflicht, nicht optional (Entscheid R36):** das README benennt ausdruecklich, dass der
+Coding-Modus **Minglys eigene** Werkzeuge abstuft und **nicht** die MCP-Server des
+Nutzers — die bleiben in jedem Modus verfuegbar, auch in `read-only`. Dazu beide Haelften
+der Wahrheit: die **Ergebnisse** jedes MCP-Werkzeugs laufen durch denselben Guard wie
+alles andere (Klassifikation, Residenz, PII, Zustimmung), die **Faehigkeit** eines
+Servers mit Schreibzugriff ist davon aber nicht erfasst. Entscheid von Holger am
+2026-11-19 (eigene MCP-Server sollen erreichbar bleiben); die Begruendung, warum eine
+Abstufung keine belastbare Grundlage hat, steht im Design-Dokument. Ein unausgesprochener
+Spalt in einem Modus, der `read-only` heisst, ist ein falsches Versprechen — deshalb
+Pflicht und nicht Fussnote.
+
 **Files:**
 - Create: `src/main/coding/command-allowlist.ts`, `src/main/coding/run-command.ts`
 - Modify: `src/main/agent/tool-registry.ts`, `README.md`
@@ -1212,6 +1223,22 @@ git commit -m "feat(coding): write an exportable audit entry per accepted change
 ---
 
 ### Task 14: Der einzelne Coding-Run in der Oberfläche
+
+**Pflicht, nicht optional (Entscheid R35):** `coding.projectPath` wird im **Main-Prozess**
+aus dem Grant zu `coding.directoryId` abgeleitet und **niemals** aus dem Renderer
+uebernommen. `CodingRunOptions.projectPath` ist heute ein blosser `string` vom Aufrufer,
+und der Store prueft nur den Modus, nicht den Pfad. Ein renderer-gelieferter Pfad wuerde
+den Arbeitsbereich und spaeter alle Lese- und Schreibpfade auf ein beliebiges Verzeichnis
+zeigen lassen — am Grant-System vorbei. Gleiche Klasse wie die Memory-Notiz
+`renderer-kann-verzeichnis-allowlist-selbst-erweitern`. Ein Test muss belegen, dass ein
+Run mit einem `projectPath`, der nicht zum Grant des `directoryId` passt, **abgelehnt**
+wird — nicht korrigiert, abgelehnt. Befund I-3 des Task-7-Reviews.
+
+**Pflicht, nicht optional (Entscheid R36):** die Modus-Beschriftung in der Oberflaeche
+sagt, dass die Stufe **Minglys eigene** Werkzeuge betrifft und nicht die MCP-Server des
+Nutzers. `read-only` darf nicht als «ohne jedes Risiko» auftreten, solange ein
+MCP-Server mit Schreibzugriff in jedem Modus erreichbar ist. Kurz, an der Stufe selbst,
+nicht in einem Hilfetext, den niemand oeffnet.
 
 Entscheid 1 zieht dieses Stück Oberfläche in Phase 1. Minimal gehalten: kein Workspace, keine Dateibaum-Ansicht, kein Editor — das ist Phase 2.
 

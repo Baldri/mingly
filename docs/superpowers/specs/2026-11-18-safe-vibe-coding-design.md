@@ -281,9 +281,32 @@ getrennt.
 | Stufe | Lesen | Schreiben | Befehle | Gedacht fuer |
 |---|---|---|---|---|
 | `off` | — | — | — | Standard. Mingly ist, was es heute ist. |
-| `read-only` | ja, gefiltert | — | — | "Erklaer mir diese Codebase", ohne jedes Risiko |
+| `read-only` | ja, gefiltert | — | — | "Erklaer mir diese Codebase", ohne dass Mingly selbst schreibt |
 | `propose` | ja | nur als Diff zur Abnahme | — | Der Normalfall fuer B |
 | `propose-run` | ja | nur als Diff zur Abnahme | Allowlist, Ausgabe gefiltert | Tests laufen lassen, Build pruefen |
+
+**Worueber diese Tabelle eine Aussage macht — und worueber nicht.** Die Spalten
+beschreiben **Minglys eigene** Coding-Werkzeuge. Sie sind keine Aussage ueber die
+MCP-Server, die der Nutzer eingerichtet hat: die bleiben in **jedem** Modus verfuegbar,
+auch in `read-only`.
+
+Das ist ein Entscheid, nicht ein Versehen (Holger, 2026-11-19): eigene MCP-Server sind
+eine bewusst eingerichtete Faehigkeit, und sie im Coding-Modus abzuschalten wuerde genau
+dort stoeren, wo man sie am haeufigsten braucht.
+
+Was dadurch **nicht** faellt: jedes MCP-Werkzeug-Ergebnis laeuft durch denselben
+Loop-Guard wie jedes andere selbst eingesammelte Ergebnis — Klassifikation,
+Residenz-Politik, PII-Erkennung, Zustimmung. Der Inhaltsabfluss ist also geregelt.
+Was **offen** bleibt, ist die **Faehigkeit**: ein MCP-Server mit Schreibzugriff kann
+schreiben, auch in `read-only`, und ohne den Vorschlag-und-Abnahme-Weg. Das laesst sich
+nicht sinnvoll abstufen, weil MCP-Server beliebige externe Prozesse mit opaker Semantik
+sind — ein Werkzeug namens `search` kann schreiben, eine Einteilung in «lesend» und
+«schreibend» haette keine belastbare Grundlage.
+
+**Diese Grenze gehoert in das README und in die Modus-Beschriftung der Oberflaeche**, nicht
+nur in dieses Dokument. Ein unausgesprochener Spalt in einem Modus, der `read-only`
+heisst, ist ein falsches Versprechen. **Phase 2:** Vertrauensstufe oder Freigabe **pro
+MCP-Server**, damit die Abstufung eine Grundlage bekommt.
 
 Entschieden:
 
@@ -302,6 +325,11 @@ hergibt** — ein Werkzeug, das die Stufe nicht erlaubt, wird gar nicht erst in
 `getAvailableTools()` angeboten. Begruendung: ein Werkzeug anzubieten und dann zu
 verweigern lehrt das Modell, es trotzdem zu versuchen, und fuellt den Kontext mit
 Fehlern.
+
+Aus derselben Regel folgt: ist das Gate eines Built-ins geschlossen, wird auch ein
+**gleichnamiges** MCP-Werkzeug nicht angeboten. Sonst waere der Name doch im Angebot und
+die Ausfuehrung muesste ihn verweigern — und ein MCP-Werkzeug koennte ein gegatetes
+Built-in beschatten.
 
 - `list_files(pattern?)` — Dateibaum des Projekts. Respektiert `.gitignore`.
 - `read_file(path, offset?, limit?)` — liest **nur** innerhalb des Projekt-Grants,
