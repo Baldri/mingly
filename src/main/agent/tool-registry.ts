@@ -39,6 +39,15 @@ export interface ToolContext {
    * the same directories). Absent for non-coding runs.
    */
   workspace?: ProjectWorkspace
+  /**
+   * requested path string (as the model wrote it) -> project-relative path a
+   * coding tool ACTUALLY read (the resolved real path). Keyed by the spelling
+   * because a handler does not know its call id; two calls with the same
+   * spelling read the same file. The handler writes it, the executor takes it when it
+   * builds the guard's origin, so a consent dialog names the file that was read
+   * and not the spelling the model used. Absent entry = no path was resolved.
+   */
+  resolvedPaths?: Map<string, string>
 }
 
 /**

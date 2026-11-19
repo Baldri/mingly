@@ -135,43 +135,83 @@ async function resolveScope(
 // Glob and .gitignore matching (deliberately small)
 // ---------------------------------------------------------------------------
 
-/** `**` crosses directories, `*` and `?` do not. Everything else is literal. */
-function globToRegexSource(glob: string): string {
-  let out = ''
-  for (let i = 0; i < glob.length; i++) {
-    const ch = glob[i]
-    if (ch === '*') {
-      if (glob[i + 1] === '*') {
-        i++
-        if (glob[i + 1] === '/') {
-          i++
-          out += '(?:.*/)?'
-        } else {
-          out += '.*'
-        }
-      } else {
-        out += '[^/]*'
-      }
-    } else if (ch === '?') {
-      out += '[^/]'
+/**
+ * Wildcard matching WITHOUT a regex engine. A glob compiled to a regex with
+ * chains of `[^/]*` and `.*` backtracks catastrophically, and both the pattern
+ * (written by the model) and the .gitignore (written by the project being read)
+ * are untrusted, in the Electron main process. This matcher is the two-pointer
+ * star match: no exponential case, O(pattern x text) at worst, and both inputs
+ * are length-capped on top of that.
+ *
+ * Syntax: `?` one character, `*` any run of characters inside ONE path
+ * segment, a whole segment `**` any number of segments (including none).
+ * `**` inside a longer segment counts as `*`, as in git.
+ */
+function matchSegment(pattern: string, text: string): boolean {
+  let p = 0
+  let t = 0
+  let star = -1
+  let mark = 0
+  while (t < text.length) {
+    if (p < pattern.length && pattern[p] === '*') {
+      star = p++
+      mark = t
+    } else if (p < pattern.length && (pattern[p] === '?' || pattern[p] === text[t])) {
+      p++
+      t++
+    } else if (star >= 0) {
+      p = star + 1
+      t = ++mark
     } else {
-      out += ch.replace(/[\\^$.*+?()[\]{}|/-]/g, '\\$&')
+      return false
     }
   }
-  return out
+  while (p < pattern.length && pattern[p] === '*') p++
+  return p === pattern.length
 }
+
+/** `patternSegments` is the pattern split at `/`; `textSegments` the path split at `/`. */
+function matchSegments(patternSegments: readonly string[], textSegments: readonly string[]): boolean {
+  let p = 0
+  let t = 0
+  let star = -1
+  let mark = 0
+  while (t < textSegments.length) {
+    if (p < patternSegments.length && patternSegments[p] === '**') {
+      star = p++
+      mark = t
+    } else if (p < patternSegments.length && matchSegment(patternSegments[p], textSegments[t])) {
+      p++
+      t++
+    } else if (star >= 0) {
+      p = star + 1
+      t = ++mark
+    } else {
+      return false
+    }
+  }
+  while (p < patternSegments.length && patternSegments[p] === '**') p++
+  return p === patternSegments.length
+}
+
+/** Longest .gitignore line and largest rule count honoured; the rest is skipped. */
+const GITIGNORE_MAX_LINE_CHARS = 200
+const GITIGNORE_MAX_RULES = 1000
 
 interface IgnoreRule {
   negated: boolean
   dirOnly: boolean
   anchored: boolean
-  regex: RegExp
+  segments: string[]
 }
 
 function parseGitignore(content: string): IgnoreRule[] {
   const rules: IgnoreRule[] = []
   for (const raw of content.split('\n')) {
+    if (rules.length >= GITIGNORE_MAX_RULES) break
     let line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
+    // A skipped over-long rule only means a file is listed that git would hide.
+    if (line.length > GITIGNORE_MAX_LINE_CHARS) continue
     line = line.replace(/(?<!\\) +$/, '')
     if (line === '' || line.startsWith('#')) continue
     let negated = false
@@ -187,23 +227,21 @@ function parseGitignore(content: string): IgnoreRule[] {
     if (line === '') continue
     const anchored = line.includes('/')
     if (line.startsWith('/')) line = line.slice(1)
-    rules.push({
-      negated,
-      dirOnly,
-      anchored,
-      regex: new RegExp(`^${globToRegexSource(line)}$`)
-    })
+    rules.push({ negated, dirOnly, anchored, segments: line.split('/') })
   }
   return rules
 }
 
 /** Last matching rule wins, as in git. */
 function isIgnored(rules: readonly IgnoreRule[], rel: string, isDir: boolean): boolean {
-  const base = rel.slice(rel.lastIndexOf('/') + 1)
+  const relSegments = rel.split('/')
+  const baseSegments = [relSegments[relSegments.length - 1]]
   let ignored = false
   for (const rule of rules) {
     if (rule.dirOnly && !isDir) continue
-    if (rule.regex.test(rule.anchored ? rel : base)) ignored = !rule.negated
+    if (matchSegments(rule.segments, rule.anchored ? relSegments : baseSegments)) {
+      ignored = !rule.negated
+    }
   }
   return ignored
 }
@@ -233,7 +271,7 @@ async function listFiles(
     const scope = await resolveScope(ctx, deps)
     if (!scope) return REFUSED
 
-    let patternRegex: RegExp | null = null
+    let patternSegments: string[] | null = null
     let patternHasSlash = false
     if (args.pattern !== undefined) {
       if (typeof args.pattern !== 'string' || args.pattern.length > MAX_PATTERN_LENGTH) {
@@ -241,7 +279,7 @@ async function listFiles(
       }
       if (args.pattern !== '') {
         patternHasSlash = args.pattern.includes('/')
-        patternRegex = new RegExp(`^${globToRegexSource(args.pattern)}$`)
+        patternSegments = args.pattern.split('/')
       }
     }
 
@@ -286,9 +324,9 @@ async function listFiles(
           await walk(rel, depth + 1)
         } else if (entry.isFile()) {
           if (isIgnored(rules, rel, false)) continue
-          if (patternRegex) {
-            const subject = patternHasSlash ? rel : entry.name
-            if (!patternRegex.test(subject)) continue
+          if (patternSegments) {
+            const subject = patternHasSlash ? rel.split('/') : [entry.name]
+            if (!matchSegments(patternSegments, subject)) continue
           }
           if (found.length >= LIST_FILES_MAX_ENTRIES) {
             truncated = true
@@ -414,6 +452,11 @@ async function readFile(
     if (result.verdict === 'large') return TOO_LARGE
     if (result.verdict !== 'ok') return UNREADABLE
 
+    // The path that was actually read, for the consent dialog. Recorded only
+    // now: a refused or failed read leaves no entry, so the dialog never shows
+    // text the model wrote.
+    ctx?.resolvedPaths?.set(input, realRelPosix)
+
     const lines = result.text.split('\n')
     const offset = positiveInt(args.offset, 1)
     const limit = Math.min(positiveInt(args.limit, READ_DEFAULT_LIMIT), READ_DEFAULT_LIMIT)
@@ -498,14 +541,15 @@ export function registerReadTools(registry: ToolRegistry, deps: ReadToolDeps = d
 }
 
 /**
- * Origin of a tool result for the loop guard. Only `read_file` knows a file.
- * The path is model-supplied text that ends up in a dialog and in a withheld
- * notice, so control characters are dropped and the length is capped.
+ * Origin of a tool result for the loop guard. `resolvedPath` is the path the
+ * handler actually read (project-relative, symlinks resolved); the model's own
+ * spelling is never used, because the dialog that shows it is the one place a
+ * human decides. No resolved path means no `filePath`. Stripping of format and
+ * control characters is defence in depth for a real file name that carries them.
  */
-export function originForToolCall(call: AgentToolCall): ToolResultOrigin {
-  if (call.name === 'read_file' && typeof call.arguments?.path === 'string') {
-    // eslint-disable-next-line no-control-regex
-    const clean = call.arguments.path.replace(/[\u0000-\u001f\u007f]/g, '')
+export function originForToolCall(call: AgentToolCall, resolvedPath?: string): ToolResultOrigin {
+  if (call.name === 'read_file' && typeof resolvedPath === 'string') {
+    const clean = resolvedPath.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '')
     const filePath = clean.slice(0, ORIGIN_PATH_MAX_CHARS)
     if (filePath !== '') return { toolName: call.name, filePath }
   }

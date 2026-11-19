@@ -179,4 +179,27 @@ describe('read_file through the real executor', () => {
     )
     expect(fs.existsSync(seen!.workspace!.contextDir)).toBe(true)
   })
+
+  it('reports the RESOLVED path, not the requested spelling (symlink and ./ segments)', async () => {
+    fs.mkdirSync(path.join(projectPath, 'src'))
+    fs.writeFileSync(path.join(projectPath, 'src', 'a.ts'), 'export const a = 1\n')
+    fs.symlinkSync('src/a.ts', path.join(projectPath, 'link.ts'))
+    llmResponses = [step('read_file', { path: './link.ts' })]
+    await run()
+    expect(guardOrigins[0][0]).toEqual({ toolName: 'read_file', filePath: 'src/a.ts' })
+  })
+
+  it('shows NO path for a refused read, never the model text', async () => {
+    llmResponses = [step('read_file', { path: 'src/a.ts\u202Etxt.exe' })]
+    await run()
+    expect(guardOrigins[0][0]).toEqual({ toolName: 'read_file' })
+  })
+
+  it('a real file name with bidi and zero-width characters reaches the guard without them', async () => {
+    fs.writeFileSync(path.join(projectPath, 'a\u202Eb\u200Bc.ts'), 'export const z = 1\n')
+    llmResponses = [step('read_file', { path: 'a\u202Eb\u200Bc.ts' })]
+    await run()
+    const fp = guardOrigins[0][0].filePath
+    expect(fp).toBe('abc.ts')
+  })
 })

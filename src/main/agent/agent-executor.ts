@@ -257,7 +257,7 @@ export class AgentExecutor {
         if (storedMode !== 'off') {
           const workspace = await ensureProjectWorkspace(coding.projectPath, runId)
           contextDir = workspace.contextDir
-          toolCtx = { coding, workspace }
+          toolCtx = { coding, workspace, resolvedPaths: new Map<string, string>() }
         }
       }
 
@@ -363,11 +363,18 @@ export class AgentExecutor {
         // step_complete is emitted — blocked content must not travel onwards to
         // the renderer either. A `consent` finding is the one outcome that does
         // not end the run: it is put to the user below.
-        // originForToolCall fills ToolResultOrigin.filePath for read_file, so the
-        // consent dialog and the withheld notice name the file, not just the tool.
+        // originForToolCall fills ToolResultOrigin.filePath from the path the tool
+        // RESOLVED and read, so the consent dialog and the withheld notice name
+        // the file that was read, not the spelling the model wrote.
         const origins = rawToolResults.map((r): ToolResultOrigin => {
           const call = llmResponse.toolCalls.find((tc) => tc.id === r.toolCallId)
-          return call ? originForToolCall(call) : { toolName: 'unknown' }
+          if (!call) return { toolName: 'unknown' }
+          // take(): a later step must not inherit this path.
+          const spelling = call.arguments?.path
+          const resolved =
+            typeof spelling === 'string' ? toolCtx?.resolvedPaths?.get(spelling) : undefined
+          if (typeof spelling === 'string') toolCtx?.resolvedPaths?.delete(spelling)
+          return originForToolCall(call, resolved)
         })
         const guardCtx = { provider, model, conversationId: run.conversationId }
 

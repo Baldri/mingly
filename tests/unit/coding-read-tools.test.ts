@@ -482,26 +482,66 @@ describe('gate', () => {
 })
 
 describe('originForToolCall', () => {
-  it('carries the requested path for read_file', () => {
-    expect(originForToolCall({ id: '1', name: 'read_file', arguments: { path: 'src/a.ts' } })).toEqual({
-      toolName: 'read_file',
-      filePath: 'src/a.ts'
+  it('carries the RESOLVED path, never the model-written one', () => {
+    const call = { id: '1', name: 'read_file', arguments: { path: './x/../src/a.ts' } }
+    expect(originForToolCall(call, 'src/a.ts')).toEqual({ toolName: 'read_file', filePath: 'src/a.ts' })
+  })
+
+  it('has no filePath without a resolved path, even when the call carries a path', () => {
+    const call = { id: '1', name: 'read_file', arguments: { path: 'src/a.ts' } }
+    expect(originForToolCall(call)).toEqual({ toolName: 'read_file' })
+    expect(originForToolCall({ id: '1', name: 'list_files', arguments: {} }, 'src/a.ts')).toEqual({
+      toolName: 'list_files'
     })
   })
 
-  it('has no filePath for other tools, or for a path that is not a string', () => {
-    expect(originForToolCall({ id: '1', name: 'list_files', arguments: {} })).toEqual({ toolName: 'list_files' })
-    expect(originForToolCall({ id: '1', name: 'read_file', arguments: { path: 5 } })).toEqual({ toolName: 'read_file' })
-  })
-
-  it('strips control characters and caps the length', () => {
-    const o = originForToolCall({
-      id: '1',
-      name: 'read_file',
-      arguments: { path: 'a\u0000\n\u001b[31mb' + 'x'.repeat(1000) }
-    })
+  it('strips bidi overrides, isolates, zero-width and control characters, and caps the length', () => {
+    const dirty = 'a\u202Eb\u2066c\u2069d\u200Be\u0000f\n\u001bg\u2028h' + 'x'.repeat(1000)
+    const o = originForToolCall({ id: '1', name: 'read_file', arguments: {} }, dirty)
     expect(o.filePath).toBeDefined()
-    expect(o.filePath!).not.toMatch(/[\u0000-\u001f\u007f]/)
+    expect(o.filePath!).toMatch(/^abcdefgh/)
+    expect(o.filePath!).not.toMatch(/[\u0000-\u001f\u007f\u200B-\u200F\u2028-\u202E\u2066-\u2069]/)
     expect(o.filePath!.length).toBeLessThanOrEqual(300)
+  })
+})
+
+describe('pattern matching cannot hang the main process', () => {
+  // Measured before the fix (old regex compiler, 10 stars, 'a' x N, no match):
+  // N=28 326 ms, N=32 1982 ms, growing roughly 6x per +4. N=34 is several seconds.
+  const NASTY = '*a'.repeat(10) + '*b'
+  const NAME = 'a'.repeat(34)
+  const BOUND_MS = 500
+
+  it('list_files pattern', async () => {
+    write(NAME, 'x')
+    write('aaab', 'x')
+    const ctx = await ctxFor()
+    const t = Date.now()
+    const out = await call('list_files', { pattern: NASTY }, ctx)
+    const elapsed = Date.now() - t
+    expect(elapsed).toBeLessThan(BOUND_MS)
+    expect(out).not.toContain(NAME)
+    // positive control: the same shape of pattern still matches
+    expect(await call('list_files', { pattern: '*a*a*b' }, ctx)).toContain('aaab')
+  })
+
+  it('.gitignore rule written by the project', async () => {
+    write(NAME, 'x')
+    write('aaab', 'x')
+    write('.gitignore', `${NASTY}\n`)
+    const t = Date.now()
+    const out = await call('list_files', {}, await ctxFor())
+    const elapsed = Date.now() - t
+    expect(elapsed).toBeLessThan(BOUND_MS)
+    expect(out).toContain(NAME)
+  })
+
+  it('.gitignore with a normal rule still ignores (positive control)', async () => {
+    write('aaab', 'x')
+    write('keep.ts', 'x')
+    write('.gitignore', '*a*a*b\n')
+    const out = await call('list_files', {}, await ctxFor())
+    expect(out).not.toContain('aaab')
+    expect(out).toContain('keep.ts')
   })
 })
