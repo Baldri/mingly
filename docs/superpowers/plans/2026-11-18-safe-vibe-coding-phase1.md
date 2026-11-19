@@ -28,6 +28,35 @@ Gelten für **jeden** Task; die Anforderungen jedes Tasks schliessen sie stillsc
 - **Keine Shell-Interpretation** in `run_command`: kein `&&`, kein `|`, kein `;`, keine Substitution, `spawn(..., { shell: false })`.
 - **Keine Binärdatei aus `process.env.PATH` zur Laufzeit.** Nur `<projekt>/node_modules/.bin` oder ein in den Einstellungen gesetzter absoluter Pfad.
 - **Blockliste ist absolut** (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*`, `credentials.json`, `secrets.yaml`, `secrets.yml`, `.npmrc`, `.netrc`, `.git/config`, `*.sqlite`, `*.db`). Kein Dialog, kein Modus hebt sie auf. **Erweitert am 2026-11-19 (R38)** um die Namen, die im Task-8-Bericht als lesbar oder nur zufaellig geblockt aufgefallen waren: `*.pfx` ist das Geschwister von `*.p12`, `id_rsa*` allein ist veraltet (ed25519 ist ssh-keygens Standard), `credentials.json` und `secrets.*` sind nach ihrem Inhalt benannt, `.npmrc`/`.netrc` tragen Tokens, `*.db` ist die andere sqlite-Endung. **Nicht** zu `id_*` verallgemeinern — das fienge `id_generator.ts`.
+  **Zweite Erweiterung am 2026-11-19 (R41), und diesmal nach FAMILIEN statt Instanzen:**
+  `secrets.*` (statt dreier Endungen), **das ganze `.git/`-Verzeichnis** in jeder Tiefe
+  (statt nur `.git/config` — das fing weder `.git/modules/*/config` noch
+  `.git/config.worktree`; ein Agent hat in git-Interna nichts zu lesen, git-Zustand
+  gehoert in git-Befehle), `service-account*.json`, `.docker/config.json`, `.yarnrc.yml`.
+  **Lehre:** R38 trug Instanzen nach, und das Task-8-Review fand sofort die naechsten —
+  darunter zwei Inkonsistenzen in R38 selbst (`secrets.yaml` ja, `.json` nein; `.npmrc`
+  ja, `.yarnrc.yml` nein). Eine Denyliste, die instanzweise waechst, laedt die naechste
+  Instanz ein. Wo die Familie klar definiert ist, gehoert die Familie hinein.
+  `.gitignore` und `.gitattributes` bleiben lesbar, obwohl `.git/` blockt — diese
+  Unterscheidung bekommt einen eigenen Test.
+  **R42:** ein projektrelativer Pfad mit **Doppelpunkt** wird abgelehnt. `a.key::$DATA`
+  und `a.pem:stream` oeffnen auf NTFS den Datenstrom der geblockten Datei und bestehen
+  die Namenspruefung; heute faengt sie nur zufaellig die Endungsliste — und «zufaellig
+  geblockt ist nicht geblockt» war genau die Begruendung fuer R38.
+  **R45/R46/R47 — die `secrets`-Regel, endgueltige Form.** Nach drei Anlaeufen
+  (Glob → Datenendungs-Denyliste → Allowlist) gilt: `secrets` und `secrets.<beliebig>`
+  sind geblockt, **ausser** die letzte Endung ist Code oder Prosa — eine **Allowlist**,
+  damit ein Format, das es noch nicht gibt, abgelehnt wird (R45). Die Ausnahme gilt
+  **nur fuer das letzte Pfadsegment**: ein Ordner `secrets.ts/` ist kein Quelltext, also
+  ist `secrets.ts/api.json` geblockt (R46). Und `sql` zaehlt als **Daten**, nicht als
+  Code: eine `.sql`-Datei ist oft ein generierter Dump (R47).
+  **Die Linie, die alle drei traegt:** ausgenommen sind Endungen, deren **Zweck** von
+  Menschen geschriebener Quelltext oder Prosa ist. **Warum die Ausnahme vertretbar
+  ist:** ein hartcodiertes Geheimnis in Quelltext hat typischerweise eine Form, die der
+  Inhalts-Guard kennt (`sk-ant-…`, `AKIA…`, `password =`). Bei einem SQL-Dump gilt das
+  **nicht** — dort ist der wahrscheinlichste Treffer eine E-Mail, die ist
+  anonymisierbar, also wuerde «anonymisiert senden» die Adressen ersetzen und die
+  Passwort-Hashes mitschicken. Deshalb entscheidet dort der **Name**, nicht der Guard.
 - **Kein `auto`-Modus in Phase 1.** Jede Schreibung wird abgenommen.
 - **Kein Provider-Wechsel mitten im Run — in keinem Run-Typ.** Der Run endet stattdessen mit Grund. (Verschärft am 2026-11-19 gegenüber der ursprünglichen Fassung «mitten im Coding-Run»; Begründung bei Task 4.)
 - **Sprache:** Code und Kommentare englisch, Dokumentation CH-Deutsch mit echten Umlauten, nie `ß`.
