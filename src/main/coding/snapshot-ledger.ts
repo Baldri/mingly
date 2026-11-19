@@ -20,6 +20,10 @@
  * row makes that old batch refuse (fail closed), never be trusted.
  */
 
+import * as fs from 'fs'
+import * as path from 'path'
+import { writeFileAtomic } from './atomic-write'
+
 export const LEDGER_MAX_ROWS = 5000
 
 /** The get/set shape of SimpleStore, so tests can supply a plain double. */
@@ -70,13 +74,84 @@ export function createSnapshotLedger(backing: LedgerBacking, maxRows: number = L
   }
 }
 
-/** Loaded lazily: SimpleStore pulls in electron. */
+function parseRows(raw: string): Row[] | null {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    const rows = (parsed as { rows?: unknown } | null)?.rows
+    if (!Array.isArray(rows)) return null
+    return rows.filter(
+      (r): r is Row =>
+        typeof r === 'object' &&
+        r !== null &&
+        typeof (r as Row).key === 'string' &&
+        typeof (r as Row).sha === 'string' &&
+        typeof (r as Row).root === 'string'
+    )
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The ledger as a file, written with the same temp-and-rename discipline as the
+ * project files. It does NOT use SimpleStore, on purpose: SimpleStore.save()
+ * swallows write errors (the ledger's whole value is that a failed record stops
+ * the apply) and writes in place (a crash mid-write leaves a half file that
+ * loads as empty, dropping every row). Here a write failure propagates, a write
+ * is all-or-nothing, and a file that does not parse is moved aside rather than
+ * overwritten: lookups treat it as "no rows" (undo refuses, fail closed), and
+ * the next record starts a fresh file.
+ *
+ * Calls are serialized in-process, so two records cannot lose each other's row.
+ */
+export function createFileSnapshotLedger(filePath: string, maxRows: number = LEDGER_MAX_ROWS): SnapshotLedger {
+  let chain: Promise<unknown> = Promise.resolve()
+  const serial = <T>(fn: () => Promise<T>): Promise<T> => {
+    const result = chain.then(fn)
+    chain = result.then(
+      () => undefined,
+      () => undefined
+    )
+    return result
+  }
+
+  const load = async (): Promise<{ rows: Row[]; corrupt: boolean }> => {
+    let raw: string
+    try {
+      raw = await fs.promises.readFile(filePath, 'utf-8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { rows: [], corrupt: false }
+      throw error
+    }
+    const rows = parseRows(raw)
+    return rows === null ? { rows: [], corrupt: true } : { rows, corrupt: false }
+  }
+
+  return {
+    record: (root, runId, batch, manifestSha256) =>
+      serial(async () => {
+        const { rows, corrupt } = await load()
+        if (corrupt) await fs.promises.rename(filePath, `${filePath}.corrupt-${Date.now()}`)
+        const key = keyOf(runId, batch)
+        const next = rows.filter((r) => r.key !== key)
+        next.push({ key, sha: manifestSha256, root })
+        await writeFileAtomic(filePath, JSON.stringify({ version: 1, rows: next.slice(-maxRows) }), { mode: 0o600 })
+      }),
+    lookup: (runId, batch) =>
+      serial(async () => {
+        const { rows } = await load()
+        return rows.find((r) => r.key === keyOf(runId, batch))?.sha
+      })
+  }
+}
+
+/** Loaded lazily: `electron` is not available when this module is merely imported. */
 let instance: Promise<SnapshotLedger> | undefined
 
 export function getSnapshotLedger(): SnapshotLedger {
   const load = (): Promise<SnapshotLedger> => {
-    instance ??= import('../utils/simple-store').then(({ SimpleStore }) =>
-      createSnapshotLedger(SimpleStore.create('coding-snapshots.json'))
+    instance ??= import('electron').then(({ app }) =>
+      createFileSnapshotLedger(path.join(app.getPath('userData'), 'coding-snapshots.json'))
     )
     return instance
   }

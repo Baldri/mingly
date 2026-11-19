@@ -45,15 +45,16 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
-import { createHash, randomBytes } from 'crypto'
+import { createHash } from 'crypto'
 import { CODING_MODE_ORDER, parseCodingMode, type CodingMode } from '../../shared/coding-types'
 import { hasPermission, type AllowedDirectory } from '../../shared/file-access-types'
 import { atLeast } from '../policy/policy-types'
 import { resolveRealPath } from '../file-access/real-path-guard'
-import { editStillMatches, getEditProposalStore, type EditProposalStore } from './edit-proposals'
+import { editStillMatches, getEditProposalStore, packageDigest, type EditProposalStore } from './edit-proposals'
 import { isProbablyBinary } from './path-policy'
 import { resolveReadableFile, defaultReadToolDeps, type Scope } from './read-tools'
 import { ensureProjectWorkspace, type ProjectWorkspace } from './project-workspace'
+import { writeFileAtomic, ContentChanged } from './atomic-write'
 import { getSnapshotLedger, type SnapshotLedger } from './snapshot-ledger'
 import { getRunDirectoryRegistry, type RunDirectoryRegistry } from './run-directories'
 import type { ProposedEdit } from '../../shared/coding-types'
@@ -76,6 +77,14 @@ const MAX_BATCHES = 100
 const MAX_MANIFEST_ENTRIES = 1000
 const MANIFEST_MAX_BYTES = 8 * 1024 * 1024
 const MANIFEST_NAME = 'manifest.json'
+/**
+ * Written into the batch before the first project file is renamed, removed
+ * after the last (or after a complete rollback). Its presence later means an
+ * apply was interrupted or left a partial state. Informational: the ledger, not
+ * this file, decides what may be restored.
+ */
+const MARKER_NAME = 'IN-PROGRESS'
+const STALE_TEMP = /^\.mingly-tmp-[0-9a-f]{16}$/
 const SAFE_RUN_ID = /^[A-Za-z0-9_-]{1,128}$/
 const BATCH_NAME = /^batch-(\d{1,9})$/
 const SNAPSHOT_FILE = /^\d{1,6}\.bak$/
@@ -84,12 +93,14 @@ const WORKSPACE_DIR = '.mingly'
 
 const O_NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0
 
+export { writeFileAtomic, type AtomicWriteOptions } from './atomic-write'
+
 // ---------------------------------------------------------------------------
 // Outcomes and reasons
 // ---------------------------------------------------------------------------
 
 export type ApplyOutcome =
-  | { kind: 'applied'; paths: string[] }
+  | { kind: 'applied'; paths: string[]; edits: ProposedEdit[] }
   | { kind: 'refused'; reason: string }
 
 /** Why a file was left alone by undo. */
@@ -98,6 +109,17 @@ export type SkipReason =
   | 'snapshot-damaged'
   | 'path-not-allowed'
   | 'unreadable'
+  | 'write-failed'
+  /** An interrupted apply never wrote this file (it still holds its old content). */
+  | 'not-written-interrupted'
+  /** Batch level: this app has no row for the batch. */
+  | 'batch-not-recorded'
+  /** Batch level: the manifest on disk is not the one that was recorded. */
+  | 'batch-manifest-changed'
+  /** Batch level: recorded, but the manifest is gone. */
+  | 'batch-manifest-missing'
+  /** Batch level: recorded and unchanged, but it does not parse. */
+  | 'batch-manifest-invalid'
 
 export interface SkippedFile {
   path: string
@@ -113,11 +135,13 @@ export interface SkippedFile {
 export interface UndoResult {
   restored: string[]
   skipped: SkippedFile[]
+  /** Present (true) only when an apply of this run was interrupted or left a partial state. */
+  interrupted?: true
 }
 
 export type UndoOutcome =
   | ({ kind: 'restored' } & UndoResult)
-  | { kind: 'refused'; reason: string }
+  | { kind: 'refused'; reason: string; skipped?: SkippedFile[] }
 
 export type RejectOutcome =
   | { kind: 'rejected'; count: number }
@@ -142,6 +166,17 @@ const REFUSE_NO_SNAPSHOT =
 const REFUSE_UNRECORDED =
   'Nothing was restored: this snapshot has no record in this app (it was not created here, its ' +
   'manifest was changed afterwards, or the record is gone). It will not be restored.'
+const REFUSE_WITHDRAWN =
+  'Permission was withdrawn while the package was being applied. Files already written cannot be ' +
+  'restored without permission and stay applied; restore the grant and run undo for this run.'
+const REFUSE_BATCH_UNUSABLE =
+  'Nothing was restored: the snapshot batches of this run are missing or unreadable.'
+const REFUSE_INTERRUPTED =
+  'Nothing was written: an earlier apply of this run was interrupted and may have left some files ' +
+  'written and others not. Stale temporary files were removed. Run undo for this run first; it ' +
+  'reports which files were written.'
+const REFUSE_PACKAGE_CHANGED =
+  'Nothing was written: the proposals changed after they were shown and must be reviewed again.'
 const REFUSE_BUSY = 'Nothing was written: another apply or undo is running for this project.'
 const REFUSE_PARTIAL =
   'A write failed after other files were already written, and not every file could be restored. ' +
@@ -151,10 +186,10 @@ function refused(reason: string): { kind: 'refused'; reason: string } {
   return { kind: 'refused', reason }
 }
 
-/** Thrown by undo when it must say why it restored nothing. */
-class UndoRefusal extends Error {
-  constructor(readonly reason: string) {
-    super(reason)
+/** The grant or the mode no longer allows the write that was about to happen. */
+class AuthorityLost extends Error {
+  constructor(readonly grantGone: boolean) {
+    super('authority lost')
   }
 }
 
@@ -177,7 +212,7 @@ export interface ApplyHooks {
 }
 
 export interface ApplyDeps {
-  store: Pick<EditProposalStore, 'pending' | 'resolve'>
+  store: Pick<EditProposalStore, 'pending' | 'resolve' | 'resolveApplied'>
   findGrant(directoryId: string): Promise<AllowedDirectory | undefined>
   getMode(directoryId: string): CodingMode | Promise<CodingMode>
   /** Which directory each run started in; the handlers validate the renderer's claim against it. */
@@ -311,81 +346,26 @@ async function openVerified(
   }
 }
 
+/**
+ * Re-read the verified descriptor and compare the content with what was
+ * verified. An in-place save through another descriptor is visible here, which
+ * a dev+ino comparison cannot see.
+ */
+async function assertHandleContent(handle: fs.promises.FileHandle, expectedSha: string): Promise<void> {
+  const stat = await handle.stat()
+  if (!stat.isFile() || stat.size > APPLY_FILE_MAX_BYTES) throw new ContentChanged()
+  const buffer = Buffer.alloc(stat.size)
+  let position = 0
+  while (position < stat.size) {
+    const { bytesRead } = await handle.read(buffer, position, stat.size - position, position)
+    if (bytesRead === 0) break
+    position += bytesRead
+  }
+  if (position !== stat.size || sha256(buffer) !== expectedSha) throw new ContentChanged()
+}
+
 function replaceAtMatch(edit: ProposedEdit, text: string): string {
   return text.slice(0, edit.matchIndex) + edit.newText + text.slice(edit.matchIndex + edit.oldText.length)
-}
-
-// ---------------------------------------------------------------------------
-// The atomic write
-// ---------------------------------------------------------------------------
-
-export interface AtomicWriteOptions {
-  /** Permission bits of the new file. Default: those of the file it replaces, else 0o644. */
-  mode?: number
-  /**
-   * The inode the caller verified. Checked right before the rename: if the path
-   * is no longer that file, nothing is renamed.
-   */
-  expectIdentity?: { dev: number; ino: number }
-}
-
-async function assertRealDirectory(dir: string): Promise<void> {
-  if ((await fs.promises.realpath(dir)) !== dir) throw new Error('directory changed under the write')
-}
-
-/**
- * Write `content` to a temp file in the target's own directory, then rename it
- * over the target. `rename` inside one file system is atomic: an interruption
- * leaves the target entirely old or entirely new, and a temp file in /tmp would
- * not give that, because rename across file systems copies.
- */
-export async function writeFileAtomic(
-  target: string,
-  content: string | Buffer,
-  options: AtomicWriteOptions = {}
-): Promise<void> {
-  const dir = path.dirname(target)
-  const expected = options.expectIdentity
-  if (expected) await assertRealDirectory(dir)
-
-  let mode = options.mode
-  if (mode === undefined) {
-    try {
-      mode = (await fs.promises.stat(target)).mode & 0o777
-    } catch {
-      mode = 0o644
-    }
-  }
-
-  // Fixed length, independent of the target's name: a long file name must not
-  // make the temp name too long.
-  const temp = path.join(dir, `.mingly-tmp-${randomBytes(8).toString('hex')}`)
-  let handle: fs.promises.FileHandle | undefined
-  try {
-    handle = await fs.promises.open(
-      temp,
-      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | O_NOFOLLOW,
-      0o600
-    )
-    await handle.writeFile(content)
-    await handle.chmod(mode)
-    await handle.sync()
-    await handle.close()
-    handle = undefined
-
-    if (expected) {
-      await assertRealDirectory(dir)
-      const now = await fs.promises.lstat(target)
-      if (!now.isFile() || now.dev !== expected.dev || now.ino !== expected.ino) {
-        throw new Error('target is no longer the file that was verified')
-      }
-    }
-    await fs.promises.rename(temp, target)
-  } catch (error) {
-    await handle?.close().catch(() => undefined)
-    await fs.promises.unlink(temp).catch(() => undefined)
-    throw error
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -515,7 +495,12 @@ const SKIPPED = (reason: SkipReason): RestoreResult => ({ kind: 'skipped', reaso
  * the snapshot still has the hash recorded for it (so a damaged snapshot is
  * never written over a good file). Anything else is `skipped`, not guessed at.
  */
-async function restoreEntry(entry: ManifestEntry, batchDir: string, scope: Scope): Promise<RestoreResult> {
+async function restoreEntry(
+  entry: ManifestEntry,
+  batchDir: string,
+  scope: Scope,
+  interrupted = false
+): Promise<RestoreResult> {
   const resolved = await resolveReadableFile(entry.rel, scope)
   if (resolved.kind !== 'ok') return SKIPPED('path-not-allowed')
   if (isInsideWorkspace(resolved.realRelPosix)) return SKIPPED('path-not-allowed')
@@ -523,13 +508,22 @@ async function restoreEntry(entry: ManifestEntry, batchDir: string, scope: Scope
   const current = await openAndRead(resolved.realTarget)
   if (!current) return SKIPPED('unreadable')
   try {
-    if (sha256(current.data) !== entry.after) return SKIPPED('changed-since-apply')
+    if (sha256(current.data) !== entry.after) {
+      // After an interrupted apply a file that still holds its OLD content was
+      // never written; that is not the same as "the user changed it".
+      return SKIPPED(interrupted && sha256(current.data) === entry.before ? 'not-written-interrupted' : 'changed-since-apply')
+    }
     const snapshot = await readSmallFile(path.join(batchDir, entry.file), APPLY_FILE_MAX_BYTES)
     if (!snapshot || sha256(snapshot) !== entry.before) return SKIPPED('snapshot-damaged')
-    await writeFileAtomic(resolved.realTarget, snapshot, {
-      mode: current.mode,
-      expectIdentity: { dev: current.dev, ino: current.ino }
-    })
+    try {
+      await writeFileAtomic(resolved.realTarget, snapshot, {
+        mode: current.mode,
+        expectIdentity: { dev: current.dev, ino: current.ino },
+        verifyBeforeRename: () => assertHandleContent(current.handle, entry.after)
+      })
+    } catch (error) {
+      return SKIPPED(error instanceof ContentChanged ? 'changed-since-apply' : 'write-failed')
+    }
     return { kind: 'restored' }
   } finally {
     await current.handle.close().catch(() => undefined)
@@ -544,10 +538,11 @@ export async function applyPendingEdits(
   runId: string,
   ws: ProjectWorkspace,
   dir: AllowedDirectory,
-  deps: ApplyDeps = defaultApplyDeps()
+  deps: ApplyDeps = defaultApplyDeps(),
+  options: { expectedDigest?: string } = {}
 ): Promise<ApplyOutcome> {
   try {
-    return await applyInner(runId, ws, dir, deps)
+    return await applyInner(runId, ws, dir, deps, options)
   } catch (error) {
     // Anything unexpected is a refusal, never a partial success.
     return refused(error instanceof Refusal ? error.reason : REFUSE_FS)
@@ -558,7 +553,8 @@ async function applyInner(
   runId: string,
   ws: ProjectWorkspace,
   dir: AllowedDirectory,
-  deps: ApplyDeps
+  deps: ApplyDeps,
+  options: { expectedDigest?: string }
 ): Promise<ApplyOutcome> {
   if (typeof runId !== 'string' || !SAFE_RUN_ID.test(runId)) throw new Refusal(REFUSE_INPUT)
   if (!dir || typeof dir.id !== 'string') throw new Refusal(REFUSE_INPUT)
@@ -573,6 +569,12 @@ async function applyInner(
   // 2. Everything that needs no file content.
   const edits = deps.store.pending(runId)
   if (edits.length === 0) throw new Refusal(REFUSE_NOTHING)
+  // The human approved a set. When the caller says which set, this is the one
+  // snapshot of the run's package that is checked, applied and later released:
+  // nothing added afterwards rides along.
+  if (options.expectedDigest !== undefined && packageDigest(edits) !== options.expectedDigest) {
+    throw new Refusal(REFUSE_PACKAGE_CHANGED)
+  }
 
   const scope = await buildScope(grant.path, ws, runId)
   if (!scope) throw new Refusal(REFUSE_WORKSPACE)
@@ -580,6 +582,27 @@ async function applyInner(
   if (busyProjects.has(scope.realRoot)) throw new Refusal(REFUSE_BUSY)
   busyProjects.add(scope.realRoot)
   try {
+    // An earlier apply of this run that never finished leaves a marker. Sweep
+    // its temp files and stop: new writes on top of an unknown state are worse
+    // than a refusal.
+    try {
+      await assertSnapshotDir(ws, scope, runId)
+      const earlier = await listBatches(ws.snapshotDir)
+      const interrupted: number[] = []
+      for (const number of earlier) {
+        if (await hasMarker(path.join(ws.snapshotDir, `batch-${number}`))) interrupted.push(number)
+      }
+      if (interrupted.length > 0) {
+        for (const number of interrupted) {
+          const manifest = await readVouchedManifest(ws, runId, number, deps.ledger)
+          if (manifest) await sweepStaleTemps(scope, manifest.entries)
+        }
+        throw new Refusal(REFUSE_INTERRUPTED)
+      }
+    } catch (error) {
+      throw error instanceof Refusal ? error : new Refusal(REFUSE_SNAPSHOT)
+    }
+
     const seen = new Set<string>()
     for (const edit of edits) {
       const resolved = await resolveReadableFile(edit.path, scope)
@@ -616,6 +639,9 @@ async function applyInner(
       // The authority for undo: a row outside the project, written BEFORE the
       // first project file is touched. If it cannot be written, nothing is.
       await deps.ledger.record(scope.realRoot, runId, batchNumber(batchDir), sha256(manifestJson))
+      // Detectable from here on: if the process dies during pass 2 the marker is
+      // still there. Written before any project file is touched.
+      await writeNewFile(path.join(batchDir, MARKER_NAME), Buffer.from(JSON.stringify({ startedAt: Date.now() })))
     } catch (error) {
       await fs.promises.rm(batchDir, { recursive: true, force: true }).catch(() => undefined)
       // A failed verification keeps its reason; anything else here is the snapshot.
@@ -623,6 +649,15 @@ async function applyInner(
     }
 
     // 4. Pass 2: check and write, one file at a time.
+    const grantAllows = async (): Promise<boolean> => {
+      const fresh = await deps.findGrant(dir.id)
+      return permitsEdit(fresh) && path.resolve(fresh.path) === scope.root
+    }
+    const recheckAuthority = async (): Promise<void> => {
+      if (!(await grantAllows())) throw new AuthorityLost(true)
+      const now = parseCodingMode(await deps.getMode(dir.id))
+      if (!atLeast(CODING_MODE_ORDER, now, 'propose')) throw new AuthorityLost(false)
+    }
     const written: number[] = []
     try {
       for (let i = 0; i < edits.length; i++) {
@@ -633,9 +668,13 @@ async function applyInner(
           const next = replaceAtMatch(edits[i], verified.text)
           if (sha256(next) !== entries[i].after) throw new Refusal(REFUSE_FS)
           await deps.hooks?.afterVerify?.(i)
+          // Grant and mode again, immediately before THIS write: the user may
+          // change their mind halfway through the package.
+          await recheckAuthority()
           await writeFileAtomic(verified.realTarget, next, {
             mode: verified.mode,
-            expectIdentity: { dev: verified.dev, ino: verified.ino }
+            expectIdentity: { dev: verified.dev, ino: verified.ino },
+            verifyBeforeRename: () => assertHandleContent(verified.handle, entries[i].before)
           })
           written.push(i)
         } finally {
@@ -644,12 +683,24 @@ async function applyInner(
         await deps.hooks?.afterWrite?.(i)
       }
     } catch (error) {
+      // A rollback is a write too: without the grant there is none. (The mode
+      // is not needed for it, as for undo.)
+      const mayWrite = !(error instanceof AuthorityLost && error.grantGone) && (await grantAllows())
+      if (!mayWrite) {
+        // Partial state keeps the marker; nothing written does not need it.
+        if (written.length > 0) throw new Refusal(REFUSE_WITHDRAWN)
+        await clearMarker(batchDir)
+        throw new Refusal(REFUSE_GRANT)
+      }
       const stuck = await rollBack(written, entries, batchDir, scope)
       if (stuck > 0) throw new Refusal(REFUSE_PARTIAL)
+      await clearMarker(batchDir)
+      if (error instanceof AuthorityLost) throw new Refusal(REFUSE_GRANT)
       throw error instanceof Refusal ? error : new Refusal(REFUSE_FS)
     }
 
-    return { kind: 'applied', paths: entries.map((e) => e.rel) }
+    await clearMarker(batchDir)
+    return { kind: 'applied', paths: entries.map((e) => e.rel), edits }
   } finally {
     busyProjects.delete(scope.realRoot)
   }
@@ -675,6 +726,66 @@ async function rollBack(
 
 function batchNumber(batchDir: string): number {
   return Number(BATCH_NAME.exec(path.basename(batchDir))?.[1])
+}
+
+async function hasMarker(batchDir: string): Promise<boolean> {
+  try {
+    return (await fs.promises.lstat(path.join(batchDir, MARKER_NAME))).isFile()
+  } catch {
+    return false
+  }
+}
+
+/** Best effort: a marker that cannot be removed only makes the next apply refuse, which is safe. */
+async function clearMarker(batchDir: string): Promise<void> {
+  await fs.promises.unlink(path.join(batchDir, MARKER_NAME)).catch(() => undefined)
+}
+
+/**
+ * Remove the temp files an interrupted write leaves, in the directories the
+ * batch touched and nowhere else. Only names this module generates, only plain
+ * files, and only under the project lock, so no write of ours is in flight.
+ */
+async function sweepStaleTemps(scope: Scope, entries: ManifestEntry[]): Promise<void> {
+  const dirs = new Set<string>()
+  for (const entry of entries) {
+    const resolved = await resolveReadableFile(entry.rel, scope)
+    if (resolved.kind === 'ok') dirs.add(path.dirname(resolved.realTarget))
+  }
+  for (const dir of dirs) {
+    let names: string[]
+    try {
+      names = await fs.promises.readdir(dir)
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      if (!STALE_TEMP.test(name)) continue
+      const full = path.join(dir, name)
+      try {
+        if ((await fs.promises.lstat(full)).isFile()) await fs.promises.unlink(full)
+      } catch {
+        // Left for the next sweep.
+      }
+    }
+  }
+}
+
+/** The manifest of a batch, only if the ledger vouches for it and it parses. */
+async function readVouchedManifest(
+  ws: ProjectWorkspace,
+  runId: string,
+  number: number,
+  ledger: SnapshotLedger
+): Promise<Manifest | null> {
+  try {
+    const recorded = await ledger.lookup(runId, number)
+    const raw = await readSmallFile(path.join(ws.snapshotDir, `batch-${number}`, MANIFEST_NAME), MANIFEST_MAX_BYTES)
+    if (recorded === undefined || !raw || sha256(raw) !== recorded) return null
+    return parseManifest(raw.toString('utf-8'))
+  } catch {
+    return null
+  }
 }
 
 async function makeBatchDir(ws: ProjectWorkspace, scope: Scope, runId: string): Promise<string> {
@@ -737,31 +848,56 @@ export async function undoRun(
     await assertSnapshotDir(ws, scope, runId)
     const batches = await listBatches(ws.snapshotDir)
     if (batches.length > MAX_BATCHES) throw new Error('too many snapshot batches')
+    let interruptedRun = false
 
-    // Parse every manifest before the first restore.
+    // Judge every batch before the first restore. A batch that cannot be
+    // vouched for is REPORTED as skipped, and the others still restore: one
+    // orphan directory (what a crash in pass 1 leaves) must not disable undo.
     const parsed: Array<{ batchDir: string; manifest: Manifest }> = []
+    const skipped: SkippedFile[] = []
     for (const number of [...batches].reverse()) {
       const batchDir = path.join(ws.snapshotDir, `batch-${number}`)
-      const raw = await readSmallFile(path.join(batchDir, MANIFEST_NAME), MANIFEST_MAX_BYTES)
-      if (!raw) throw new Error('manifest unreadable')
+      const batchPath = `${WORKSPACE_DIR}/snapshots/${runId}/batch-${number}`
       // The disk inside the project vouches for nothing. The manifest must be
       // byte-for-byte what this app recorded outside the project, else the
-      // batch is refused. Do not "repair" a missing record by trusting the disk.
+      // batch is not restored. Do not "repair" a missing record by trusting the disk.
       const recorded = await deps.ledger.lookup(runId, number)
-      if (recorded === undefined || recorded !== sha256(raw)) throw new UndoRefusal(REFUSE_UNRECORDED)
-      parsed.push({ batchDir, manifest: parseManifest(raw.toString('utf-8')) })
+      if (recorded === undefined) {
+        skipped.push({ path: batchPath, reason: 'batch-not-recorded' })
+        continue
+      }
+      const raw = await readSmallFile(path.join(batchDir, MANIFEST_NAME), MANIFEST_MAX_BYTES)
+      if (!raw) {
+        skipped.push({ path: batchPath, reason: 'batch-manifest-missing' })
+        continue
+      }
+      if (recorded !== sha256(raw)) {
+        skipped.push({ path: batchPath, reason: 'batch-manifest-changed' })
+        continue
+      }
+      try {
+        parsed.push({ batchDir, manifest: parseManifest(raw.toString('utf-8')) })
+      } catch {
+        skipped.push({ path: batchPath, reason: 'batch-manifest-invalid' })
+      }
     }
 
     const restored: string[] = []
-    const skipped: SkippedFile[] = []
     for (const { batchDir, manifest } of parsed) {
+      const interrupted = await hasMarker(batchDir)
       for (const entry of [...manifest.entries].reverse()) {
-        const result = await restoreEntry(entry, batchDir, scope)
+        const result = await restoreEntry(entry, batchDir, scope, interrupted)
         if (result.kind === 'restored') restored.push(entry.rel)
         else skipped.push({ path: entry.rel, reason: result.reason })
       }
+      if (interrupted) {
+        // Reported in this result; the stale temps of the interruption go too.
+        interruptedRun = true
+        await sweepStaleTemps(scope, manifest.entries)
+        await clearMarker(batchDir)
+      }
     }
-    return { restored, skipped }
+    return interruptedRun ? { restored, skipped, interrupted: true } : { restored, skipped }
   } finally {
     busyProjects.delete(scope.realRoot)
   }
@@ -818,10 +954,14 @@ function runBelongsTo(deps: Pick<ApplyDeps, 'runDirectories'>, runId: string, di
 export async function acceptEditsForRun(
   runId: unknown,
   directoryId: unknown,
+  expectedDigest: unknown,
   deps: ApplyDeps = defaultApplyDeps()
 ): Promise<ApplyOutcome> {
   try {
     if (!validIds(runId, directoryId)) return refused(REFUSE_INPUT)
+    // What the human approved is a package, named by its digest; "whatever the
+    // run holds" is not an accept.
+    if (typeof expectedDigest !== 'string' || expectedDigest === '') return refused(REFUSE_INPUT)
     if (!runBelongsTo(deps, runId, directoryId)) return refused(REFUSE_RUN_DIRECTORY)
     const grant = await deps.findGrant(directoryId as string)
     if (!permitsEdit(grant)) return refused(REFUSE_GRANT)
@@ -834,10 +974,11 @@ export async function acceptEditsForRun(
       return refused(REFUSE_WORKSPACE)
     }
 
-    const outcome = await applyPendingEdits(runId, ws, grant, deps)
-    // One source of truth: the store is told only after the write succeeded.
-    // On a refusal the proposal stays, so the user sees why.
-    if (outcome.kind === 'applied') deps.store.resolve(runId, true)
+    const outcome = await applyPendingEdits(runId, ws, grant, deps, { expectedDigest })
+    // One source of truth: the store is told only after the write succeeded,
+    // and only about the proposals that were applied. On a refusal the proposal
+    // stays, so the user sees why.
+    if (outcome.kind === 'applied') deps.store.resolveApplied(runId, outcome.edits)
     return outcome
   } catch {
     return refused(REFUSE_FS)
@@ -891,9 +1032,21 @@ export async function undoRunForDirectory(
     } catch {
       return refused(REFUSE_WORKSPACE)
     }
-    return { kind: 'restored', ...(await undoRun(runId, ws, deps)) }
-  } catch (error) {
-    if (error instanceof UndoRefusal) return refused(error.reason)
+    const result = await undoRun(runId, ws, deps)
+    // Nothing restored and the reason is a batch this app cannot vouch for: a
+    // refusal that says so, with the list, not an empty success.
+    const batchLevel = result.skipped.filter((f) => f.reason.startsWith('batch-'))
+    if (result.restored.length === 0 && batchLevel.length > 0) {
+      return {
+        kind: 'refused',
+        reason: batchLevel.some((f) => f.reason === 'batch-not-recorded' || f.reason === 'batch-manifest-changed')
+          ? REFUSE_UNRECORDED
+          : REFUSE_BATCH_UNUSABLE,
+        skipped: result.skipped
+      }
+    }
+    return { kind: 'restored', ...result }
+  } catch {
     return refused(REFUSE_FS)
   }
 }

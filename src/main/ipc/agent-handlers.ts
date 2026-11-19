@@ -108,10 +108,12 @@ export function registerAgentHandlers(): void {
 
   wrapHandler(
     IPC_CHANNELS.CODING_ACCEPT_EDITS,
-    async (runId: unknown, directoryId: unknown) => {
+    async (runId: unknown, directoryId: unknown, packageDigest: unknown) => {
       requireFeature('agentic_mode')
-      const outcome = await acceptEditsForRun(runId, directoryId)
-      return { success: outcome.kind === 'applied', outcome }
+      const outcome = await acceptEditsForRun(runId, directoryId, packageDigest)
+      // The applied proposals hold file text; the renderer needs only the paths.
+      const shown = outcome.kind === 'applied' ? { kind: outcome.kind, paths: outcome.paths } : outcome
+      return { success: outcome.kind === 'applied', outcome: shown }
     }
   )
 

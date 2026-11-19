@@ -589,8 +589,10 @@ const api = {
   // forwards ids only; paths never cross it. A refused apply answers with
   // `success: false` and a reason, and the proposal stays.
   codingEdits: {
-    accept: (runId: string, directoryId: string) =>
-      ipcRenderer.invoke(IPC_CHANNELS.CODING_ACCEPT_EDITS, runId, directoryId),
+    // `packageDigest` names the package the user was shown (packageDigest() of the
+    // pending list); the main process refuses when the run's package has changed.
+    accept: (runId: string, directoryId: string, packageDigest: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CODING_ACCEPT_EDITS, runId, directoryId, packageDigest),
     reject: (runId: string, reason?: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.CODING_REJECT_EDITS, runId, reason),
     undo: (runId: string, directoryId: string) =>

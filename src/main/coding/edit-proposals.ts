@@ -166,6 +166,12 @@ export interface EditProposalStore {
    */
   resolve(runId: string, accepted: boolean, reason?: string): void
   /**
+   * Release exactly the proposals that were applied, not whatever the run holds
+   * now: a proposal added while the package was being applied stays pending.
+   * Matching is by the proposal's content (path, old, new, base hash, position).
+   */
+  resolveApplied(runId: string, applied: readonly ProposedEdit[]): void
+  /**
    * The run is over; no further proposals are accepted for it.
    *   'abandoned' (cancelled, failed): the pending package is dropped and
    *     recorded, never applied. Nobody stands behind that work.
@@ -418,6 +424,22 @@ export function editStillMatches(edit: ProposedEdit, currentContent: string): bo
   } catch {
     return false
   }
+}
+
+/** What identifies one proposal: the fields the apply step acts on. */
+function editFingerprint(edit: ProposedEdit): string {
+  return JSON.stringify([edit.path, edit.oldText, edit.newText, edit.baseSha256, edit.matchIndex])
+}
+
+/**
+ * Identity of a package of proposals, in proposal order. The human approves a
+ * SET; the accept step binds to this value, so a proposal added after the human
+ * looked (or one removed) makes the accept refuse instead of approving a run.
+ */
+export function packageDigest(edits: readonly ProposedEdit[]): string {
+  const hash = createHash('sha256')
+  for (const edit of edits) hash.update(editFingerprint(edit)).update('\n')
+  return hash.digest('hex')
 }
 
 interface RunState {
@@ -710,6 +732,18 @@ export function createEditProposalStore(
       })
       releaseEntries(st)
       if (st.ended) retire(runId, st)
+    },
+
+    resolveApplied(runId, applied): void {
+      const st = runs.get(runId)
+      if (!st || st.entries.length === 0) return
+      const wanted = new Set(applied.map(editFingerprint))
+      const gone = st.entries.filter((e) => wanted.has(editFingerprint(e.edit)))
+      if (gone.length === 0) return
+      record(st, { runId, outcome: 'package-accepted', edits: gone.length })
+      for (const e of gone) totalBytes -= e.bytes
+      st.entries = st.entries.filter((e) => !wanted.has(editFingerprint(e.edit)))
+      if (st.entries.length === 0 && st.ended) retire(runId, st)
     },
 
     endRun(runId, how): void {

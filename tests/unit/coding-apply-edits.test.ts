@@ -19,9 +19,9 @@ import {
   undoRunForDirectory,
   type ApplyDeps
 } from '../../src/main/coding/apply-edits'
-import { createSnapshotLedger, LEDGER_MAX_ROWS, type SnapshotLedger } from '../../src/main/coding/snapshot-ledger'
+import { createSnapshotLedger, createFileSnapshotLedger, LEDGER_MAX_ROWS, type SnapshotLedger } from '../../src/main/coding/snapshot-ledger'
 import { createRunDirectoryRegistry, type RunDirectoryRegistry } from '../../src/main/coding/run-directories'
-import { createEditProposalStore, type EditProposalStore } from '../../src/main/coding/edit-proposals'
+import { packageDigest, createEditProposalStore, type EditProposalStore } from '../../src/main/coding/edit-proposals'
 import { ensureProjectWorkspace, type ProjectWorkspace } from '../../src/main/coding/project-workspace'
 import type { AllowedDirectory } from '../../src/shared/file-access-types'
 import type { CodingMode } from '../../src/shared/coding-types'
@@ -86,8 +86,14 @@ function propose(rel: string, oldText: string, newText: string, runId = RUN): vo
   expect(outcome.kind).toBe('proposed')
 }
 
+/** The digest of what is pending for a run right now: what the human is shown. */
+function pkg(runId: unknown): string {
+  return packageDigest(store.pending(runId as string))
+}
+
 function leftovers(dir: string): string[] {
-  return fs.readdirSync(dir).filter((n) => n.includes('.tmp'))
+  // The temp files are named `.mingly-tmp-<hex>`; a filter on '.tmp' matches nothing.
+  return fs.readdirSync(dir).filter((n) => n.startsWith('.mingly-tmp-'))
 }
 
 beforeEach(async () => {
@@ -111,13 +117,18 @@ afterEach(() => {
 })
 
 describe('applyPendingEdits: the happy path and the snapshot', () => {
+  it('leftovers() sees a stale temp file (the helper behind every no-temp-left assertion can fail)', () => {
+    fs.writeFileSync(path.join(project, '.mingly-tmp-0123456789abcdef'), 'x')
+    expect(leftovers(project)).toEqual(['.mingly-tmp-0123456789abcdef'])
+  })
+
   it('applies the pending proposals and reports the real paths', async () => {
     const a = write('src/a.ts', ORIGINAL)
     const b = write('b.ts', 'x = 1\n')
     propose('src/a.ts', 'const a = 1', 'const a = 2')
     propose('b.ts', 'x = 1', 'x = 2')
     const out = await applyPendingEdits(RUN, ws, grants[0], deps())
-    expect(out).toEqual({ kind: 'applied', paths: ['src/a.ts', 'b.ts'] })
+    expect(out).toMatchObject({ kind: 'applied', paths: ['src/a.ts', 'b.ts'] })
     expect(read(a)).toBe('line one\nconst a = 2\nline three\nfooter text\n')
     expect(read(b)).toBe('x = 2\n')
   })
@@ -244,8 +255,19 @@ describe('applyPendingEdits: atomic write', () => {
   it('leaves the file fully old when the rename fails, and no temp file behind', async () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
-    vi.spyOn(fs.promises, 'rename').mockRejectedValue(new Error('EIO simulated'))
+    const realRename = fs.promises.rename.bind(fs.promises)
+    let attempts = 0
+    vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      // Only the overwrite of the project file fails (the manifest rename must work,
+      // or the test would end in the snapshot step and never reach the project write).
+      if (String(to) === a) {
+        attempts++
+        throw new Error('EIO simulated')
+      }
+      return realRename(from, to)
+    })
     const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    expect(attempts).toBe(1)
     expect(out.kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
     expect(leftovers(project)).toEqual([])
@@ -546,7 +568,7 @@ describe('undoRun', () => {
     expect(read(outsideFile)).toContain('const a = 2')
   })
 
-  it('refuses to guess when a manifest is malformed: throws and restores nothing', async () => {
+  it('does not guess when a manifest is malformed: that batch is skipped with its reason, nothing is restored from it', async () => {
     const a = write('a.ts', ORIGINAL)
     const b = write('b.ts', 'x = 1\n')
     propose('a.ts', 'const a = 1', 'const a = 2')
@@ -556,7 +578,9 @@ describe('undoRun', () => {
     fs.writeFileSync(path.join(ws.snapshotDir, 'batch-1', 'manifest.json'), malformed)
     // Vouched for by the ledger, so the test reaches the parser and not the ledger check.
     await ledger.record(fs.realpathSync(project), RUN, 1, sha(malformed))
-    await expect(undoRun(RUN, ws, deps())).rejects.toThrow()
+    const result = await undoRun(RUN, ws, deps())
+    expect(result.restored).toEqual([])
+    expect(result.skipped).toEqual([{ path: '.mingly/snapshots/run1/batch-1', reason: 'batch-manifest-invalid' }])
     expect(read(a)).toBe(afterA)
     expect(read(b)).toBe('x = 1\n')
   })
@@ -593,7 +617,10 @@ describe('FIX C: undo trusts only batches this app recorded outside the project'
     const applied = read(a)
     // Same shape, same hashes of file bodies: only a byte of the manifest differs.
     fs.writeFileSync(manifest, fs.readFileSync(manifest, 'utf8') + ' ')
-    await expect(undoRun(RUN, ws, deps())).rejects.toThrow(/no record in this app/)
+    expect(await undoRun(RUN, ws, deps())).toEqual({
+      restored: [],
+      skipped: [{ path: '.mingly/snapshots/run1/batch-1', reason: 'batch-manifest-changed' }]
+    })
     expect(read(a)).toBe(applied)
     const out = await undoRunForDirectory(RUN, 'dir-1', deps())
     expect(out.kind).toBe('refused')
@@ -624,7 +651,10 @@ describe('FIX C: undo trusts only batches this app recorded outside the project'
     const { a } = await appliedWithManifest()
     const applied = read(a)
     ledger = createSnapshotLedger({ get: (_k, d) => d, set: () => undefined })
-    await expect(undoRun(RUN, ws, deps())).rejects.toThrow(/no record in this app/)
+    expect(await undoRun(RUN, ws, deps())).toEqual({
+      restored: [],
+      skipped: [{ path: '.mingly/snapshots/run1/batch-1', reason: 'batch-not-recorded' }]
+    })
     expect(read(a)).toBe(applied)
   })
 
@@ -671,7 +701,7 @@ describe('round 2: undo survives a restart and a move, and still trusts only the
   async function applied(): Promise<string> {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
-    expect((await acceptEditsForRun(RUN, 'dir-1', deps())).kind).toBe('applied')
+    expect((await acceptEditsForRun(RUN, 'dir-1', pkg(RUN), deps())).kind).toBe('applied')
     return a
   }
 
@@ -687,7 +717,7 @@ describe('round 2: undo survives a restart and a move, and still trusts only the
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
     runDirs = createRunDirectoryRegistry()
-    expect((await acceptEditsForRun(RUN, 'dir-1', deps())).kind).toBe('refused')
+    expect((await acceptEditsForRun(RUN, 'dir-1', pkg(RUN), deps())).kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
   })
 
@@ -751,11 +781,418 @@ describe('round 2: undo survives a restart and a move, and still trusts only the
   })
 })
 
+describe('round 3, FIX 1: a save between the verification and the rename is not overwritten', () => {
+  it('an in-place save (same inode) after the verification refuses the write and keeps the save', async () => {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    const inoBefore = fs.statSync(a).ino
+    const save = ORIGINAL.replace('footer text', 'footer text, saved by the editor')
+    extraDeps = {
+      hooks: {
+        afterVerify: () => {
+          fs.writeFileSync(a, save) // truncates and rewrites: the inode stays
+        }
+      }
+    }
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    expect(fs.statSync(a).ino).toBe(inoBefore)
+    expect(out.kind).toBe('refused')
+    expect(read(a)).toBe(save)
+    expect(leftovers(project)).toEqual([])
+  })
+
+  it('an in-place save while the temp file is being written (just before the rename) is caught too', async () => {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    const save = ORIGINAL + '// saved late\n'
+    const realLstat = fs.promises.lstat.bind(fs.promises)
+    let saved = false
+    vi.spyOn(fs.promises, 'lstat').mockImplementation(async (p, opts) => {
+      // The identity check of writeFileAtomic is the last thing before the rename.
+      if (String(p) === a && !saved) {
+        saved = true
+        fs.writeFileSync(a, save)
+      }
+      return realLstat(p, opts as never) as never
+    })
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    expect(saved).toBe(true)
+    expect(out.kind).toBe('refused')
+    expect(read(a)).toBe(save)
+    expect(leftovers(project)).toEqual([])
+  })
+
+  it('undo does not overwrite a save that lands just before its own rename', async () => {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    const save = read(a) + '// saved during undo\n'
+    const realLstat = fs.promises.lstat.bind(fs.promises)
+    let saved = false
+    vi.spyOn(fs.promises, 'lstat').mockImplementation(async (p, opts) => {
+      if (String(p) === a && !saved) {
+        saved = true
+        fs.writeFileSync(a, save)
+      }
+      return realLstat(p, opts as never) as never
+    })
+    const result = await undoRun(RUN, ws, deps())
+    expect(saved).toBe(true)
+    expect(result.restored).toEqual([])
+    expect(result.skipped).toEqual([{ path: 'a.ts', reason: 'changed-since-apply' }])
+    expect(read(a)).toBe(save)
+  })
+})
+
+describe('round 3, FIX 3: grant and mode are checked before EACH write', () => {
+  async function twoFiles(): Promise<{ a: string; b: string }> {
+    const a = write('a.ts', ORIGINAL)
+    const b = write('b.ts', 'x = 1\n')
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    propose('b.ts', 'x = 1', 'x = 2')
+    return { a, b }
+  }
+
+  it('a grant revoked after file 1 stops file 2, and nothing is written without the grant (not even a rollback)', async () => {
+    const { a, b } = await twoFiles()
+    extraDeps = { hooks: { afterWrite: (i) => { if (i === 0) grants = [] } } }
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    expect(out.kind).toBe('refused')
+    if (out.kind === 'refused') expect(out.reason).toMatch(/withdrawn/)
+    expect(read(b)).toBe('x = 1\n')
+    // File 1 stays applied: restoring it would be a write without permission.
+    expect(read(a)).toContain('const a = 2')
+    // With the grant back, undo puts it right.
+    grants = [grant()]
+    const undo = await undoRunForDirectory(RUN, 'dir-1', deps())
+    expect(undo.kind).toBe('restored')
+    expect(read(a)).toBe(ORIGINAL)
+  })
+
+  it('edit permission dropped after file 1 behaves the same', async () => {
+    const { b } = await twoFiles()
+    extraDeps = { hooks: { afterWrite: (i) => { if (i === 0) grants = [grant({ permissions: ['read'] })] } } }
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect(read(b)).toBe('x = 1\n')
+  })
+
+  it('the mode set to off after file 1 stops file 2 and rolls file 1 back (rollback needs only the grant)', async () => {
+    const { a, b } = await twoFiles()
+    extraDeps = { hooks: { afterWrite: (i) => { if (i === 0) modes.set('dir-1', 'off') } } }
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect(read(b)).toBe('x = 1\n')
+    expect(read(a)).toBe(ORIGINAL)
+  })
+
+  it('a grant revoked between the verification and the write of the SAME file stops that write', async () => {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    extraDeps = { hooks: { afterVerify: () => { grants = [] } } }
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect(read(a)).toBe(ORIGINAL)
+  })
+})
+
+describe('round 3, FIX 5: debris cannot disable undo', () => {
+  async function appliedA(): Promise<string> {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    return a
+  }
+
+  it('restores the genuine batch and reports orphan batches as skipped with their reason', async () => {
+    const a = await appliedA()
+    // What a crash in pass 1 leaves: a directory with a copy, no manifest, no ledger row.
+    const orphan = path.join(ws.snapshotDir, 'batch-2')
+    fs.mkdirSync(orphan)
+    fs.writeFileSync(path.join(orphan, '0.bak'), 'half a snapshot')
+    // A planted batch with a manifest but no row.
+    const planted = path.join(ws.snapshotDir, 'batch-3')
+    fs.mkdirSync(planted)
+    fs.writeFileSync(path.join(planted, 'manifest.json'), JSON.stringify({ version: 1, entries: [] }))
+    const out = await undoRunForDirectory(RUN, 'dir-1', deps())
+    expect(out).toEqual({
+      kind: 'restored',
+      restored: ['a.ts'],
+      skipped: [
+        { path: '.mingly/snapshots/run1/batch-3', reason: 'batch-not-recorded' },
+        { path: '.mingly/snapshots/run1/batch-2', reason: 'batch-not-recorded' }
+      ]
+    })
+    expect(read(a)).toBe(ORIGINAL)
+  })
+
+  it('a recorded batch whose manifest vanished is skipped as missing, the others still restore', async () => {
+    const a = write('a.ts', ORIGINAL)
+    const b = write('b.ts', 'x = 1\n')
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    await applyPendingEdits(RUN, ws, grants[0], deps())
+    store.resolve(RUN, true)
+    propose('b.ts', 'x = 1', 'x = 2')
+    await applyPendingEdits(RUN, ws, grants[0], deps())
+    fs.rmSync(path.join(ws.snapshotDir, 'batch-2', 'manifest.json'))
+    const result = await undoRun(RUN, ws, deps())
+    expect(result.restored).toEqual(['a.ts'])
+    expect(result.skipped).toEqual([{ path: '.mingly/snapshots/run1/batch-2', reason: 'batch-manifest-missing' }])
+    expect(read(a)).toBe(ORIGINAL)
+    expect(read(b)).toBe('x = 2\n')
+  })
+
+  it('when nothing at all can be restored because of unknown batches, the handler refuses and still lists them', async () => {
+    const a = write('a.ts', ORIGINAL)
+    fs.mkdirSync(path.join(ws.snapshotDir, 'batch-1'))
+    const out = await undoRunForDirectory(RUN, 'dir-1', deps())
+    expect(out.kind).toBe('refused')
+    if (out.kind === 'refused') {
+      expect(out.reason).toMatch(/no record in this app/)
+      expect(out.skipped).toEqual([{ path: '.mingly/snapshots/run1/batch-1', reason: 'batch-not-recorded' }])
+    }
+    expect(read(a)).toBe(ORIGINAL)
+  })
+})
+
+describe('round 3, FIX 6: the ledger is written atomically and a failure stops the apply', () => {
+  let ledgerDir: string
+  let ledgerFile: string
+  beforeEach(() => {
+    ledgerDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-ledger-')))
+    ledgerFile = path.join(ledgerDir, 'coding-snapshots.json')
+  })
+  afterEach(() => {
+    fs.rmSync(ledgerDir, { recursive: true, force: true })
+  })
+
+  it('a row survives a new ledger instance on the same file (restart)', async () => {
+    await createFileSnapshotLedger(ledgerFile).record('/p', 'run1', 1, 'abc')
+    expect(await createFileSnapshotLedger(ledgerFile).lookup('run1', 1)).toBe('abc')
+    expect(await createFileSnapshotLedger(ledgerFile).lookup('run1', 2)).toBeUndefined()
+  })
+
+  it('writes with a temp file and a rename, with private permissions, leaving no temp behind', async () => {
+    const realRename = fs.promises.rename.bind(fs.promises)
+    const moves: string[] = []
+    vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      moves.push(String(to))
+      return realRename(from, to)
+    })
+    await createFileSnapshotLedger(ledgerFile).record('/p', 'run1', 1, 'abc')
+    expect(moves).toEqual([ledgerFile])
+    expect(fs.statSync(ledgerFile).mode & 0o777).toBe(0o600)
+    expect(fs.readdirSync(ledgerDir)).toEqual(['coding-snapshots.json'])
+  })
+
+  it('a write failure PROPAGATES instead of being swallowed', async () => {
+    const missingDir = path.join(ledgerDir, 'no', 'such', 'dir', 'ledger.json')
+    await expect(createFileSnapshotLedger(missingDir).record('/p', 'run1', 1, 'abc')).rejects.toThrow()
+  })
+
+  it('an apply whose row cannot be written writes nothing, with the real file ledger', async () => {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    ledger = createFileSnapshotLedger(path.join(ledgerDir, 'no', 'such', 'dir', 'ledger.json'))
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect(read(a)).toBe(ORIGINAL)
+    expect(fs.readdirSync(ws.snapshotDir)).toEqual([])
+  })
+
+  it('a corrupt file reads as "no rows" (undo refuses) and is quarantined, not silently overwritten, on the next record', async () => {
+    fs.writeFileSync(ledgerFile, '{"rows": [')
+    const l = createFileSnapshotLedger(ledgerFile)
+    expect(await l.lookup('run1', 1)).toBeUndefined()
+    await l.record('/p', 'run2', 1, 'def')
+    expect(await l.lookup('run2', 1)).toBe('def')
+    const quarantined = fs.readdirSync(ledgerDir).filter((n) => n.includes('.corrupt-'))
+    expect(quarantined).toHaveLength(1)
+    expect(fs.readFileSync(path.join(ledgerDir, quarantined[0]), 'utf8')).toBe('{"rows": [')
+  })
+
+  it('concurrent records do not lose rows', async () => {
+    const l = createFileSnapshotLedger(ledgerFile)
+    await Promise.all(Array.from({ length: 20 }, (_, i) => l.record('/p', 'run1', i + 1, 'h' + i)))
+    for (let i = 0; i < 20; i++) expect(await l.lookup('run1', i + 1)).toBe('h' + i)
+  })
+
+  it('is bounded as a whole', async () => {
+    const l = createFileSnapshotLedger(ledgerFile, 3)
+    for (let i = 1; i <= 5; i++) await l.record('/p', 'r', i, 'h' + i)
+    expect(await l.lookup('r', 2)).toBeUndefined()
+    expect(await l.lookup('r', 5)).toBe('h5')
+  })
+})
+
+describe('round 3, FIX 7: an interrupted apply is detectable, swept and reported honestly', () => {
+  const MARKER = path.join('batch-1', 'IN-PROGRESS')
+  const STALE_TEMP = '.mingly-tmp-0123456789abcdef'
+
+  async function twoFilesProposed(): Promise<{ a: string; b: string }> {
+    const a = write('a.ts', ORIGINAL)
+    const b = write('b.ts', 'x = 1\n')
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    propose('b.ts', 'x = 1', 'x = 2')
+    return { a, b }
+  }
+
+  it('the marker exists while files are being written and is gone after a complete apply', async () => {
+    await twoFilesProposed()
+    const seen: boolean[] = []
+    extraDeps = { hooks: { afterVerify: (i) => { seen[i] = fs.existsSync(path.join(ws.snapshotDir, MARKER)) } } }
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    expect(seen).toEqual([true, true])
+    expect(fs.existsSync(path.join(ws.snapshotDir, MARKER))).toBe(false)
+  })
+
+  it('the marker is gone after a refusal that wrote nothing, and after a complete rollback', async () => {
+    const { b } = await twoFilesProposed()
+    const realRename = fs.promises.rename.bind(fs.promises)
+    vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (String(to) === b) throw new Error('EIO simulated')
+      return realRename(from, to)
+    })
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect(fs.existsSync(path.join(ws.snapshotDir, MARKER))).toBe(false)
+  })
+
+  it('the marker STAYS when a rollback cannot complete, so the partial state is detectable', async () => {
+    const { a, b } = await twoFilesProposed()
+    const realRename = fs.promises.rename.bind(fs.promises)
+    let toA = 0
+    vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      if (String(to) === b) throw new Error('EIO simulated')
+      if (String(to) === a && ++toA > 1) throw new Error('EIO on the rollback')
+      return realRename(from, to)
+    })
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    expect(out.kind).toBe('refused')
+    expect(read(a)).toContain('const a = 2')
+    expect(fs.existsSync(path.join(ws.snapshotDir, MARKER))).toBe(true)
+  })
+
+  it('the marker STAYS when permission is withdrawn after file 1', async () => {
+    await twoFilesProposed()
+    extraDeps = { hooks: { afterWrite: (i) => { if (i === 0) grants = [] } } }
+    await applyPendingEdits(RUN, ws, grants[0], deps())
+    expect(fs.existsSync(path.join(ws.snapshotDir, MARKER))).toBe(true)
+  })
+
+  /** What a killed process leaves: a marker, a stale temp, one file written, one not. */
+  async function crashedState(): Promise<{ a: string; b: string }> {
+    const { a, b } = await twoFilesProposed()
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    fs.writeFileSync(path.join(ws.snapshotDir, MARKER), '{}')
+    fs.writeFileSync(b, 'x = 1\n') // as if this rename never happened
+    fs.writeFileSync(path.join(project, STALE_TEMP), 'half a write')
+    return { a, b }
+  }
+
+  it('undo names the interruption, sweeps the stale temp and does not call an unwritten file "changed"', async () => {
+    const { a, b } = await crashedState()
+    const result = await undoRun(RUN, ws, deps())
+    expect(result.interrupted).toBe(true)
+    expect(result.restored).toEqual(['a.ts'])
+    expect(result.skipped).toEqual([{ path: 'b.ts', reason: 'not-written-interrupted' }])
+    expect(read(a)).toBe(ORIGINAL)
+    expect(read(b)).toBe('x = 1\n')
+    expect(leftovers(project)).toEqual([])
+    expect(fs.existsSync(path.join(ws.snapshotDir, MARKER))).toBe(false)
+  })
+
+  it('a new apply for an interrupted run sweeps the temp and refuses, pointing at undo', async () => {
+    await crashedState()
+    const c = write('c.ts', 'y = 1\n')
+    propose('c.ts', 'y = 1', 'y = 2')
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    expect(out.kind).toBe('refused')
+    if (out.kind === 'refused') expect(out.reason).toMatch(/interrupted/)
+    expect(leftovers(project)).toEqual([])
+    expect(read(c)).toBe('y = 1\n')
+  })
+
+  it('an undo of a clean run does not claim an interruption', async () => {
+    await twoFilesProposed()
+    await applyPendingEdits(RUN, ws, grants[0], deps())
+    expect('interrupted' in (await undoRun(RUN, ws, deps()))).toBe(false)
+  })
+})
+
+describe('round 3, FIX 2: accept is bound to the package the human saw', () => {
+  it('a proposal added after the human looked refuses the accept, writes nothing, releases nothing', async () => {
+    const a = write('a.ts', ORIGINAL)
+    const b = write('b.ts', 'x = 1\n')
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    const shown = pkg(RUN)
+    propose('b.ts', 'x = 1', 'x = 2')
+    const out = await acceptEditsForRun(RUN, 'dir-1', shown, deps())
+    expect(out.kind).toBe('refused')
+    if (out.kind === 'refused') expect(out.reason).toMatch(/changed.*reviewed again/)
+    expect(read(a)).toBe(ORIGINAL)
+    expect(read(b)).toBe('x = 1\n')
+    expect(store.pending(RUN)).toHaveLength(2)
+  })
+
+  it('the digest of what is pending now applies', async () => {
+    write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    expect((await acceptEditsForRun(RUN, 'dir-1', pkg(RUN), deps())).kind).toBe('applied')
+  })
+
+  it('a missing or blank digest is refused: there is no accept of "whatever the run holds"', async () => {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    for (const bad of [undefined, '', 42, null]) {
+      expect((await acceptEditsForRun(RUN, 'dir-1', bad, deps())).kind).toBe('refused')
+    }
+    expect(read(a)).toBe(ORIGINAL)
+  })
+
+  it('a proposal added DURING the apply is neither applied nor released; the applied one is released', async () => {
+    const a = write('a.ts', ORIGINAL)
+    const c = write('c.ts', 'z = 1\n')
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    const shown = pkg(RUN)
+    extraDeps = {
+      hooks: {
+        afterVerify: () => {
+          expect(store.propose(RUN, 2, { path: 'c.ts', oldText: 'z = 1', newText: 'z = 2' }, 'z = 1\n').kind).toBe(
+            'proposed'
+          )
+        }
+      }
+    }
+    const out = await acceptEditsForRun(RUN, 'dir-1', shown, deps())
+    expect(out.kind).toBe('applied')
+    expect(read(a)).toContain('const a = 2')
+    expect(read(c)).toBe('z = 1\n')
+    expect(store.pending(RUN).map((e) => e.path)).toEqual(['c.ts'])
+    const accepted = store.auditRecords(RUN).records.filter((r) => r.outcome === 'package-accepted')
+    expect(accepted.map((r) => r.edits)).toEqual([1])
+  })
+
+  it('packageDigest is stable and sensitive to content and order', () => {
+    const base = { path: 'a.ts', oldText: 'o', newText: 'n', diff: '', addedLines: 0, removedLines: 0, introducesHiddenCharacters: false, baseSha256: 'h', matchIndex: 0 }
+    const one = { ...base, path: 'b.ts' }
+    expect(packageDigest([base, one])).toBe(packageDigest([{ ...base }, { ...one }]))
+    expect(packageDigest([one, base])).not.toBe(packageDigest([base, one]))
+    expect(packageDigest([{ ...base, newText: 'm' }])).not.toBe(packageDigest([base]))
+    expect(packageDigest([{ ...base, baseSha256: 'x' }])).not.toBe(packageDigest([base]))
+    expect(packageDigest([])).not.toBe(packageDigest([base]))
+  })
+
+  it('the outcome carries the exact package that was applied', async () => {
+    write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    const before = store.pending(RUN)
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    expect(out.kind).toBe('applied')
+    if (out.kind === 'applied') expect(packageDigest(out.edits)).toBe(packageDigest(before))
+  })
+})
+
 describe('handlers: R56 (the workspace is rebuilt from the grant) and R63 (proposals outlive a finished run)', () => {
   it('accept rebuilds the workspace from the grant, applies, and only then resolves the package', async () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
-    const out = await acceptEditsForRun(RUN, 'dir-1', deps())
+    const out = await acceptEditsForRun(RUN, 'dir-1', pkg(RUN), deps())
     expect(out.kind).toBe('applied')
     expect(read(a)).toContain('const a = 2')
     expect(store.pending(RUN)).toEqual([])
@@ -766,7 +1203,7 @@ describe('handlers: R56 (the workspace is rebuilt from the grant) and R63 (propo
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
     fs.writeFileSync(a, ORIGINAL + 'user line\n')
-    const out = await acceptEditsForRun(RUN, 'dir-1', deps())
+    const out = await acceptEditsForRun(RUN, 'dir-1', pkg(RUN), deps())
     expect(out.kind).toBe('refused')
     expect(store.pending(RUN)).toHaveLength(1)
   })
@@ -776,7 +1213,7 @@ describe('handlers: R56 (the workspace is rebuilt from the grant) and R63 (propo
       write(`${run}.ts`, ORIGINAL)
       propose(`${run}.ts`, 'const a = 1', 'const a = 2', run)
       store.endRun(run, 'finished')
-      const out = await acceptEditsForRun(run, 'dir-1', deps())
+      const out = await acceptEditsForRun(run, 'dir-1', pkg(run), deps())
       expect(out.kind, run).toBe('applied')
       expect(read(path.join(project, `${run}.ts`))).toContain('const a = 2')
     }
@@ -786,7 +1223,7 @@ describe('handlers: R56 (the workspace is rebuilt from the grant) and R63 (propo
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
     store.endRun(RUN, 'abandoned')
-    const out = await acceptEditsForRun(RUN, 'dir-1', deps())
+    const out = await acceptEditsForRun(RUN, 'dir-1', pkg(RUN), deps())
     expect(out.kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
   })
@@ -799,7 +1236,7 @@ describe('handlers: R56 (the workspace is rebuilt from the grant) and R63 (propo
       fs.writeFileSync(a, ORIGINAL)
       store.propose(RUN, 1, { path: 'a.ts', oldText: 'const a = 1', newText: 'const a = 2' }, ORIGINAL)
       grants = []
-      const out = await acceptEditsForRun(RUN, 'dir-1', deps())
+      const out = await acceptEditsForRun(RUN, 'dir-1', pkg(RUN), deps())
       expect(out.kind).toBe('refused')
       expect(fs.existsSync(path.join(fresh, '.mingly'))).toBe(false)
       expect(fs.readFileSync(a, 'utf8')).toBe(ORIGINAL)
@@ -811,7 +1248,7 @@ describe('handlers: R56 (the workspace is rebuilt from the grant) and R63 (propo
   it('undo with a revoked grant refuses and does NOT rebuild the workspace or restore anything', async () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
-    expect((await acceptEditsForRun(RUN, 'dir-1', deps())).kind).toBe('applied')
+    expect((await acceptEditsForRun(RUN, 'dir-1', pkg(RUN), deps())).kind).toBe('applied')
     const applied = read(a)
     // A second project that never had a workspace: a rebuild would create one.
     const fresh = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-apply-fresh-')))
@@ -843,13 +1280,13 @@ describe('handlers: R56 (the workspace is rebuilt from the grant) and R63 (propo
       modes.set('dir-2', 'propose')
       const a = write('a.ts', ORIGINAL)
       propose('a.ts', 'const a = 1', 'const a = 2')
-      expect((await acceptEditsForRun(RUN, 'dir-2', deps())).kind).toBe('refused')
+      expect((await acceptEditsForRun(RUN, 'dir-2', pkg(RUN), deps())).kind).toBe('refused')
       expect(read(a)).toBe(ORIGINAL)
       expect(fs.readFileSync(path.join(otherProject, 'a.ts'), 'utf8')).toBe(ORIGINAL)
       expect(fs.existsSync(path.join(otherProject, '.mingly'))).toBe(false)
       expect(store.pending(RUN)).toHaveLength(1)
       // The recorded one proceeds.
-      expect((await acceptEditsForRun(RUN, 'dir-1', deps())).kind).toBe('applied')
+      expect((await acceptEditsForRun(RUN, 'dir-1', pkg(RUN), deps())).kind).toBe('applied')
     } finally {
       fs.rmSync(otherProject, { recursive: true, force: true })
     }
@@ -858,7 +1295,7 @@ describe('handlers: R56 (the workspace is rebuilt from the grant) and R63 (propo
   it('FIX A: undo with a mismatched directory id is refused and restores nothing', async () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
-    await acceptEditsForRun(RUN, 'dir-1', deps())
+    await acceptEditsForRun(RUN, 'dir-1', pkg(RUN), deps())
     const applied = read(a)
     grants = [grant(), grant({ id: 'dir-2', path: project })]
     expect((await undoRunForDirectory(RUN, 'dir-2', deps())).kind).toBe('refused')
@@ -868,7 +1305,7 @@ describe('handlers: R56 (the workspace is rebuilt from the grant) and R63 (propo
   it('FIX A: accept for a run with no recorded directory is refused, not answered from the parameter', async () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2', 'unrecorded')
-    expect((await acceptEditsForRun('unrecorded', 'dir-1', deps())).kind).toBe('refused')
+    expect((await acceptEditsForRun('unrecorded', 'dir-1', pkg('unrecorded'), deps())).kind).toBe('refused')
     // Undo does not need the registry (see FIX B round 2), but it needs a snapshot for the run in
     // this very directory; none exists, so it refuses and creates nothing.
     expect((await undoRunForDirectory('unrecorded', 'dir-1', deps())).kind).toBe('refused')
@@ -889,9 +1326,9 @@ describe('handlers: R56 (the workspace is rebuilt from the grant) and R63 (propo
   })
 
   it('takes nothing but a run id and a directory id: bad input is refused', async () => {
-    expect((await acceptEditsForRun(undefined, 'dir-1', deps())).kind).toBe('refused')
-    expect((await acceptEditsForRun(RUN, 42, deps())).kind).toBe('refused')
-    expect((await acceptEditsForRun('../escape', 'dir-1', deps())).kind).toBe('refused')
+    expect((await acceptEditsForRun(undefined, 'dir-1', pkg(undefined), deps())).kind).toBe('refused')
+    expect((await acceptEditsForRun(RUN, 42, pkg(RUN), deps())).kind).toBe('refused')
+    expect((await acceptEditsForRun('../escape', 'dir-1', pkg('../escape'), deps())).kind).toBe('refused')
     expect((await undoRunForDirectory('../escape', 'dir-1', deps())).kind).toBe('refused')
   })
 
