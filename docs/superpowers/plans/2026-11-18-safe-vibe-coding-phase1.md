@@ -1047,6 +1047,20 @@ git commit -m "feat(coding): edit_file proposes a diff instead of writing"
   Kanäle: `CODING_ACCEPT_EDITS: 'coding:accept-edits'`, `CODING_REJECT_EDITS: 'coding:reject-edits'`, `CODING_UNDO_RUN: 'coding:undo-run'`.
 - Produces für Task 14: die drei Kanäle.
 
+**Pflicht, nicht optional (Entscheid R67): `editStillMatches` muss gerufen werden.**
+Task 10 speichert zu jedem Vorschlag einen `baseSha256` des gelesenen Dateiinhalts und
+den `matchIndex`, und exportiert `editStillMatches(edit, currentContent)`. Dieser Task
+**muss** die Funktion gegen den Inhalt rufen, den er beim Anwenden liest, und bei `false`
+ablehnen — ohne diesen Aufruf ist der Identitaetsbeweis gebaut und unbenutzt.
+
+Die erneute Pruefung, dass `oldText` genau einmal vorkommt, genuegt **nicht**: sie faengt
+eine Nutzeraenderung **anderswo** in der Datei nicht, und zwei verschiedene Runs koennen
+Vorschlaege auf derselben Datei halten (die Ein-Vorschlag-Regel ist run-lokal). Der Hash
+macht aus «wahrscheinlich noch anwendbar» ein **beweisbar dieselbe Datei, gegen die der
+Diff berechnet wurde** — und genau das ist es, was die Abnahme eines Menschen bedeuten
+soll. Ein Test muss belegen, dass eine Aenderung **ausserhalb** des Trefferbereichs die
+Anwendung ablehnt, nicht nur eine Aenderung am Treffer selbst.
+
 **Wann ein Vorschlag noch da ist (Entscheid R63).** Der Vorschlagsspeicher raeumt am
 Runende **nur** auf, wenn der Run `cancelled` oder `failed` war — bei `completed` und
 `max_steps_reached` bleiben die Vorschlaege liegen, denn **genau sie sind die Lieferung,
