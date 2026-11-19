@@ -52,32 +52,52 @@ export const CODING_BLOCKED_PATTERNS: readonly string[] = [
 ];
 
 /**
- * A DATA file named like one of these is blocked: the bare name, or the name
- * followed by anything ending in a data extension (`secrets`, `secrets.json`,
- * `secrets.local.yaml`). Code and docs named the same (`secrets.ts`,
- * `secrets.test.ts`, `secrets.md`) stay readable: a guard that false-alarms
- * on the module that reads secrets gets switched off.
+ * Extension groups (lower-case, no dot). CODE and DOC are the only ones a
+ * file named like a CODING_BLOCKED_DATA_BASENAMES entry may carry and still be
+ * readable; everything else (data, config, markup-as-data, unknown) is not
+ * exempt.
+ *
+ * Deliberately NOT in CODE/DOC although readable: `xml` and `svg` (data
+ * formats), `txt` (a plain text file named secrets is what people actually
+ * write secrets into), and everything under DATA.
  */
-export const CODING_BLOCKED_DATA_BASENAMES: readonly string[] = ["secrets"];
-export const CODING_BLOCKED_DATA_EXTENSIONS: readonly string[] = [
-  "json", "yaml", "yml", "toml", "ini", "env", "txt",
-];
-
-/** Extensions (lower-case, no dot) the coding tools may read. */
-export const CODING_READ_EXTENSIONS: readonly string[] = [
-  // code
+export const CODING_CODE_EXTENSIONS: readonly string[] = [
   "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs",
   "py", "rb", "go", "rs", "java", "kt", "kts", "scala", "swift",
   "c", "h", "cc", "cpp", "hpp", "cs", "php", "lua", "dart", "ex", "exs",
   "sh", "bash", "zsh", "sql", "graphql", "gql", "proto", "gradle",
-  // markup and styles
-  "html", "htm", "css", "scss", "sass", "less", "vue", "svelte", "xml", "svg",
-  // data and config
+  "html", "htm", "css", "scss", "sass", "less", "vue", "svelte",
+];
+export const CODING_DOC_EXTENSIONS: readonly string[] = ["md", "mdx"];
+const CODING_DATA_EXTENSIONS: readonly string[] = [
+  "xml", "svg",
   "json", "jsonc", "yaml", "yml", "toml", "ini", "cfg", "conf", "properties",
   "csv", "tsv", "lock",
-  // prose
-  "md", "mdx", "txt",
+  "txt",
 ];
+
+/**
+ * A file named like one of these is blocked: the bare name, or the name
+ * followed by anything, UNLESS the final extension is a code or documentation
+ * extension (`secrets`, `secrets.json`, `secrets.conf`, `secrets.bak`,
+ * `secrets.whatever` are blocked; `secrets.ts`, `secrets.test.ts`,
+ * `secrets.md` stay readable: a guard that false-alarms on the module that
+ * reads secrets gets switched off). An allowlist of what is exempt, so a
+ * format nobody has thought of yet is refused.
+ */
+export const CODING_BLOCKED_DATA_BASENAMES: readonly string[] = ["secrets"];
+
+/** Extensions (lower-case, no dot) the coding tools may read. */
+export const CODING_READ_EXTENSIONS: readonly string[] = [
+  ...CODING_CODE_EXTENSIONS,
+  ...CODING_DOC_EXTENSIONS,
+  ...CODING_DATA_EXTENSIONS,
+];
+
+const SECRETS_EXEMPT_EXTENSIONS = new Set([
+  ...CODING_CODE_EXTENSIONS,
+  ...CODING_DOC_EXTENSIONS,
+]);
 
 /**
  * Files that carry no extension but are ordinary project text. Exact,
@@ -129,7 +149,7 @@ function foldSegment(segment: string): string {
 }
 
 type Fold =
-  | { kind: "ok"; segments: string[]; resolved: string[] }
+  | { kind: "ok"; segments: string[]; resolved: string[]; endsWithName: boolean }
   | { kind: "unclassifiable" };
 
 /**
@@ -149,7 +169,12 @@ function foldPath(input: unknown): Fold {
 
   const segments: string[] = [];
   const resolved: string[] = [];
-  for (const raw of input.split(/[\\/]/)) {
+  const tokens = input.split(/[\\/]/);
+  // The last token names a FILE only when it is a real name: a trailing
+  // separator, `.` or `..` means the path ends in a directory.
+  const last = tokens[tokens.length - 1];
+  const endsWithName = last !== "" && last !== "." && last !== "..";
+  for (const raw of tokens) {
     if (raw === "") continue; // "a//b", leading or trailing slash
     if (raw === ".") continue;
     if (raw === "..") {
@@ -166,7 +191,7 @@ function foldPath(input: unknown): Fold {
     segments.push(folded);
     resolved.push(folded);
   }
-  return { kind: "ok", segments, resolved };
+  return { kind: "ok", segments, resolved, endsWithName };
 }
 
 // ---------------------------------------------------------------------------
@@ -217,24 +242,27 @@ const MULTI_SEGMENT_PATTERNS = COMPILED_PATTERNS.filter((p) => p.length > 1);
  * the .env family is refused even if it is documentation; a doc can be
  * renamed, a secret that was read cannot be un-read.
  */
-function isBlockedDataName(segment: string): boolean {
+/**
+ * `isFileName` is true only for the LAST segment of a path that ends in a
+ * name. The code/prose exemption is correct for a file (`src/secrets.ts` is a
+ * module) and wrong for a directory (`secrets.ts/api.json`, `secrets.d/`,
+ * `secrets.prod/`): an exemption that is right in one case must not leak into
+ * another case that reaches the same state. A directory gets no exemption.
+ */
+function isBlockedDataName(segment: string, isFileName: boolean): boolean {
   for (const base of CODING_BLOCKED_DATA_BASENAMES) {
     if (segment === base) return true;
-    if (
-      segment.startsWith(`${base}.`) &&
-      CODING_BLOCKED_DATA_EXTENSIONS.includes(
-        segment.slice(segment.lastIndexOf(".") + 1),
-      )
-    ) {
-      return true;
+    if (segment.startsWith(`${base}.`)) {
+      const ext = segment.slice(segment.lastIndexOf(".") + 1);
+      if (!isFileName || !SECRETS_EXEMPT_EXTENSIONS.has(ext)) return true;
     }
   }
   return false;
 }
 
-function segmentIsBlocked(segment: string): boolean {
+function segmentIsBlocked(segment: string, isFileName: boolean): boolean {
   return (
-    isBlockedDataName(segment) ||
+    isBlockedDataName(segment, isFileName) ||
     COMPILED_PATTERNS.some(
       (pattern) => pattern.length === 1 && pattern[0].test(segment),
     )
@@ -275,7 +303,14 @@ export function isBlockedPath(relativePath: string): boolean {
 
   // Every segment as written, including ones a later `..` cancels: a detour
   // through `.env/` is not an excuse.
-  if (folded.segments.some(segmentIsBlocked)) return true;
+  const lastIndex = folded.segments.length - 1;
+  if (
+    folded.segments.some((seg, i) =>
+      segmentIsBlocked(seg, folded.endsWithName && i === lastIndex),
+    )
+  ) {
+    return true;
+  }
   return MULTI_SEGMENT_PATTERNS.some((p) => sequenceMatches(p, folded.resolved));
 }
 

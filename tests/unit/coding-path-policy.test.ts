@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   CODING_BLOCKED_PATTERNS,
   CODING_BLOCKED_DATA_BASENAMES,
-  CODING_BLOCKED_DATA_EXTENSIONS,
+  CODING_CODE_EXTENSIONS,
+  CODING_DOC_EXTENSIONS,
   compileBlockedPattern,
   resolvePathSegments,
   CODING_READ_EXTENSIONS,
@@ -363,11 +364,59 @@ describe("coding path policy: fix round 3 (secrets is a data file, not a code fi
     }
   });
 
-  it("keeps the data family a family: names and extensions are lists, not spellings", () => {
-    expect([...CODING_BLOCKED_DATA_BASENAMES]).toEqual(["secrets"]);
-    expect([...CODING_BLOCKED_DATA_EXTENSIONS]).toEqual([
-      "json", "yaml", "yml", "toml", "ini", "env", "txt",
-    ]);
+  it("blocks secrets with any extension that is not code or prose (fail closed)", () => {
+    for (const p of [
+      "secrets.conf",
+      "secrets.cfg",
+      "secrets.properties",
+      "secrets.xml",
+      "secrets.bak",
+      "secrets.enc",
+      "secrets.somethingnew",
+      "secrets.csv",
+      "secrets.lock",
+      "secrets.svg",
+      "secrets.",
+      "dir/Secrets.BAK",
+    ]) {
+      expect(isBlockedPath(p), p).toBe(true);
+    }
+  });
+
+  it("applies the code/prose exemption to the file name only, never to a directory", () => {
+    // secrets.ts/ is not source code, it is a folder named like one.
+    for (const p of [
+      "secrets.d/api.json",
+      "secrets.prod/token.yaml",
+      "secrets.ts/api.json",
+      "secrets.md/key.txt",
+      "src/secrets.ts/api.json",
+      "secrets/api.json",
+      "secrets.ts/",
+      "secrets.ts\\",
+      "secrets.ts/.",
+      "src/secrets.ts/..",
+      "secrets.ts/../x.ts",
+    ]) {
+      expect(isBlockedPath(p), p).toBe(true);
+    }
+    for (const p of ["src/secrets.ts", "docs/secrets.md", "secrets.test.ts", "src/secrets.py"]) {
+      expect(isBlockedPath(p), p).toBe(false);
+    }
+  });
+
+  it("derives the exemption from the code and prose lists, one source", () => {
+    expect([...CODING_DOC_EXTENSIONS]).toEqual(["md", "mdx"]);
+    for (const e of [...CODING_CODE_EXTENSIONS, ...CODING_DOC_EXTENSIONS]) {
+      expect(CODING_READ_EXTENSIONS).toContain(e);
+      expect(isBlockedPath(`secrets.${e}`), e).toBe(false);
+    }
+    // Data and config stay refused: not in either list.
+    for (const e of ["json", "yaml", "yml", "toml", "ini", "cfg", "conf", "properties", "csv", "tsv", "lock", "xml", "svg", "txt"]) {
+      expect(CODING_CODE_EXTENSIONS).not.toContain(e);
+      expect(CODING_DOC_EXTENSIONS).not.toContain(e);
+      expect(isBlockedPath(`secrets.${e}`), e).toBe(true);
+    }
   });
 });
 
