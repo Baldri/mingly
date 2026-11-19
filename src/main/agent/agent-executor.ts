@@ -19,7 +19,8 @@ import { postflightGuard, preflightGuard } from '../security/request-guard'
 import { getGuardDeps } from '../security/request-guard-deps'
 
 import { nanoid } from 'nanoid'
-import { guardToolResults } from './loop-guard'
+import { guardToolResults, type ToolResultOrigin } from './loop-guard'
+import { originForToolCall } from '../coding/read-tools'
 import {
   buildConsentRequest,
   getConsentBroker,
@@ -256,7 +257,7 @@ export class AgentExecutor {
         if (storedMode !== 'off') {
           const workspace = await ensureProjectWorkspace(coding.projectPath, runId)
           contextDir = workspace.contextDir
-          toolCtx = { coding }
+          toolCtx = { coding, workspace }
         }
       }
 
@@ -362,9 +363,12 @@ export class AgentExecutor {
         // step_complete is emitted — blocked content must not travel onwards to
         // the renderer either. A `consent` finding is the one outcome that does
         // not end the run: it is put to the user below.
-        const origins = rawToolResults.map((r) => ({
-          toolName: llmResponse.toolCalls.find((tc) => tc.id === r.toolCallId)?.name ?? 'unknown'
-        }))
+        // originForToolCall fills ToolResultOrigin.filePath for read_file, so the
+        // consent dialog and the withheld notice name the file, not just the tool.
+        const origins = rawToolResults.map((r): ToolResultOrigin => {
+          const call = llmResponse.toolCalls.find((tc) => tc.id === r.toolCallId)
+          return call ? originForToolCall(call) : { toolName: 'unknown' }
+        })
         const guardCtx = { provider, model, conversationId: run.conversationId }
 
         // A `consent` outcome settles ONE result, then the guard continues over

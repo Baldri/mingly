@@ -20,6 +20,8 @@ import type {
   MCPTool
 } from '../../shared/types'
 import type { CodingRunOptions } from '../../shared/coding-types'
+import type { ProjectWorkspace } from '../coding/project-workspace'
+import { registerReadTools } from '../coding/read-tools'
 
 // ── Built-in tool handler type ─────────────────────────────────
 
@@ -30,6 +32,13 @@ import type { CodingRunOptions } from '../../shared/coding-types'
  */
 export interface ToolContext {
   coding?: CodingRunOptions
+  /**
+   * The run's project workspace: the ONE instance the executor created. A
+   * handler reads it from here and never calls ensureProjectWorkspace itself
+   * (two instances per run would mean duplicate filesystem work and a race on
+   * the same directories). Absent for non-coding runs.
+   */
+  workspace?: ProjectWorkspace
 }
 
 /**
@@ -399,6 +408,9 @@ export function getToolRegistry(): ToolRegistry {
  * These are always available regardless of MCP server state.
  */
 function registerDefaultBuiltIns(registry: ToolRegistry): void {
+  // Coding read tools (gated: offered only in a coding run of mode read-only or above)
+  registerReadTools(registry)
+
   // Echo tool — useful for testing and debugging the agent loop
   registry.registerBuiltIn(
     {
