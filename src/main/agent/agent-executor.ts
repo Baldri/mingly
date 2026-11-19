@@ -369,11 +369,10 @@ export class AgentExecutor {
         const origins = rawToolResults.map((r): ToolResultOrigin => {
           const call = llmResponse.toolCalls.find((tc) => tc.id === r.toolCallId)
           if (!call) return { toolName: 'unknown' }
-          // take(): a later step must not inherit this path.
-          const spelling = call.arguments?.path
-          const resolved =
-            typeof spelling === 'string' ? toolCtx?.resolvedPaths?.get(spelling) : undefined
-          if (typeof spelling === 'string') toolCtx?.resolvedPaths?.delete(spelling)
+          // Keyed by call id: the same spelling twice (paging) and other tools
+          // with a `path` argument cannot confuse two calls.
+          const resolved = toolCtx?.resolvedPaths?.get(call.id)
+          toolCtx?.resolvedPaths?.delete(call.id)
           return originForToolCall(call, resolved)
         })
         const guardCtx = { provider, model, conversationId: run.conversationId }

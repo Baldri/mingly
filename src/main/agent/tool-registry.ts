@@ -40,14 +40,18 @@ export interface ToolContext {
    */
   workspace?: ProjectWorkspace
   /**
-   * requested path string (as the model wrote it) -> project-relative path a
-   * coding tool ACTUALLY read (the resolved real path). Keyed by the spelling
-   * because a handler does not know its call id; two calls with the same
-   * spelling read the same file. The handler writes it, the executor takes it when it
-   * builds the guard's origin, so a consent dialog names the file that was read
-   * and not the spelling the model used. Absent entry = no path was resolved.
+   * tool call id -> project-relative path a coding tool ACTUALLY read (the
+   * resolved real path, in display form). The handler writes it under its own
+   * call id (see toolCallId), the executor takes it when it builds the guard's
+   * origin, so a consent dialog names the file that was read and not the
+   * spelling the model used. Absent entry = no path was resolved.
    */
   resolvedPaths?: Map<string, string>
+  /**
+   * Set by the registry on the context it hands to a handler: the id of the
+   * call being run. The run's own context never carries it.
+   */
+  toolCallId?: string
 }
 
 /**
@@ -291,7 +295,10 @@ export class ToolRegistry {
           isError: true
         }
       }
-      const result = await builtIn.handler(toolCall.arguments, ctx)
+      const result = await builtIn.handler(
+        toolCall.arguments,
+        ctx ? { ...ctx, toolCallId: toolCall.id } : ctx
+      )
       return {
         toolCallId: toolCall.id,
         content: this.truncateResult(result),

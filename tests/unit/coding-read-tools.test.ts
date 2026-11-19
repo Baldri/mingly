@@ -142,6 +142,43 @@ describe('read_file', () => {
     expect(out).not.toContain('hunter2-value')
   })
 
+  it('refuses a link whose target is a blocked DATA name (secrets.json, credentials.json)', async () => {
+    write('secrets.json', '{"k":"secret-data-value"}')
+    write('credentials.json', '{"k":"cred-data-value"}')
+    fs.symlinkSync('secrets.json', path.join(project, 'config.json'))
+    fs.symlinkSync('credentials.json', path.join(project, 'plain.json'))
+    const ctx = await ctxFor()
+    for (const name of ['config.json', 'plain.json']) {
+      const out = await call('read_file', { path: name }, ctx)
+      expect(out).toMatch(/refused/i)
+      expect(out).not.toContain('data-value')
+    }
+  })
+
+  it('refuses a link that reaches a MULTI-segment blocked pattern (.docker/config.json)', async () => {
+    write('.docker/config.json', '{"auth":"docker-auth-value"}')
+    fs.symlinkSync('.docker/config.json', path.join(project, 'dc.json'))
+    const out = await call('read_file', { path: 'dc.json' }, await ctxFor())
+    expect(out).toMatch(/refused/i)
+    expect(out).not.toContain('docker-auth-value')
+  })
+
+  it('answers a dangling link and a link to an existing outside file IDENTICALLY (no existence oracle)', async () => {
+    fs.writeFileSync(path.join(outside, 'o.ts'), 'x')
+    fs.writeFileSync(path.join(outside, 'o.xyz'), 'x')
+    fs.symlinkSync(path.join(outside, 'o.ts'), path.join(project, 'exists.ts'))
+    fs.symlinkSync(path.join(outside, 'gone', 'nowhere.ts'), path.join(project, 'dangling.ts'))
+    fs.symlinkSync(path.join(outside, 'o.xyz'), path.join(project, 'exists.xyz'))
+    fs.symlinkSync(path.join(outside, 'gone', 'nowhere.xyz'), path.join(project, 'dangling.xyz'))
+    const ctx = await ctxFor()
+    const a = await call('read_file', { path: 'exists.ts' }, ctx)
+    const b = await call('read_file', { path: 'dangling.ts' }, ctx)
+    const c = await call('read_file', { path: 'exists.xyz' }, ctx)
+    const d = await call('read_file', { path: 'dangling.xyz' }, ctx)
+    expect(b).toBe(a)
+    expect(d).toBe(c)
+  })
+
   it('refuses a symlinked DIRECTORY that leads into a blocked directory inside the grant', async () => {
     write('.git/hooks/x.ts', 'hook-content')
     fs.symlinkSync('.git', path.join(project, 'g'))
@@ -333,6 +370,28 @@ describe('read_file result budget', () => {
     }
     expect(calls).toBeGreaterThan(1)
     expect(received).toEqual(lines)
+  })
+
+  it('a file ending in a newline: no phantom last line, the final call is not empty', async () => {
+    const lines = Array.from({ length: 30 }, (_, i) => `row-${String(i + 1).padStart(2, '0')} ${'y'.repeat(20)}`)
+    write('nl.ts', lines.join('\n') + '\n')
+    const ctx = await ctxFor()
+    const received: string[] = []
+    let offset = 1
+    for (let calls = 0; ; calls++) {
+      expect(calls).toBeLessThan(100)
+      const out = await readSmall({ path: 'nl.ts', offset }, ctx)
+      expect(out).not.toBe('')
+      const hint = /\n\[showing lines (\d+)-(\d+) of (\d+); (\d+) more lines; continue with offset=(\d+)\]$/.exec(out)
+      received.push(...(hint ? out.slice(0, hint.index) : out).split('\n'))
+      if (!hint) break
+      expect(Number(hint[3])).toBe(30)
+      offset = Number(hint[5])
+    }
+    expect(received).toEqual(lines)
+    // small file, whole read: no hint at all
+    write('tiny.ts', 'one\ntwo\n')
+    expect(await readSmall({ path: 'tiny.ts' }, ctx)).toBe('one\ntwo')
   })
 
   it('says explicitly when a single line exceeds the budget, and names the offset that skips it', async () => {
@@ -534,6 +593,33 @@ describe('pattern matching cannot hang the main process', () => {
     const elapsed = Date.now() - t
     expect(elapsed).toBeLessThan(BOUND_MS)
     expect(out).toContain(NAME)
+  })
+
+  it('hostile .gitignore (many heavy rules) x 400 files completes quickly and says the list is incomplete', async () => {
+    // The review's case. Measured before the global budget: seconds of blocked event loop.
+    // '*' + a long literal run that nearly matches: the two-pointer matcher
+    // re-compares the run at every start position, O(pattern x text) per pair.
+    const rule = '*' + 'a'.repeat(150) + 'b'
+    write('.gitignore', Array.from({ length: 300 }, () => rule).join('\n') + '\n')
+    for (let i = 0; i < 400; i++) write(`files/${'a'.repeat(230)}${String(i).padStart(3, '0')}`, 'x')
+    const ctx = await ctxFor()
+    const t = Date.now()
+    const out = await call('list_files', {}, ctx)
+    const elapsed = Date.now() - t
+    expect(elapsed).toBeLessThan(1500)
+    expect(out).toMatch(/INCOMPLETE/)
+  })
+
+  it('an ordinary 400-file listing with an ordinary .gitignore is complete and unchanged', async () => {
+    write('.gitignore', 'node_modules/\n*.log\n/dist\nbuild/\n*.tmp\n.cache\n')
+    for (let i = 0; i < 400; i++) write(`src/mod${String(i).padStart(3, '0')}.ts`, 'x')
+    write('debug.log', 'x')
+    write('node_modules/p/i.ts', 'x')
+    const out = await call('list_files', {}, await ctxFor())
+    expect(out).not.toMatch(/INCOMPLETE|truncated/)
+    expect(out.split('\n').filter((l) => l.startsWith('src/'))).toHaveLength(400)
+    expect(out).not.toContain('debug.log')
+    expect(out).not.toContain('node_modules')
   })
 
   it('.gitignore with a normal rule still ignores (positive control)', async () => {

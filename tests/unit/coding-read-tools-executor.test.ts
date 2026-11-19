@@ -195,11 +195,67 @@ describe('read_file through the real executor', () => {
     expect(guardOrigins[0][0]).toEqual({ toolName: 'read_file' })
   })
 
-  it('a real file name with bidi and zero-width characters reaches the guard without them', async () => {
-    fs.writeFileSync(path.join(projectPath, 'a\u202Eb\u200Bc.ts'), 'export const z = 1\n')
-    llmResponses = [step('read_file', { path: 'a\u202Eb\u200Bc.ts' })]
+  it('a real file name with bidi and zero-width characters reaches the guard without them, in its real case', async () => {
+    // Upper case on purpose: the blocklist folds case for MATCHING, the dialog
+    // must show the name as the filesystem spells it.
+    fs.writeFileSync(path.join(projectPath, 'A\u202EB\u200Bc.TS'), 'export const z = 1\n')
+    llmResponses = [step('read_file', { path: 'A\u202EB\u200Bc.TS' })]
     await run()
-    const fp = guardOrigins[0][0].filePath
-    expect(fp).toBe('abc.ts')
+    expect(guardOrigins[0][0].filePath).toBe('ABc.TS')
+  })
+
+  it('shows the real resolved name, not the case-folded matching form', async () => {
+    fs.mkdirSync(path.join(projectPath, 'Src'))
+    fs.writeFileSync(path.join(projectPath, 'Src', 'Readme.MD'), '# hi\n')
+    llmResponses = [step('read_file', { path: 'Src/Readme.MD' })]
+    await run()
+    expect(guardOrigins[0][0].filePath).toBe('Src/Readme.MD')
+  })
+
+  it('two read_file calls with the SAME spelling in one step both report their path', async () => {
+    fs.writeFileSync(path.join(projectPath, 'a.ts'), 'export const a = 1\n')
+    llmResponses = [
+      {
+        text: 'go',
+        toolCalls: [
+          { id: 'tc-1', name: 'read_file', arguments: { path: 'a.ts', limit: 1 } },
+          { id: 'tc-2', name: 'read_file', arguments: { path: 'a.ts', offset: 1 } }
+        ],
+        done: false,
+        stopReason: 'tool_use',
+        tokens: { input: 10, output: 10 }
+      }
+    ]
+    await run()
+    expect(guardOrigins[0]).toEqual([
+      { toolName: 'read_file', filePath: 'a.ts' },
+      { toolName: 'read_file', filePath: 'a.ts' }
+    ])
+  })
+
+  it('another tool carrying a path argument does not consume a read_file entry', async () => {
+    fs.writeFileSync(path.join(projectPath, 'a.ts'), 'export const a = 1\n')
+    getToolRegistry().registerBuiltIn(
+      { name: 'probe_path', description: 'probe', inputSchema: { type: 'object', properties: {} } },
+      async () => 'ok',
+      (ctx) => ctx?.coding !== undefined
+    )
+    llmResponses = [
+      {
+        text: 'go',
+        toolCalls: [
+          { id: 'tc-1', name: 'probe_path', arguments: { path: 'a.ts' } },
+          { id: 'tc-2', name: 'read_file', arguments: { path: 'a.ts' } }
+        ],
+        done: false,
+        stopReason: 'tool_use',
+        tokens: { input: 10, output: 10 }
+      }
+    ]
+    await run()
+    expect(guardOrigins[0]).toEqual([
+      { toolName: 'probe_path' },
+      { toolName: 'read_file', filePath: 'a.ts' }
+    ])
   })
 })

@@ -373,7 +373,9 @@ describe('Context-gated built-in tools', () => {
     registry.registerBuiltIn(gatedDef, handler, proposeGate)
     const ctx = codingCtx('propose')
     await registry.executeToolCalls([{ id: '1', name: 'edit_file', arguments: { a: 1 } }], ctx)
-    expect(handler).toHaveBeenCalledWith({ a: 1 }, ctx)
+    // The handler gets the run's context, narrowed to this call by the call id
+    // (fix round 3: lets a handler report per-call results). Still two arguments.
+    expect(handler).toHaveBeenCalledWith({ a: 1 }, { ...ctx, toolCallId: '1' })
   })
 
   it('treats a throwing gate as closed', async () => {

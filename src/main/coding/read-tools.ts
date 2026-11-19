@@ -53,7 +53,10 @@ const ORIGIN_PATH_MAX_CHARS = 300
 
 const REFUSED = 'Refused: this path cannot be read by the coding tools.'
 const LIST_REFUSED = 'Refused: the file list cannot be produced.'
-const UNREADABLE = 'Refused: the file cannot be read.'
+// Deliberately the SAME text as REFUSED: a read that fails after containment
+// (dangling link, vanished file) must not differ from a refusal, or the
+// difference is an existence oracle for paths outside the grant.
+const UNREADABLE = REFUSED
 const BINARY = 'Refused: the file looks binary and is not returned.'
 const BAD_TYPE = 'Refused: this file type is not on the coding read list.'
 const TOO_LARGE = 'Refused: the file is too large to read.'
@@ -71,9 +74,14 @@ export interface ReadToolDeps {
  * Loaded lazily: FileAccessManager pulls in electron, which must not load when
  * this module is merely imported by the registry.
  */
+let fileAccessModule: Promise<typeof import('../file-access/file-access-manager')> | undefined
+
 const defaultDeps: ReadToolDeps = {
   async findGrant(directoryId) {
-    const { getFileAccessManager } = await import('../file-access/file-access-manager')
+    // One shared import promise: parallel tool calls in one step must not start
+    // parallel imports of the same module.
+    fileAccessModule ??= import('../file-access/file-access-manager')
+    const { getFileAccessManager } = await fileAccessModule
     return getFileAccessManager()
       .getAllowedDirectories()
       .find((dir) => dir.id === directoryId)
@@ -147,12 +155,30 @@ async function resolveScope(
  * segment, a whole segment `**` any number of segments (including none).
  * `**` inside a longer segment counts as `*`, as in git.
  */
-function matchSegment(pattern: string, text: string): boolean {
+/**
+ * Total matching work one listing may do, in matcher steps. The per-rule caps
+ * bound one rule, not rules x entries, so the budget is global: when it is
+ * spent the listing ends and says it is incomplete.
+ */
+export const LIST_FILES_WORK_BUDGET = 20_000_000
+
+class WorkBudgetExceeded extends Error {}
+
+interface WorkBudget {
+  left: number
+}
+
+function spend(budget: WorkBudget): void {
+  if (--budget.left < 0) throw new WorkBudgetExceeded()
+}
+
+function matchSegment(pattern: string, text: string, budget: WorkBudget): boolean {
   let p = 0
   let t = 0
   let star = -1
   let mark = 0
   while (t < text.length) {
+    spend(budget)
     if (p < pattern.length && pattern[p] === '*') {
       star = p++
       mark = t
@@ -171,16 +197,21 @@ function matchSegment(pattern: string, text: string): boolean {
 }
 
 /** `patternSegments` is the pattern split at `/`; `textSegments` the path split at `/`. */
-function matchSegments(patternSegments: readonly string[], textSegments: readonly string[]): boolean {
+function matchSegments(
+  patternSegments: readonly string[],
+  textSegments: readonly string[],
+  budget: WorkBudget
+): boolean {
   let p = 0
   let t = 0
   let star = -1
   let mark = 0
   while (t < textSegments.length) {
+    spend(budget)
     if (p < patternSegments.length && patternSegments[p] === '**') {
       star = p++
       mark = t
-    } else if (p < patternSegments.length && matchSegment(patternSegments[p], textSegments[t])) {
+    } else if (p < patternSegments.length && matchSegment(patternSegments[p], textSegments[t], budget)) {
       p++
       t++
     } else if (star >= 0) {
@@ -233,13 +264,18 @@ function parseGitignore(content: string): IgnoreRule[] {
 }
 
 /** Last matching rule wins, as in git. */
-function isIgnored(rules: readonly IgnoreRule[], rel: string, isDir: boolean): boolean {
+function isIgnored(
+  rules: readonly IgnoreRule[],
+  rel: string,
+  isDir: boolean,
+  budget: WorkBudget
+): boolean {
   const relSegments = rel.split('/')
   const baseSegments = [relSegments[relSegments.length - 1]]
   let ignored = false
   for (const rule of rules) {
     if (rule.dirOnly && !isDir) continue
-    if (matchSegments(rule.segments, rule.anchored ? relSegments : baseSegments)) {
+    if (matchSegments(rule.segments, rule.anchored ? relSegments : baseSegments, budget)) {
       ignored = !rule.negated
     }
   }
@@ -288,6 +324,7 @@ async function listFiles(
     let truncated = false
     let truncatedReason = ''
     let visited = 0
+    const budget: WorkBudget = { left: LIST_FILES_WORK_BUDGET }
 
     const walk = async (relDir: string, depth: number): Promise<void> => {
       if (truncated) return
@@ -320,13 +357,13 @@ async function listFiles(
         if (entry.isSymbolicLink()) continue
 
         if (entry.isDirectory()) {
-          if (isIgnored(rules, rel, true)) continue
+          if (isIgnored(rules, rel, true, budget)) continue
           await walk(rel, depth + 1)
         } else if (entry.isFile()) {
-          if (isIgnored(rules, rel, false)) continue
+          if (isIgnored(rules, rel, false, budget)) continue
           if (patternSegments) {
             const subject = patternHasSlash ? rel.split('/') : [entry.name]
-            if (!matchSegments(patternSegments, subject)) continue
+            if (!matchSegments(patternSegments, subject, budget)) continue
           }
           if (found.length >= LIST_FILES_MAX_ENTRIES) {
             truncated = true
@@ -338,7 +375,14 @@ async function listFiles(
       }
     }
 
-    await walk('', 0)
+    try {
+      await walk('', 0)
+    } catch (error) {
+      if (!(error instanceof WorkBudgetExceeded)) throw error
+      // Same honesty as every other cut: say the list is incomplete.
+      truncated = true
+      truncatedReason = 'matching work budget reached'
+    }
 
     const lines = found.length > 0 ? found : ['(no files)']
     if (truncated) {
@@ -429,6 +473,11 @@ async function readFile(
     // 2. Blocklist on the path as given, before anything touches the disk.
     if (isBlockedPath(requested)) return REFUSED
 
+    // Pure check on the model's own string: it depends on no file system state,
+    // so answering it before containment reveals nothing. (Doing it after left
+    // two different answers for a dangling and an outside link with this name.)
+    if (!isReadableExtension(requested)) return BAD_TYPE
+
     // 3. Containment, symlinks resolved on both sides.
     const full = path.resolve(scope.root, requested)
     if (!(await isRealPathWithin(full, scope.root))) return REFUSED
@@ -443,8 +492,9 @@ async function readFile(
     const realRelPosix = realSegments.join('/')
     if (isBlockedPath(realRelPosix)) return REFUSED
 
-    // 5. Extension, for the name the model asked for and for the real target.
-    if (!isReadableExtension(requested) || !isReadableExtension(realRelPosix)) return BAD_TYPE
+    // 5. Extension of the real target (the requested name was checked above).
+    // Uniform refusal: what the target is called is not the model's business.
+    if (!isReadableExtension(realRelPosix)) return REFUSED
 
     // 6. Head sniff, then the content.
     const result = await readHeadAndBody(realTarget)
@@ -455,9 +505,13 @@ async function readFile(
     // The path that was actually read, for the consent dialog. Recorded only
     // now: a refused or failed read leaves no entry, so the dialog never shows
     // text the model wrote.
-    ctx?.resolvedPaths?.set(input, realRelPosix)
+    // Display form: the name as the file system spells it, NOT the folded form
+    // built for matching (case folding and NFKC are for the blocklist only).
+    if (ctx?.toolCallId !== undefined) ctx.resolvedPaths?.set(ctx.toolCallId, realRel.split(path.sep).join('/'))
 
     const lines = result.text.split('\n')
+    // A final newline ends the last line; it does not start another.
+    if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
     const offset = positiveInt(args.offset, 1)
     const limit = Math.min(positiveInt(args.limit, READ_DEFAULT_LIMIT), READ_DEFAULT_LIMIT)
     if (offset > lines.length) {
