@@ -34,18 +34,33 @@ export const CODING_BLOCKED_PATTERNS: readonly string[] = [
   "id_ecdsa*",
   "id_dsa*",
   "credentials.json",
-  "secrets.*",
   ".npmrc",
   ".netrc",
   "*.db",
-  // Added in fix round 2, by family. `.git` blocks the whole directory at any
+  // Added in fix round 2, by family. (`secrets` is a data-file family kept in
+  // CODING_BLOCKED_DATA_* below, not a glob: `src/secrets.ts` is code.)
+  // `.git` blocks the whole directory at any
   // depth (config, config.worktree, modules/*/config, hooks): an agent reads
-  // git state through git commands, not as files. It does not touch
+  // git state through git commands, not as files. Deliberate: the blocklist
+  // runs BEFORE path resolution, so `.git/../config.ts` is refused because it
+  // contains `.git` as written. A path shape nobody writes by hand; not a bug. It does not touch
   // `.gitignore` or `.gitattributes`: the match is on the whole segment.
   ".git",
   "service-account*.json",
   ".docker/config.json",
   ".yarnrc.yml",
+];
+
+/**
+ * A DATA file named like one of these is blocked: the bare name, or the name
+ * followed by anything ending in a data extension (`secrets`, `secrets.json`,
+ * `secrets.local.yaml`). Code and docs named the same (`secrets.ts`,
+ * `secrets.test.ts`, `secrets.md`) stay readable: a guard that false-alarms
+ * on the module that reads secrets gets switched off.
+ */
+export const CODING_BLOCKED_DATA_BASENAMES: readonly string[] = ["secrets"];
+export const CODING_BLOCKED_DATA_EXTENSIONS: readonly string[] = [
+  "json", "yaml", "yml", "toml", "ini", "env", "txt",
 ];
 
 /** Extensions (lower-case, no dot) the coding tools may read. */
@@ -202,9 +217,27 @@ const MULTI_SEGMENT_PATTERNS = COMPILED_PATTERNS.filter((p) => p.length > 1);
  * the .env family is refused even if it is documentation; a doc can be
  * renamed, a secret that was read cannot be un-read.
  */
+function isBlockedDataName(segment: string): boolean {
+  for (const base of CODING_BLOCKED_DATA_BASENAMES) {
+    if (segment === base) return true;
+    if (
+      segment.startsWith(`${base}.`) &&
+      CODING_BLOCKED_DATA_EXTENSIONS.includes(
+        segment.slice(segment.lastIndexOf(".") + 1),
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function segmentIsBlocked(segment: string): boolean {
-  return COMPILED_PATTERNS.some(
-    (pattern) => pattern.length === 1 && pattern[0].test(segment),
+  return (
+    isBlockedDataName(segment) ||
+    COMPILED_PATTERNS.some(
+      (pattern) => pattern.length === 1 && pattern[0].test(segment),
+    )
   );
 }
 

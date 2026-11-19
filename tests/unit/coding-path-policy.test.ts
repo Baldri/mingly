@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   CODING_BLOCKED_PATTERNS,
+  CODING_BLOCKED_DATA_BASENAMES,
+  CODING_BLOCKED_DATA_EXTENSIONS,
   compileBlockedPattern,
   resolvePathSegments,
   CODING_READ_EXTENSIONS,
@@ -24,7 +26,6 @@ describe("coding path policy: blocklist", () => {
       "id_ecdsa*",
       "id_dsa*",
       "credentials.json",
-      "secrets.*",
       ".npmrc",
       ".netrc",
       "*.db",
@@ -97,8 +98,10 @@ describe("coding path policy: blocklist", () => {
     }
   });
 
-  it("folds Unicode case variants that APFS treats as the same name", () => {
-    // Measured on APFS: "a.\u212aey" (Kelvin sign) opens a.key.
+  it("documents the measured APFS Kelvin-sign behaviour (not evidence for NFKC)", () => {
+    // Measured on APFS: "a.\u212aey" (Kelvin sign) opens a.key. This does NOT
+    // prove the NFKC step: "\u212a".toLowerCase() is already "k", so the case
+    // fold alone passes it. The NFKC decision is tested below.
     expect(isBlockedPath("a.\u212aey")).toBe(true);
   });
 
@@ -194,7 +197,7 @@ describe("coding path policy: blocklist", () => {
       "src/id_generator.ts", "src/my_id_ed25519.ts", "src/id_ecdsa_notes".replace("id_ecdsa_", "ids_") + ".md",
       "src/id_dsa.ts".replace("id_dsa", "ids_dsa"),
       "src/credentials.ts", "docs/credentials.md", "credentials.json.md",
-      "src/secret.ts", "secrets-guide.md", "secrets", "src/secretsmanager.ts",
+      "src/secret.ts", "secrets-guide.md", "src/secretsmanager.ts",
       "npmrc.md", ".npmignore",
       "netrc.ts",
       "src/db.ts", "db/schema.ts", "docs/mydb.md",
@@ -321,6 +324,50 @@ describe("coding path policy: fix round 2", () => {
     expect(re.test("a.pem")).toBe(true);
     expect(re.test("a.pem.ts")).toBe(false);
     expect(compileBlockedPattern(".docker/config.json")).toHaveLength(2);
+  });
+});
+
+describe("coding path policy: fix round 3 (secrets is a data file, not a code file)", () => {
+  it("blocks a data file named secrets, however it is spelled", () => {
+    for (const p of [
+      "secrets",
+      "config/secrets",
+      "secrets.json",
+      "secrets.toml",
+      "secrets.yaml",
+      "secrets.yml",
+      "secrets.ini",
+      "secrets.env",
+      "secrets.txt",
+      "SECRETS.JSON",
+      "Secrets",
+      "secrets.local.json",
+      "deploy/secrets.prod.yaml",
+    ]) {
+      expect(isBlockedPath(p), p).toBe(true);
+    }
+  });
+
+  it("leaves code and documentation named secrets readable", () => {
+    for (const p of [
+      "src/secrets.ts",
+      "secrets.test.ts",
+      "src/secrets.py",
+      "src/Secrets.tsx",
+      "docs/secrets.md",
+      "secrets-guide.md",
+      "src/secretsmanager.ts",
+      "src/secret.ts",
+    ]) {
+      expect(isBlockedPath(p), p).toBe(false);
+    }
+  });
+
+  it("keeps the data family a family: names and extensions are lists, not spellings", () => {
+    expect([...CODING_BLOCKED_DATA_BASENAMES]).toEqual(["secrets"]);
+    expect([...CODING_BLOCKED_DATA_EXTENSIONS]).toEqual([
+      "json", "yaml", "yml", "toml", "ini", "env", "txt",
+    ]);
   });
 });
 
