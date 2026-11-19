@@ -17,6 +17,7 @@ import {
   createEditProposalStore,
   getEditProposalStore,
   EDIT_MAX_FAILED_ATTEMPTS_PER_PATH,
+  EDIT_MAX_RETAINED_RUNS,
   type EditProposalStore
 } from '../../src/main/coding/edit-proposals'
 import { ensureProjectWorkspace } from '../../src/main/coding/project-workspace'
@@ -279,6 +280,73 @@ describe('EditProposalStore.pending / resolve', () => {
   })
 })
 
+describe('end of a run: abandoned versus finished', () => {
+  const one = { path: 'a.ts', oldText: 'a', newText: 'b' }
+
+  it('a FINISHED run keeps its pending proposals (the deliverable awaiting review) and they can be resolved', () => {
+    store.propose(RUN, 1, one, 'a')
+    store.endRun(RUN, 'finished')
+    expect(store.pending(RUN)).toHaveLength(1)
+    expect(store.pending(RUN)[0]).toMatchObject({ path: 'a.ts', oldText: 'a', newText: 'b' })
+    store.resolve(RUN, true, 'looks right')
+    expect(store.pending(RUN)).toEqual([])
+    const outcomes = store.auditRecords(RUN).records.map((r) => r.outcome)
+    expect(outcomes).toContain('package-accepted')
+    expect(outcomes).not.toContain('package-abandoned')
+  })
+
+  it('an ABANDONED run loses its pending proposals', () => {
+    store.propose(RUN, 1, one, 'a')
+    store.endRun(RUN, 'abandoned')
+    expect(store.pending(RUN)).toEqual([])
+  })
+
+  it.each(['abandoned', 'finished'] as const)(
+    'a run that has ended (%s) accepts no further proposals: a straggler cannot add to a package under review',
+    (how) => {
+      store.propose(RUN, 1, one, 'a')
+      store.endRun(RUN, how)
+      const late = store.propose(RUN, 2, { path: 'b.ts', oldText: 'a', newText: 'b' }, 'a')
+      expect(late).toEqual({ kind: 'rejected', reason: expect.stringMatching(/ended/i) })
+      expect(store.pending(RUN).map((p) => p.path)).toEqual(how === 'finished' ? ['a.ts'] : [])
+    }
+  )
+
+  it('a finished run without pending proposals leaves nothing retained', () => {
+    store.propose(RUN, 1, one, 'a')
+    store.resolve(RUN, true)
+    store.endRun(RUN, 'finished')
+    expect(store.pending(RUN)).toEqual([])
+    expect(store.auditRecords(RUN).records.length).toBeGreaterThan(0)
+  })
+
+  it('retention is bounded: only the newest EDIT_MAX_RETAINED_RUNS finished runs keep proposals', () => {
+    const total = EDIT_MAX_RETAINED_RUNS + 5
+    for (let i = 0; i < total; i++) {
+      store.propose(`run-${i}`, 1, one, 'a')
+      store.endRun(`run-${i}`, 'finished')
+    }
+    const kept = Array.from({ length: total }, (_, i) => store.pending(`run-${i}`).length > 0)
+    expect(kept.filter(Boolean)).toHaveLength(EDIT_MAX_RETAINED_RUNS)
+    // the OLDEST are the ones dropped, and the drop is recorded
+    expect(kept.slice(0, 5).every((k) => !k)).toBe(true)
+    expect(kept.slice(5).every((k) => k)).toBe(true)
+    expect(store.auditRecords('run-0').records.some((r) => r.outcome === 'package-abandoned')).toBe(true)
+  })
+
+  it('resolving a retained run frees its slot', () => {
+    for (let i = 0; i < EDIT_MAX_RETAINED_RUNS; i++) {
+      store.propose(`run-${i}`, 1, one, 'a')
+      store.endRun(`run-${i}`, 'finished')
+    }
+    store.resolve('run-3', true)
+    store.propose('extra', 1, one, 'a')
+    store.endRun('extra', 'finished')
+    expect(store.pending('run-0')).toHaveLength(1) // nobody was evicted
+    expect(store.pending('extra')).toHaveLength(1)
+  })
+})
+
 describe('rendering: the diff must not lie to the reviewer', () => {
   const BIDI = '\u202E'
   const ZW = '\u200B'
@@ -498,14 +566,12 @@ describe('failed-attempt cap per path (bounds the count oracle; does not close i
     expect(hit(store, 1, 'src/a.ts').kind).toBe('rejected')
   })
 
-  it('is NOT reset by resolve (the executor resolves per step); endRun does reset it', () => {
+  it('is NOT reset by resolve (the executor resolves per step)', () => {
     for (let i = 0; i < CAP - 1; i++) miss(store, i + 1)
     expect(hit(store, CAP).kind).toBe('proposed')
     store.resolve(RUN, false, 'step over') // a real pending package is resolved here
     miss(store, CAP + 1) // the CAP-th failure, after the resolve
     expect(hit(store, CAP + 2).kind).toBe('rejected')
-    store.endRun(RUN)
-    expect(hit(store, 1).kind).toBe('proposed')
   })
 
   it('reaches the model through the tool as a limit message, not an occurrence count', async () => {
@@ -568,9 +634,9 @@ describe('audit records (for the audit task to wire; not an audit itself)', () =
     expect(pkgs[0].reason!.length).toBeLessThanOrEqual(500)
   })
 
-  it('endRun clears pending, records the abandoned package and keeps the records readable', () => {
+  it('endRun(abandoned) clears pending, records the abandoned package and keeps the records readable', () => {
     store.propose(RUN, 1, { path: 'a.ts', oldText: 'a', newText: 'b' }, 'a')
-    store.endRun(RUN)
+    store.endRun(RUN, 'abandoned')
     expect(store.pending(RUN)).toEqual([])
     const { records } = store.auditRecords(RUN)
     expect(records.some((r) => r.outcome === 'package-abandoned' && r.edits === 1)).toBe(true)
@@ -580,7 +646,7 @@ describe('audit records (for the audit task to wire; not an audit itself)', () =
   it('endRun on a run with nothing pending records no abandoned package', () => {
     store.propose(RUN, 1, { path: 'a.ts', oldText: 'a', newText: 'b' }, 'a')
     store.resolve(RUN, true)
-    store.endRun(RUN)
+    store.endRun(RUN, 'abandoned')
     expect(store.auditRecords(RUN).records.some((r) => r.outcome === 'package-abandoned')).toBe(false)
   })
 

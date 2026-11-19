@@ -535,11 +535,15 @@ export class AgentExecutor {
       clearTimeout(runTimeout)
       this.activeRuns.delete(runId)
       circuitBreaker.endAgentRun(runId)
-      // Proposals left pending by a run that ends (done, cancelled or failed)
-      // are abandoned, never applied: a write the user did not get to decide on
-      // must not be acceptable later.
+      // Proposals: a run that was cancelled or failed was abandoned, so what it
+      // left pending is dropped and can never be accepted later. A run that
+      // completed (or ran out of steps) delivered its package for review; it is
+      // kept, bounded, until the user resolves it.
       try {
-        getEditProposalStore().endRun(runId)
+        getEditProposalStore().endRun(
+          runId,
+          run.status === 'cancelled' || run.status === 'failed' ? 'abandoned' : 'finished'
+        )
       } catch {
         // Ignore cleanup errors
       }

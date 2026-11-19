@@ -65,6 +65,14 @@ export const EDIT_MAX_FAILED_ATTEMPTS_PER_PATH = 5
 /** Audit records kept per run, and finished runs kept readable. */
 const AUDIT_MAX_RECORDS_PER_RUN = 1000
 const AUDIT_MAX_FINISHED_RUNS = 50
+/**
+ * Finished runs whose proposals are still awaiting review. When a new one
+ * arrives beyond this, the OLDEST retained run's pending proposals are dropped
+ * (and recorded as abandoned). A cap on retained runs rather than a per-directory
+ * rule because the store knows runs, not directories; the per-run bounds
+ * (EDIT_MAX_PENDING_PER_RUN, EDIT_TEXT_MAX_CHARS) bound each run's size.
+ */
+export const EDIT_MAX_RETAINED_RUNS = 20
 const AUDIT_REASON_MAX_CHARS = 500
 const CONTEXT_LINES = 3
 
@@ -113,11 +121,16 @@ export interface EditProposalStore {
    */
   resolve(runId: string, accepted: boolean, reason?: string): void
   /**
-   * The run is over. Clears whatever is still pending (an abandoned package is
-   * recorded, never applied) and the failed-attempt counters. The audit records
-   * stay readable for the last AUDIT_MAX_FINISHED_RUNS runs.
+   * The run is over; no further proposals are accepted for it.
+   *   'abandoned' (cancelled, failed): the pending package is dropped and
+   *     recorded, never applied. Nobody stands behind that work.
+   *   'finished' (completed, max steps): the pending package is KEPT, it is the
+   *     deliverable awaiting review, and resolve() still works. At most
+   *     EDIT_MAX_RETAINED_RUNS such runs are kept; older ones are dropped.
+   * The failed-attempt counters end with the run. Audit records stay readable
+   * for the last AUDIT_MAX_FINISHED_RUNS runs.
    */
-  endRun(runId: string): void
+  endRun(runId: string, how: 'abandoned' | 'finished'): void
   /** Records for the audit task to consume. Copies. */
   auditRecords(runId: string): { records: EditAuditRecord[]; dropped: number }
 }
@@ -289,6 +302,8 @@ interface RunState {
   failures: Map<string, number>
   records: EditAuditRecord[]
   dropped: number
+  /** Set once the run is over but its package is still under review. */
+  ended?: 'finished'
 }
 
 function cleanReason(reason: unknown): string | undefined {
@@ -299,7 +314,23 @@ function cleanReason(reason: unknown): string | undefined {
 export function createEditProposalStore(): EditProposalStore {
   const runs = new Map<string, RunState>()
   const finished = new Map<string, { records: EditAuditRecord[]; dropped: number }>()
+  /** Ids of finished runs with a package still under review, oldest first. */
+  const retained: string[] = []
   let counter = 0
+
+  /** The run no longer holds a package: keep only its audit records. */
+  const retire = (runId: string, st: RunState): void => {
+    runs.delete(runId)
+    const at = retained.indexOf(runId)
+    if (at !== -1) retained.splice(at, 1)
+    finished.delete(runId)
+    finished.set(runId, { records: st.records, dropped: st.dropped })
+    while (finished.size > AUDIT_MAX_FINISHED_RUNS) {
+      const oldest = finished.keys().next().value
+      if (oldest === undefined) break
+      finished.delete(oldest)
+    }
+  }
 
   const stateFor = (runId: string): RunState => {
     let st = runs.get(runId)
@@ -347,6 +378,12 @@ export function createEditProposalStore(): EditProposalStore {
         // The result must stay a text file.
         if (edit.oldText.includes('\u0000') || edit.newText.includes('\u0000')) {
           return reject('the old or new text contains a NUL character.')
+        }
+
+        // A run that has ended adds nothing: a straggler tool call must not
+        // grow a package a human is about to review (or revive an abandoned one).
+        if (finished.has(runId) || runs.get(runId)?.ended) {
+          return reject('this run has already ended; no further proposals are accepted.')
         }
 
         const st = stateFor(runId)
@@ -442,22 +479,44 @@ export function createEditProposalStore(): EditProposalStore {
         reason: cleanReason(reason)
       })
       st.entries = []
+      if (st.ended) retire(runId, st)
     },
 
-    endRun(runId): void {
+    endRun(runId, how): void {
       const st = runs.get(runId)
-      if (!st) return
+      if (!st) {
+        // Nothing was proposed. Still remember the id as ended, so a late call
+        // cannot start a package for a run that is over.
+        retire(runId, { entries: [], failures: new Map(), records: [], dropped: 0 })
+        return
+      }
+      st.failures.clear()
+      if (how === 'finished' && st.entries.length > 0) {
+        st.ended = 'finished'
+        retained.push(runId)
+        while (retained.length > EDIT_MAX_RETAINED_RUNS) {
+          const oldestId = retained[0]
+          const old = runs.get(oldestId)
+          if (old) {
+            record(old, {
+              runId: oldestId,
+              outcome: 'package-abandoned',
+              edits: old.entries.length,
+              reason: 'dropped: too many finished runs awaiting review'
+            })
+            old.entries = []
+            retire(oldestId, old)
+          } else {
+            retained.shift()
+          }
+        }
+        return
+      }
       if (st.entries.length > 0) {
         record(st, { runId, outcome: 'package-abandoned', edits: st.entries.length })
+        st.entries = []
       }
-      runs.delete(runId)
-      finished.delete(runId)
-      finished.set(runId, { records: st.records, dropped: st.dropped })
-      while (finished.size > AUDIT_MAX_FINISHED_RUNS) {
-        const oldest = finished.keys().next().value
-        if (oldest === undefined) break
-        finished.delete(oldest)
-      }
+      retire(runId, st)
     },
 
     auditRecords(runId): { records: EditAuditRecord[]; dropped: number } {

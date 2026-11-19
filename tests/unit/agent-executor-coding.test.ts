@@ -355,7 +355,7 @@ describe('edit proposals do not outlive their run', () => {
     expect(out.kind).toBe('proposed')
   }
 
-  it('clears the proposals of a run that completes without resolving them', async () => {
+  it('KEEPS the proposals of a run that completes: they are the deliverable awaiting review', async () => {
     storedModes['dir-1'] = 'propose'
     llmResponses = [toolCallStep('tc-1')]
     toolCallHook = seedProposal
@@ -363,7 +363,28 @@ describe('edit proposals do not outlive their run', () => {
     const run = await executor.execute('task', 'anthropic', 'm', [], undefined, coding())
 
     expect(run.status).toBe('completed')
-    expect(getEditProposalStore().pending(run.id)).toEqual([])
+    const store = getEditProposalStore()
+    expect(store.pending(run.id)).toHaveLength(1)
+    store.resolve(run.id, true)
+    expect(store.pending(run.id)).toEqual([])
+  })
+
+  it('KEEPS the proposals of a run that ran out of steps (it still did real work)', async () => {
+    storedModes['dir-1'] = 'propose'
+    llmResponses = Array.from({ length: 10 }, (_, i) => toolCallStep(`tc-${i}`))
+    let seeded = false
+    toolCallHook = (ctx) => {
+      if (seeded) return
+      seeded = true
+      seedProposal(ctx)
+    }
+
+    const run = await executor.execute('task', 'anthropic', 'm', [], undefined, coding())
+
+    expect(run.status).toBe('max_steps_reached')
+    const store = getEditProposalStore()
+    expect(store.pending(run.id)).toHaveLength(1)
+    store.resolve(run.id, false)
   })
 
   it('clears the proposals of a CANCELLED run', async () => {
@@ -394,10 +415,13 @@ describe('edit proposals do not outlive their run', () => {
     expect(getEditProposalStore().pending(run.id)).toEqual([])
   })
 
-  it('records the abandoned package for the audit', async () => {
+  it('records the abandoned package of a failed run for the audit', async () => {
     storedModes['dir-1'] = 'propose'
     llmResponses = [toolCallStep('tc-1')]
-    toolCallHook = seedProposal
+    toolCallHook = (ctx) => {
+      seedProposal(ctx)
+      throw new Error('boom')
+    }
 
     const run = await executor.execute('task', 'anthropic', 'm', [], undefined, coding())
 
