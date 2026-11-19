@@ -288,10 +288,15 @@ export function getPermissionLabel(permissions: readonly FileAccessPermission[])
 // ---------------------------------------------------------------------------
 
 /**
- * Whether the coding controls may be offered. The main process gates every coding
- * channel on `agentic_mode`; the renderer mirrors it so a tier without it is sent
- * to the upgrade dialog instead of into a gate error. Unknown (not loaded yet,
- * absent key) is NOT allowed: the stricter side.
+ * Whether the coding controls that WIDEN what may happen may be offered:
+ * picking a project, setting the level, starting a run. The main process gates
+ * those channels on `agentic_mode`, and the renderer mirrors it so a tier
+ * without it is sent to the upgrade dialog instead of into a gate error.
+ * Unknown (not loaded yet, absent key) is NOT allowed: the stricter side.
+ *
+ * NOT every coding channel: undo and the audit export carry no `requireFeature`
+ * in the main process on purpose, so the surface must not hide them either (see
+ * CodingModePicker).
  */
 export function isCodingFeatureAllowed(
   features: Readonly<Record<string, { allowed?: boolean } | undefined>> | undefined

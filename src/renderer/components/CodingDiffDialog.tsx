@@ -20,11 +20,15 @@ const LINE_CLASS = {
  * meantime is refused by the main process.
  *
  * Containment, not convenience: the dialog takes the initial focus on the
- * SAFER button («Ablehnen»), traps Tab inside itself and marks the rest of the
- * app `inert`. There is no Escape and no "later" state, so leaving the dialog
- * by keyboard would mean reaching the message input behind it and starting a
- * new run — which used to drop this package without a rejection and without
- * an audit entry. The store refuses that start as well; this is the other half.
+ * SAFER button («Ablehnen») and traps Tab inside itself. There is no Escape and
+ * no "later" state, so leaving the dialog by keyboard would mean reaching the
+ * message input behind it and starting a new run — which used to drop this
+ * package without a rejection and without an audit entry. The store refuses
+ * that start as well; this is the other half.
+ *
+ * There is deliberately NO `inert` on the rest of the app: both coding dialogs
+ * render INSIDE `#root`, so `root.inert = true` would disable the dialog along
+ * with everything else. The Tab trap is the whole of the containment here.
  */
 export function CodingDiffDialog() {
   const pending = useCodingStore((s) => s.pending)

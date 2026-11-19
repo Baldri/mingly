@@ -236,20 +236,93 @@ describe('mingly_run_command bounds', () => {
     for (let i = 0; i < 5; i++) expect(await run(registry, 'git status', ctx)).toContain('exit code 0')
   })
 
-  it('keeps the command time below the registry tool timeout', async () => {
-    const pidFile = path.join(outside, 'reg.pid')
-    fake('git', `echo $$ > "${pidFile}"\nexec sleep 60`)
-    // Handler limit = tool timeout - 1000 ms = 3000 ms (same measurement as above).
-    const registry = new ToolRegistry({ toolTimeoutMs: 4000, maxResultChars: 100000 })
-    registerRunCommand(registry, {
+  it('the SHIPPED registry leaves room for the full minute a command is promised', () => {
+    // The old version of this test passed `toolTimeoutMs: 4000` and asserted
+    // only the RELATION between the two timeouts. That stays green forever
+    // while the shipped value makes the feature unusable: the production
+    // registry carried 15000 ms for every tool, so `wantMs` came out at 14 s
+    // and `npm test` — the showcase command — could not finish.
+    //
+    // Pinned against the requirement, not against the module: the README
+    // promises "höchstens 60 Sekunden pro Befehl", and the handler needs room
+    // after that to kill the group and assemble the result. Both numbers are
+    // written out here.
+    const PROMISED_COMMAND_MS = 60_000
+    const KILL_RESERVE_MS = 1_000
+    const shipped = new ToolRegistry()
+    registerRunCommand(shipped, {
       findGrant: async (id) => grants.find((g) => g.id === id),
       getInterpreterPaths: () => interpreters
     })
+
+    expect(shipped.getToolTimeoutMs('mingly_run_command')).toBeGreaterThanOrEqual(
+      PROMISED_COMMAND_MS + KILL_RESERVE_MS
+    )
+    // And it is the COMMAND tool that got the long leash, not every tool: a
+    // hung MCP call must not be able to block a run for a minute.
+    expect(shipped.getToolTimeoutMs()).toBeLessThan(PROMISED_COMMAND_MS)
+    expect(shipped.getToolTimeoutMs('some_mcp_tool')).toBeLessThan(PROMISED_COMMAND_MS)
+  })
+
+  it('keeps the command time below the registry tool timeout', async () => {
+    const pidFile = path.join(outside, 'reg.pid')
+    fake('git', `echo $$ > "${pidFile}"\nexec sleep 60`)
+    // The handler's own timer is the short one here, so its report must be the
+    // answer and the process must be dead; the registry must not pre-empt it.
+    const registry = makeRegistry({ commandMs: 1500 }, 100000)
     const out = await run(registry, 'git status')
-    // The handler's own timeout answered, not the registry's rejection.
     expect(out).toMatch(/timed out/)
     expect(out).not.toMatch(/Tool execution timed out|failed/)
     expect(await waitDead(Number(fs.readFileSync(pidFile, 'utf8').trim()))).toBe(true)
+  })
+
+  it('settles even when the process group cannot be killed, and says so', async () => {
+    // `process.kill` failing with anything but ESRCH (EPERM, for instance) was
+    // swallowed: neither `exit` nor `close` fires, the promise never settles
+    // and the run's time budget stays charged for good. Survivable only while
+    // the registry's own timeout was low — which the test above raises.
+    const pidFile = path.join(outside, 'eperm.pid')
+    // Long enough to outlive the registry's own timeout: if only the child's
+    // natural exit settled this, the test would prove nothing.
+    fake('git', `echo $$ > "${pidFile}"\nexec sleep 20`)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' })
+    })
+    try {
+      const registry = makeRegistry({ commandMs: 300 }, 100000)
+      const out = await run(registry, 'git status')
+      // The handler's own answer, not the registry's rejection.
+      expect(out).toMatch(/timed out/)
+      expect(out).not.toMatch(/Tool execution timed out/)
+      // And the answer must not claim the group was killed when it was not:
+      // what the reader sees has to describe what happened.
+      expect(out).toMatch(/could not be stopped/)
+      // A failed kill is not a normal end: it has to be visible in the log too.
+      expect(warn).toHaveBeenCalled()
+      expect(JSON.stringify(warn.mock.calls)).toContain('EPERM')
+    } finally {
+      kill.mockRestore()
+      warn.mockRestore()
+      // Nothing killed it while the spy was up; do it now.
+      try {
+        process.kill(-Number(fs.readFileSync(pidFile, 'utf8').trim()), 'SIGKILL')
+      } catch {
+        // Already gone.
+      }
+    }
+  })
+
+  it('does not warn when the kill finds nothing left to kill (negative control)', async () => {
+    fake('git', 'echo ok')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      expect(await run(makeRegistry(), 'git status')).toContain('exit code 0')
+      // ESRCH is the normal end of every command: warning there would be noise.
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
 
@@ -723,6 +796,99 @@ describe('mingly_run_command: the granted root must be the tool\'s own root (cla
       fake('npm', 'echo "G=[$GIT_DIR][$GIT_WORK_TREE]"')
       fs.writeFileSync(path.join(project, 'package.json'), '{"scripts":{"test":"x"}}')
       expect(await run(makeRegistry(), 'npm test')).toContain('G=[][]')
+    })
+  })
+
+  describe('git: a repository config that names a program is refused', () => {
+    /**
+     * Measured here (git 2.53.0, negative control in the same run): a
+     * `filter.<name>.clean` driver selected by a `.gitattributes` in the tree is
+     * executed by `git diff --stat`, by `git diff --name-only` AND by
+     * `git status` / `git status --short` — the last two whenever the file size
+     * is unchanged, so stat alone cannot settle whether the file is modified.
+     * Reaching the same driver through `[include] path = …` works as well.
+     * There is no git flag that switches clean/smudge off, so the only way to
+     * keep the promise is to refuse the repository.
+     *
+     * The refusal is environment-dependent, so it carries the ONE shared text
+     * and says nothing about what the config holds.
+     */
+    const writeConfig = (body: string): void => {
+      fs.mkdirSync(path.join(project, '.git'), { recursive: true })
+      fs.writeFileSync(path.join(project, '.git', 'config'), body)
+    }
+
+    const RISKY = [
+      ['a clean filter driver', '[filter "spy"]\n\tclean = /tmp/spy.sh\n'],
+      ['a filter driver on one line', '[filter "spy"] smudge = /tmp/spy.sh\n'],
+      ['a long-running filter process', '[filter "spy"]\n\tprocess = /tmp/spy.sh\n'],
+      ['an include that may define one', '[include]\n\tpath = /tmp/extra.cfg\n'],
+      ['a conditional include', '[includeIf "gitdir:/"]\n\tpath = /tmp/extra.cfg\n'],
+      ['a key naming a program', '[core]\n\tsshCommand = /tmp/spy.sh\n'],
+      ['a diff driver command', '[diff "x"]\n\tcommand = /tmp/spy.sh\n']
+    ] as const
+
+    for (const [label, body] of RISKY) {
+      it(`refuses ${label}, with the shared text and without starting git`, async () => {
+        writeConfig(body)
+        expect(await run(makeRegistry(), 'git status')).toBe(COMMAND_UNAVAILABLE)
+        expect(await run(makeRegistry(), 'git diff --stat')).toBe(COMMAND_UNAVAILABLE)
+        expect(fs.existsSync(started)).toBe(false)
+      })
+    }
+
+    it('false alarm direction: an ordinary repository config still runs', async () => {
+      // What `git init` plus a user writes. None of it names a program.
+      writeConfig(
+        '[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n' +
+          '\tlogallrefupdates = true\n\tignorecase = true\n' +
+          '[user]\n\temail = a@b.invalid\n\tname = a\n' +
+          '[remote "origin"]\n\turl = https://example.invalid/repo.git\n' +
+          '\tfetch = +refs/heads/*:refs/remotes/origin/*\n' +
+          '[branch "main"]\n\tremote = origin\n\tmerge = refs/heads/main\n'
+      )
+      expect(await run(makeRegistry(), 'git status')).toContain('exit code 0')
+      expect(fs.existsSync(started)).toBe(true)
+    })
+
+    it('false alarm direction: a comment mentioning a filter is not a definition', async () => {
+      writeConfig('# the filter driver below was removed; sshCommand too\n[core]\n\tfilemode = true\n')
+      expect(await run(makeRegistry(), 'git status')).toContain('exit code 0')
+    })
+
+    it('a repository with no config file at all still runs', async () => {
+      fs.mkdirSync(path.join(project, '.git'), { recursive: true })
+      expect(await run(makeRegistry(), 'git status')).toContain('exit code 0')
+    })
+
+    it('a config that cannot be read is refused, not assumed harmless', async () => {
+      fs.mkdirSync(path.join(project, '.git'), { recursive: true })
+      // A directory where the config file belongs: unreadable as a file.
+      fs.mkdirSync(path.join(project, '.git', 'config'))
+      expect(await run(makeRegistry(), 'git status')).toBe(COMMAND_UNAVAILABLE)
+      expect(fs.existsSync(started)).toBe(false)
+    })
+
+    it('the config of the pinned common dir is checked too', async () => {
+      // In a linked worktree the shared config lives in the common dir, which
+      // is where git reads it from.
+      const common = path.join(project, '.gitdata')
+      const wt = path.join(common, 'worktrees', 'wt')
+      fs.mkdirSync(wt, { recursive: true })
+      fs.writeFileSync(path.join(wt, 'commondir'), '../..')
+      fs.writeFileSync(path.join(project, '.git'), 'gitdir: .gitdata/worktrees/wt\n')
+      fs.writeFileSync(path.join(common, 'config'), '[filter "spy"]\n\tclean = /tmp/spy.sh\n')
+      expect(await run(makeRegistry(), 'git status')).toBe(COMMAND_UNAVAILABLE)
+      expect(fs.existsSync(started)).toBe(false)
+      // Positive control: the same worktree without that config runs.
+      fs.rmSync(path.join(common, 'config'))
+      expect(await run(makeRegistry(), 'git status')).toContain('exit code 0')
+    })
+
+    it('only git is affected: another tool runs with the same hostile config', async () => {
+      writeConfig('[filter "spy"]\n\tclean = /tmp/spy.sh\n')
+      fs.writeFileSync(path.join(project, 'package.json'), '{"scripts":{"test":"x"}}')
+      expect(await run(makeRegistry(), 'npm test')).toContain('exit code 0')
     })
   })
 })

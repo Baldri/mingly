@@ -19,6 +19,14 @@ function downloadCsv(filename: string, csv: string): void {
  * audit export). The levels are built from CODING_MODE_CHOICES: `auto` is not in
  * that list. Each level carries its scope note itself (R36): the grade covers
  * Mingly's own tools, not the user's MCP servers.
+ *
+ * `agentic_mode` gates the part that WIDENS what may happen — picking a project
+ * and setting the level — and nothing else. Undo, the report of an undo and the
+ * audit export stay reachable without it, because a lapsed subscription, a
+ * failed licence check or an entitlement lookup without a network must not
+ * leave a user with files an agent changed and no way back. The main process
+ * agrees: CODING_UNDO_RUN and the export carry no `requireFeature`. The upgrade
+ * button replaces the level choice, not the safety nets.
  */
 export function CodingModePicker() {
   const grants = useCodingStore((s) => s.grants)
@@ -59,52 +67,50 @@ export function CodingModePicker() {
     if (csv !== null) downloadCsv(`mingly-coding-audit-${new Date().toISOString().slice(0, 10)}.csv`, csv)
   }
 
-  if (!allowed) {
-    return (
-      <div className="mb-3 text-sm" data-testid="coding-mode-locked">
+  return (
+    <div
+      className="mb-3 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm dark:border-gray-700 dark:bg-gray-900/40"
+      data-testid={allowed ? 'coding-mode-picker' : 'coding-mode-locked'}
+    >
+      {!allowed && (
         <button
           onClick={() => openUpgradeDialog('agentic_mode')}
           className="rounded border border-gray-300 px-2 py-1 text-gray-600 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
         >
           Coding-Projekt (Pro) – Upgrade ansehen
         </button>
-      </div>
-    )
-  }
+      )}
 
-  return (
-    <div
-      className="mb-3 rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm dark:border-gray-700 dark:bg-gray-900/40"
-      data-testid="coding-mode-picker"
-    >
-      <div className="flex flex-wrap items-center gap-2">
-        <label htmlFor="coding-project" className="font-medium text-gray-700 dark:text-gray-300">
-          Coding-Projekt
-        </label>
-        <select
-          id="coding-project"
-          value={selectedDirectoryId ?? ''}
-          onChange={(e) => selectProject(e.target.value === '' ? null : e.target.value)}
-          disabled={runInFlight}
-          className="min-w-0 flex-1 rounded border border-gray-300 bg-white px-2 py-1 text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
-        >
-          <option value="">Kein Projekt (normaler Chat)</option>
-          {grants.map((grant) => (
-            <option key={grant.id} value={grant.id}>
-              {displayText(grant.name)} · {displayText(grant.path)}
-            </option>
-          ))}
-        </select>
-        <button
-          onClick={() => void addProject()}
-          disabled={runInFlight}
-          className="rounded border border-gray-300 px-2 py-1 text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
-        >
-          Verzeichnis wählen…
-        </button>
-      </div>
+      {allowed && (
+        <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor="coding-project" className="font-medium text-gray-700 dark:text-gray-300">
+            Coding-Projekt
+          </label>
+          <select
+            id="coding-project"
+            value={selectedDirectoryId ?? ''}
+            onChange={(e) => selectProject(e.target.value === '' ? null : e.target.value)}
+            disabled={runInFlight}
+            className="min-w-0 flex-1 rounded border border-gray-300 bg-white px-2 py-1 text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+          >
+            <option value="">Kein Projekt (normaler Chat)</option>
+            {grants.map((grant) => (
+              <option key={grant.id} value={grant.id}>
+                {displayText(grant.name)} · {displayText(grant.path)}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={() => void addProject()}
+            disabled={runInFlight}
+            className="rounded border border-gray-300 px-2 py-1 text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+          >
+            Verzeichnis wählen…
+          </button>
+        </div>
+      )}
 
-      {selected && (
+      {allowed && selected && (
         <>
           <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
             Berechtigung des Verzeichnisses: <span className="font-medium">{getPermissionLabel(selected.permissions)}</span>

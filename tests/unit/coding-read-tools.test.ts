@@ -465,6 +465,31 @@ describe('mingly_list_files result budget', () => {
     for (const entry of entries) expect(entry).toMatch(/^many\/file\d{4}\.ts$/)
   })
 
+  it('a budget too small for the footer answers with a whole sentence, not a cut one', async () => {
+    // `bodyBudget = maxResultChars - 300` is <= 0 below 300, so not one entry
+    // can ever be shown. The footer that says so is 138 characters (measured),
+    // and below that the REGISTRY cuts it mid-word and appends its own marker:
+    // the statement about the result is the part that gets chopped. 120 is
+    // under the footer and over any short sentence, so it pins both halves.
+    // Unreachable from the production default of 4000.
+    const TINY = 120
+    write('src/a.ts', 'a')
+    write('b.md', 'b')
+    const tiny = new ToolRegistry({ toolTimeoutMs: 5000, maxResultChars: TINY })
+    registerReadTools(tiny, { findGrant: async (id) => grants.find((g) => g.id === id) })
+    const out = (
+      await tiny.executeTool({ id: 't', name: 'mingly_list_files', arguments: {} }, await ctxFor())
+    ).content
+
+    expect(out.length).toBeLessThanOrEqual(TINY)
+    expect(out).not.toContain('... [truncated]')
+    expect(out).toMatch(/INCOMPLETE/)
+    // And it must not read as a complete, empty project.
+    expect(out).not.toBe('(no files)')
+    // Advice that cannot work is not given: no entry fits at any breadth.
+    expect(out).not.toMatch(/pattern/)
+  })
+
   it('says nothing about truncation when the whole list fits the production budget', async () => {
     write('src/a.ts', 'a')
     write('b.md', 'b')

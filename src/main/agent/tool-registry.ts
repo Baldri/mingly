@@ -7,7 +7,7 @@
  *
  * Responsibilities:
  * 1. Convert MCP tools → ToolDefinition format (for LLM tool_use)
- * 2. Register built-in tools (e.g., echo for testing)
+ * 2. Register built-in tools (e.g., mingly_echo for testing)
  * 3. Execute tool calls and return structured results
  * 4. Handle tool timeouts and errors gracefully
  */
@@ -80,6 +80,8 @@ interface BuiltInToolEntry {
   definition: ToolDefinition
   handler: BuiltInToolHandler
   gate?: ToolGate
+  /** Overrides the registry-wide tool timeout for THIS tool (ms). */
+  timeoutMs?: number
 }
 
 /**
@@ -137,10 +139,19 @@ export class ToolRegistry {
   }
 
   /**
-   * The per-tool timeout in ms. A tool that starts a process must stop it
-   * before this fires: the registry's rejection does not kill anything.
+   * The timeout in ms that applies to `toolName`, or the registry-wide one when
+   * no name is given. A tool that starts a process must stop it before this
+   * fires: the registry's rejection does not kill anything.
+   *
+   * A built-in may declare its own, because one tool's honest duration is not
+   * every tool's: `mingly_run_command` runs a test suite, and a registry-wide
+   * value long enough for that would let one hung MCP call block a run for just
+   * as long. Anything that is not a positive, finite, whole number of
+   * milliseconds falls back to the registry-wide value — the shorter side.
    */
-  getToolTimeoutMs(): number {
+  getToolTimeoutMs(toolName?: string): number {
+    const declared = toolName === undefined ? undefined : this.builtInTools.get(toolName)?.timeoutMs
+    if (typeof declared === 'number' && Number.isInteger(declared) && declared > 0) return declared
     return this.config.toolTimeoutMs
   }
 
@@ -150,14 +161,16 @@ export class ToolRegistry {
    * Register a built-in tool with its handler function.
    * Built-in tools are independent of MCP server state. Without a `gate` the
    * tool is always available; with one it is offered (and run) only for a
-   * context the gate accepts.
+   * context the gate accepts. `timeoutMs` overrides the registry-wide tool
+   * timeout for this tool alone (see getToolTimeoutMs).
    */
   registerBuiltIn(
     definition: ToolDefinition,
     handler: BuiltInToolHandler,
-    gate?: ToolGate
+    gate?: ToolGate,
+    timeoutMs?: number
   ): void {
-    this.builtInTools.set(definition.name, { definition, handler, gate })
+    this.builtInTools.set(definition.name, { definition, handler, gate, timeoutMs })
   }
 
   /**
@@ -399,10 +412,11 @@ export class ToolRegistry {
     toolCall: AgentToolCall,
     ctx?: ToolContext
   ): Promise<AgentToolResult> {
+    const timeoutMs = this.getToolTimeoutMs(toolCall.name)
     return new Promise<AgentToolResult>((resolve, reject) => {
       const timer = setTimeout(
-        () => reject(new Error(`Tool execution timed out after ${this.config.toolTimeoutMs}ms`)),
-        this.config.toolTimeoutMs
+        () => reject(new Error(`Tool execution timed out after ${timeoutMs}ms`)),
+        timeoutMs
       )
 
       this.executeToolInner(toolCall, ctx)
@@ -452,15 +466,19 @@ export function getToolRegistry(): ToolRegistry {
  * Register default built-in tools.
  * These are always available regardless of MCP server state.
  *
- * The four coding tools are registered under namespaced names
- * (`mingly_list_files`, `mingly_read_file`, `mingly_edit_file`,
- * `mingly_run_command`). A built-in OWNS its name here, open gate or closed
- * (see getAvailableTools), and these registrations run unconditionally on the
- * singleton every run uses — so an unprefixed `read_file` or `edit_file` would
- * remove a user's filesystem MCP server from every run, coding mode `off`
- * included. The namespace is what makes that collision impossible; do not drop
- * it in favour of "fall through to the MCP tool when the gate is closed", which
- * would be a guard hanging on a name being spelled the same way.
+ * EVERY built-in here is registered under a namespaced name (`mingly_…`). A
+ * built-in OWNS its name, open gate or closed (see getAvailableTools), and
+ * these registrations run unconditionally on the singleton every run uses — so
+ * an unprefixed `read_file` or `edit_file` would remove a user's filesystem MCP
+ * server from every run, coding mode `off` included. The namespace is what
+ * makes that collision impossible; do not drop it in favour of "fall through to
+ * the MCP tool when the gate is closed", which would be a guard hanging on a
+ * name being spelled the same way.
+ *
+ * That holds for the two non-coding built-ins as well: `echo` and
+ * `decompose_task` are names an MCP server may serve, and they shadowed it
+ * through the very mechanism the coding tools were namespaced to avoid.
+ * tests/unit/default-builtin-tool-names.test.ts keeps the next one out.
  */
 function registerDefaultBuiltIns(registry: ToolRegistry): void {
   // Coding read tools (gated: offered only in a coding run of mode read-only or above)
@@ -473,7 +491,7 @@ function registerDefaultBuiltIns(registry: ToolRegistry): void {
   // Echo tool — useful for testing and debugging the agent loop
   registry.registerBuiltIn(
     {
-      name: 'echo',
+      name: 'mingly_echo',
       description: 'Echo back the input text. Useful for testing and debugging.',
       inputSchema: {
         type: 'object',
@@ -492,7 +510,7 @@ function registerDefaultBuiltIns(registry: ToolRegistry): void {
   // Forces the master LLM to output a structured JSON decomposition.
   registry.registerBuiltIn(
     {
-      name: 'decompose_task',
+      name: 'mingly_decompose_task',
       description:
         'Decompose a complex task into 1-3 independent subtasks that can be executed in parallel. ' +
         'Each subtask should be self-contained and produce a clear result. ' +

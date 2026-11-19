@@ -164,8 +164,18 @@ function matchTokens(tokens: readonly string[]): Match {
       return { tool: 'pytest', binary: { kind: 'interpreter', name: 'pytest' }, args: paths, pathArgs: paths }
     }
     case 'git': {
-      // `-c core.fsmonitor=false` and the no-ext-diff/no-textconv switches stop
-      // repository configuration from naming a program git would then run.
+      // What these switches actually turn off: the fsmonitor hook
+      // (`-c core.fsmonitor=false`), the pager (`--no-pager`) and the external
+      // diff and textconv drivers (`--no-ext-diff`, `--no-textconv`).
+      //
+      // They do NOT turn off clean/smudge filters, and no git flag does:
+      // measured on git 2.53.0, a `filter.<name>.clean` driver selected by a
+      // `.gitattributes` runs for `git diff --stat`, `git diff --name-only` and
+      // `git status [--short]` alike. That one is handled where the repository
+      // is inspected — run-command.ts refuses a config that defines a filter,
+      // a `*command` key or an `include` (see gitConfigIsSafe). Do not write
+      // "configuration that could name a program is switched off" here again:
+      // the switches are a list, not a guarantee.
       if (sameArgs(rest, ['status'])) {
         return { tool: 'git', binary: { kind: 'interpreter', name: 'git' }, args: [...GIT_PREFIX, 'status'], pathArgs: [] }
       }

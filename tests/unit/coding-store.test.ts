@@ -416,6 +416,66 @@ describe('coding store', () => {
       }
     )
 
+    it.each(['partial', 'withdrawn', 'interrupted'])(
+      'an accept that broke off (%s) also rejects the package in the main process',
+      async (code) => {
+        // The surface stops offering the package; the main process has to learn
+        // the same thing. Nothing else resolves it afterwards, so without this
+        // the proposals stay in `retained`: no coding.change_rejected row in the
+        // audit export, and one of the retention slots is held until the process
+        // ends. Point 13's own sentence, on the accept path.
+        await withPending()
+        h.api.codingEdits.accept.mockResolvedValue({
+          success: false,
+          outcome: { kind: 'refused', code, reason: 'english text' }
+        })
+        h.api.codingEdits.reject.mockResolvedValue({ success: true, outcome: { kind: 'rejected', count: 1 } })
+
+        await useCodingStore.getState().acceptPending()
+
+        expect(h.api.codingEdits.reject).toHaveBeenCalledTimes(1)
+        const [runId, reason] = h.api.codingEdits.reject.mock.calls[0]
+        expect(runId).toBe('run_1')
+        // A reason, so the audit row says WHY these proposals were refused.
+        expect(typeof reason).toBe('string')
+        expect((reason as string).length).toBeGreaterThan(0)
+        // The undo target still appears: the files may be on disk either way.
+        expect(useCodingStore.getState().applied).toMatchObject({ uncertain: true })
+        expect(useCodingStore.getState().pending).toBeNull()
+      }
+    )
+
+    it('says so when the package could not be marked as rejected', async () => {
+      // The undo box is the user's only way back, so it is shown whatever the
+      // rejection answered — but a trail that is now incomplete is not hidden.
+      await withPending()
+      h.api.codingEdits.accept.mockResolvedValue({
+        success: false,
+        outcome: { kind: 'refused', code: 'partial', reason: 'english text' }
+      })
+      h.api.codingEdits.reject.mockResolvedValue({ success: false, error: 'gate' })
+
+      await useCodingStore.getState().acceptPending()
+
+      const state = useCodingStore.getState()
+      expect(state.applied).toMatchObject({ uncertain: true })
+      expect(state.error).toMatch(/rückgängig/i)
+      expect(state.error).toMatch(/Audit/)
+    })
+
+    it('an accept that wrote nothing does not reject the package in the main process', async () => {
+      // Negative control for the two tests above: the package STAYS, so
+      // rejecting it here would throw away a decision the human has not made.
+      await withPending()
+      h.api.codingEdits.accept.mockResolvedValue({
+        success: false,
+        outcome: { kind: 'refused', code: 'fs', reason: 'english text' }
+      })
+      await useCodingStore.getState().acceptPending()
+      expect(h.api.codingEdits.reject).not.toHaveBeenCalled()
+      expect(useCodingStore.getState().pending).not.toBeNull()
+    })
+
     it('a refusal that wrote nothing keeps the package and says so in German', async () => {
       await withPending()
       h.api.codingEdits.accept.mockResolvedValue({

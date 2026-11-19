@@ -48,6 +48,21 @@ import {
 export const RUN_MAX_COMMANDS = 20
 export const RUN_TOTAL_MS = 300_000
 export const RUN_COMMAND_MS = 60_000
+/** The one name this tool is registered under; read in two places. */
+const RUN_COMMAND_TOOL = 'mingly_run_command'
+/**
+ * Room the registry's timeout for THIS tool keeps on top of `commandMs`.
+ *
+ * The registry used to apply one timeout to every tool (15 s), which capped
+ * every command at 14 s: `RUN_COMMAND_MS` and `RUN_TOTAL_MS` were fiction and
+ * `npm test` — the showcase command — could not finish. The tool now declares
+ * its own timeout, derived from the limits it was built with, so the two
+ * numbers cannot drift apart. The reserve covers killing the process group and
+ * assembling the result after the handler's own timer fires, and it is larger
+ * than the 1 s the handler subtracts below, so the handler is always the one
+ * that answers.
+ */
+const TOOL_TIMEOUT_RESERVE_MS = 5_000
 /** Characters read from a process before it is stopped as a flood. */
 export const RUN_OUTPUT_HARD_CAP = 1_000_000
 /** Room kept for the status header inside the registry's result budget. */
@@ -170,17 +185,48 @@ interface ProcessResult {
   signal: string | null
   timedOut: boolean
   flooded: boolean
+  /** A kill was attempted and refused: the process may still be running. */
+  unstoppable: boolean
   head: string
   tail: string
   omitted: number
 }
 
-function killGroup(pid: number | undefined, child: { kill(signal?: NodeJS.Signals): boolean }): void {
+/**
+ * How long runProcess waits for `exit`/`close` after it killed the group
+ * because of a timeout or a flood.
+ *
+ * A SIGKILL that landed is reported within milliseconds, so this only ever
+ * fires when the signal did NOT land (EPERM, a pid that is not ours any more).
+ * Without it the promise never settled: the run's time budget stayed charged
+ * for good, and the caller waited for the registry's timeout — which is now 65
+ * seconds for this tool, so the hang grew with the fix to the timeout.
+ */
+const FINAL_SETTLE_MS = 1_000
+
+/**
+ * SIGKILL the whole process group, or the child on Windows. ESRCH means the
+ * work was already over and is the normal end of every command; anything else
+ * (EPERM above all) means the process is STILL RUNNING and this app could not
+ * stop it — not a normal end, so it is said out loud and reported back.
+ *
+ * Returns false only in that second case. The caller must not then claim the
+ * group was killed: "process group killed" would be a false sentence in front
+ * of the human.
+ */
+function killGroup(pid: number | undefined, child: { kill(signal?: NodeJS.Signals): boolean }): boolean {
   try {
     if (process.platform !== 'win32' && pid !== undefined) process.kill(-pid, 'SIGKILL')
     else child.kill('SIGKILL')
-  } catch {
-    // ESRCH: nothing left to kill.
+    return true
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ESRCH') return true
+    console.warn(
+      `mingly_run_command: the process group could not be stopped (${code ?? 'unknown error'}); ` +
+        'it may still be running'
+    )
+    return false
   }
 }
 
@@ -243,15 +289,23 @@ function runProcess(
     let timedOut = false
     let flooded = false
     let settled = false
+    let unstoppable = false
     let graceTimer: NodeJS.Timeout | undefined
+    let settleTimer: NodeJS.Timeout | undefined
+
+    /** Kill, and remember a refusal so the result does not claim otherwise. */
+    const kill = (): void => {
+      if (!killGroup(child.pid, child)) unstoppable = true
+    }
 
     const finish = (exitCode: number | null, signal: string | null): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       if (graceTimer) clearTimeout(graceTimer)
+      if (settleTimer) clearTimeout(settleTimer)
       // The leader is gone; anything it left behind in its group goes too.
-      killGroup(child.pid, child)
+      kill()
       child.stdout?.destroy()
       child.stderr?.destroy()
       resolve({
@@ -259,15 +313,29 @@ function runProcess(
         signal,
         timedOut,
         flooded,
+        unstoppable,
         head,
         tail,
         omitted: Math.max(0, total - head.length - tail.length)
       })
     }
 
+    /**
+     * The last resort after a kill: settle anyway. A kill that landed brings
+     * `exit` (and then `close`) within milliseconds and clears this; a kill
+     * that was REFUSED brings neither, and the promise would otherwise never
+     * settle. What is reported then is what was true: it timed out or flooded,
+     * with the output collected so far and no exit code.
+     */
+    const armFinalSettle = (): void => {
+      if (settled || settleTimer) return
+      settleTimer = setTimeout(() => finish(null, null), FINAL_SETTLE_MS)
+    }
+
     const timer = setTimeout(() => {
       timedOut = true
-      killGroup(child.pid, child)
+      kill()
+      armFinalSettle()
     }, timeoutMs)
 
     const sink = (decoder: StringDecoder) => (chunk: Buffer): void => {
@@ -282,7 +350,8 @@ function runProcess(
       if (text.length > 0) tail = (tail + text).slice(-tailMax)
       if (total > hardCap) {
         flooded = true
-        killGroup(child.pid, child)
+        kill()
+        armFinalSettle()
       }
     }
     child.stdout?.on('data', sink(new StringDecoder('utf8')))
@@ -293,10 +362,14 @@ function runProcess(
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (graceTimer) clearTimeout(graceTimer)
+      if (settleTimer) clearTimeout(settleTimer)
       resolve(null)
     })
     child.on('exit', (code, signal) => {
       // A grandchild that keeps the pipes open must not hold the call forever.
+      // Nothing is armed after the call has already been answered.
+      if (settled) return
       graceTimer = setTimeout(() => finish(code, signal), 1000)
     })
     child.on('close', (code, signal) => finish(code, signal))
@@ -357,8 +430,75 @@ async function rootHasMark(tool: CommandTool, scope: Scope): Promise<boolean> {
 }
 
 const GIT_POINTER_MAX_BYTES = 4096
+/** Largest repository config this app will judge; anything larger is refused. */
+const GIT_CONFIG_MAX_BYTES = 256 * 1024
 
 const MAX_LINK_HOPS = 40
+
+/**
+ * Does one line of a git config name a program git might run?
+ *
+ * Measured (git 2.53.0, negative control in the same run): a
+ * `filter.<name>.clean` driver selected by a `.gitattributes` in the tree is
+ * executed by `git diff --stat`, by `git diff --name-only` and by
+ * `git status` / `git status --short` — the last two whenever the file size is
+ * unchanged, so git cannot settle from stat alone whether the file is modified.
+ * Reaching the same driver through `[include] path = …` works just as well.
+ * There is NO git flag that switches clean/smudge off (`--no-ext-diff` and
+ * `--no-textconv` cover different drivers), so the repository is refused.
+ *
+ * What counts as naming a program: a `filter` section, a key whose name ends in
+ * `command`, and an `include`/`includeIf` section — the last because what it
+ * pulls in is not read here, and a check that ignored it would be bypassed by
+ * one line. A comment is not a definition.
+ *
+ * This is deliberately an OVER-approximation: it reads the text rather than
+ * implementing git's config grammar, so it can refuse a repository that would
+ * have been harmless. A refusal is the safe direction; a miss is not.
+ */
+function lineNamesProgram(raw: string): boolean {
+  const line = raw.trim()
+  if (line === '' || line.startsWith('#') || line.startsWith(';')) return false
+  const lower = line.toLowerCase()
+  // A section header, with or without a subsection, possibly followed by a
+  // variable on the same line (which git allows).
+  if (/\[\s*(?:filter|includeif|include)(?:[\s\]"]|$)/.test(lower)) return true
+  // A variable whose name ends in `command`: core.sshCommand, diff.<x>.command,
+  // trailer.<x>.command and whatever git adds next.
+  return /(?:^|\s|\])[a-z0-9.-]*command\s*=/.test(lower)
+}
+
+/**
+ * Judge the config files git will read for THIS repository: `$GIT_DIR/config`
+ * and, when a common dir is pinned, `$GIT_COMMON_DIR/config` (where a linked
+ * worktree's shared config lives).
+ *
+ * Absent is safe — nothing is defined. Unreadable, not a regular file or larger
+ * than the ceiling is NOT safe: a file this app cannot judge is one it must not
+ * vouch for.
+ *
+ * NOT covered, and not claimed: the global `~/.gitconfig` (HOME is passed
+ * through to the child), and keys that name a program for commands this tool
+ * does not allow. `core.fsmonitor`, the pager and the external diff and
+ * textconv drivers are switched off on the command line instead.
+ */
+async function gitConfigIsSafe(gitDir: string, commonDir: string | null): Promise<boolean> {
+  for (const dir of commonDir === null ? [gitDir] : [gitDir, commonDir]) {
+    const file = path.join(dir, 'config')
+    let text: string
+    try {
+      const stat = await fs.promises.stat(file)
+      if (!stat.isFile() || stat.size > GIT_CONFIG_MAX_BYTES) return false
+      text = await fs.promises.readFile(file, 'utf8')
+    } catch (error) {
+      // No config file: nothing is defined. Anything else: refuse.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+      return false
+    }
+    if (text.split(/\r?\n/).some(lineNamesProgram)) return false
+  }
+  return true
+}
 
 /**
  * Resolve `input` against the REAL directory `start` the way the operating
@@ -510,6 +650,10 @@ function describeResult(res: ProcessResult, timeoutMs: number): string {
   else if (res.flooded) status = 'output limit exceeded, process stopped'
   else if (res.signal) status = `terminated by signal ${res.signal}`
   else status = `exit code ${res.exitCode}`
+  // The two lines above say the group was killed. When the kill was refused
+  // that is not true, and the sentence has to be taken back rather than left
+  // standing in front of the human.
+  if (res.unstoppable) status += ' (the process group could not be stopped and may still be running)'
   const out = cleanOutput(res.head) + (res.omitted > 0 ? `\n[... ${res.omitted} characters omitted ...]\n` : '') + cleanOutput(res.tail)
   return `${status}\n${out === '' ? '(no output)' : out}`
 }
@@ -550,8 +694,13 @@ async function runCommand(
     const runId = ctx.runId
     if (typeof runId !== 'string' || runId === '') return COMMAND_UNAVAILABLE
     // The command must be dead before the registry's own timeout fires, or the
-    // registry would report a failure while the process keeps running.
-    const wantMs = Math.min(deps.limits.commandMs, Math.max(500, registry.getToolTimeoutMs() - 1000))
+    // registry would report a failure while the process keeps running. The
+    // timeout asked for is THIS tool's (see registerRunCommand), not the
+    // registry-wide one: the registry-wide one is short on purpose.
+    const wantMs = Math.min(
+      deps.limits.commandMs,
+      Math.max(500, registry.getToolTimeoutMs(RUN_COMMAND_TOOL) - 1000)
+    )
     const timeoutMs = budget.reserve(runId, wantMs)
     if (timeoutMs === null) return BUDGET_SPENT
 
@@ -579,6 +728,12 @@ async function runCommand(
         // Its mark is a redirection: validate where it leads and pin git there.
         const resolved = await resolveGitDir(scope)
         if (resolved === null) return COMMAND_UNAVAILABLE
+        // The git dir is inside the grant, but its CONTENT still decides what
+        // git executes: a clean filter runs for every allowed form (measured).
+        // Environment-dependent, so the shared text and nothing more specific —
+        // a differentiated refusal would let the agent probe repository
+        // configuration it is not allowed to read.
+        if (!(await gitConfigIsSafe(resolved.gitDir, resolved.commonDir))) return COMMAND_UNAVAILABLE
         pinned.GIT_DIR = resolved.gitDir
         // The validated common dir becomes authoritative, like GIT_DIR: git reads
         // it from the `commondir` file otherwise, and that file is not trusted.
@@ -647,7 +802,7 @@ export function registerRunCommand(registry: ToolRegistry, deps: Partial<RunComm
 
   registry.registerBuiltIn(
     {
-      name: 'mingly_run_command',
+      name: RUN_COMMAND_TOOL,
       description:
         'Run ONE allowlisted command in the project root, without a shell. Allowed: `npm test`, ' +
         '`npm run <script>` (script must exist in package.json), `vitest run [paths]`, `tsc --noEmit`, ' +
@@ -663,6 +818,7 @@ export function registerRunCommand(registry: ToolRegistry, deps: Partial<RunComm
       }
     },
     (args, ctx) => runCommand(args, ctx, resolved, budget, registry),
-    runGate
+    runGate,
+    resolved.limits.commandMs + TOOL_TIMEOUT_RESERVE_MS
   )
 }

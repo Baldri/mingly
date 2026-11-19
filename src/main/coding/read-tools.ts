@@ -49,6 +49,18 @@ export const LIST_FILES_MAX_ENTRIES = 500
  * turned an incomplete list into a false statement.
  */
 const LIST_FOOTER_RESERVE_CHARS = 300
+/**
+ * The answer when the result budget cannot hold body AND footer at once.
+ *
+ * Short on purpose: the regular footer is 138 characters (measured), and a
+ * budget below that gets it cut mid-word by the registry, which appends its own
+ * marker — the sentence about the result is exactly the part that is chopped.
+ * It also leaves out the "narrow it with `pattern`" advice, because no entry
+ * fits at any breadth here; the walk's own work-budget branch drops the advice
+ * for the same reason. Only reachable from a registry built with a tiny budget;
+ * the production default is 4000.
+ */
+const LIST_BUDGET_TOO_SMALL = '[the result budget is too small to show any entry; the list is INCOMPLETE.]'
 /** Directory entries `mingly_list_files` inspects before it gives up and says so. */
 const LIST_FILES_MAX_VISITED = 50_000
 const LIST_FILES_MAX_DEPTH = 40
@@ -347,6 +359,10 @@ async function listFiles(
     // registry cuts at that length, and the footer at the end is exactly the
     // part that would be lost. Same discipline as mingly_read_file.
     const bodyBudget = maxResultChars() - LIST_FOOTER_RESERVE_CHARS
+    // Nothing can be listed below the reserve, and the regular footer does not
+    // fit either: say so in one sentence that does, the way mingly_read_file
+    // answers a line it cannot return.
+    if (bodyBudget <= 0) return LIST_BUDGET_TOO_SMALL
     let usedChars = 0
     let truncated = false
     let truncatedReason = ''

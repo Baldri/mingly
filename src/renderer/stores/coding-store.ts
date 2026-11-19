@@ -181,6 +181,16 @@ const CONSENT_REFUSED = 'Die Antwort wurde nicht angenommen. Die Frage bleibt of
 const NO_DIGEST =
   'Die vorgeschlagenen Änderungen wurden ohne Prüfsumme gemeldet und werden deshalb nicht zur ' +
   'Annahme angeboten. Starten Sie den Lauf neu.'
+/**
+ * The reason recorded for a package the surface stops offering after an accept
+ * broke off. It lands in the audit trail as the refusal reason of every
+ * proposal in the package, so it says what happened, not who clicked.
+ */
+const ACCEPT_ABORTED_REASON = 'Das Anwenden wurde abgebrochen; der Vorschlag wurde nicht weiter angeboten.'
+/** Appended when the main process did not confirm the rejection above. */
+const REJECTION_NOT_RECORDED =
+  'Hinweis: Die Ablehnung dieser Vorschläge konnte nicht vermerkt werden; im Audit-Export erscheinen ' +
+  'sie weder als angewendet noch als abgelehnt.'
 
 /**
  * A thrown value as text for the error box. The surface renders under
@@ -253,6 +263,31 @@ export const useCodingStore = create<CodingState>((set, get) => {
       return
     }
     set({ pending: null, error: `${message} ${loaded.error}` })
+  }
+
+  /**
+   * Tell the MAIN process that a package the surface stopped offering is
+   * refused. Returns whether it confirmed.
+   *
+   * The renderer dropping `pending` is only half of it: `resolve(runId, false,
+   * …)` is reached from `rejectEditsForRun` alone, so nothing else resolves the
+   * package afterwards. Left unresolved it produces no `coding.change_rejected`
+   * row — the proposals appear in the export neither as applied nor as refused
+   * — and it keeps one of the EDIT_MAX_RETAINED_RUNS slots for the rest of the
+   * session, which eventually makes a NEW run's first proposal be refused.
+   *
+   * Not `rejectPending`: that one clears `error`, and the caller here has a
+   * message the user must keep seeing.
+   */
+  const rejectInMain = async (runId: string, reason: string): Promise<boolean> => {
+    const bridge = api()?.codingEdits
+    if (!bridge) return false
+    try {
+      const reply: RejectReply = await bridge.reject(runId, reason)
+      return reply.success === true
+    } catch {
+      return false
+    }
   }
 
   const readMode = async (directoryId: string): Promise<CodingMode> => {
@@ -508,10 +543,17 @@ export const useCodingStore = create<CodingState>((set, get) => {
         // user to run undo, so the undo target has to exist — and «Annehmen»
         // must stop being offered, because what is on disk is no longer the
         // package that was approved.
+        //
+        // Who else believes something about this package? The main process
+        // does: it still holds the proposals. It is told BEFORE the uncertain
+        // state is set, so the audit trail says what happened. A rejection that
+        // does not go through is NAMED and changes nothing else — the undo box
+        // is the only way back and must appear either way.
         if (code !== undefined && CODING_REFUSALS_MAY_HAVE_WRITTEN.includes(code)) {
+          const recorded = await rejectInMain(pending.runId, ACCEPT_ABORTED_REASON)
           set({
             pending: null,
-            error: message,
+            error: recorded ? message : `${message} ${REJECTION_NOT_RECORDED}`,
             applied: {
               runId: pending.runId,
               directoryId: pending.directoryId,

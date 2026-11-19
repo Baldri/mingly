@@ -10,7 +10,7 @@
  * Safety Rails:
  * - Max steps per run (default: 5)
  * - Max tokens per run (default: 50000)
- * - Per-tool timeout (handled by ToolRegistry)
+ * - Per-tool timeout (owned by ToolRegistry, not configurable per run)
  * - Total run timeout (default: 120s)
  * - Cancellation via AbortController
  * - Step-by-step event emission for UI tracking
@@ -61,7 +61,6 @@ import type {
 const DEFAULT_AGENT_CONFIG: AgentConfig = {
   maxSteps: 5,
   maxTokensPerRun: 50000,
-  toolTimeoutMs: 15000,
   runTimeoutMs: 120000,
   enableProgressRecitation: true,
   enableErrorPreservation: true

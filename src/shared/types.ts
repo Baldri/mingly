@@ -206,8 +206,13 @@ export interface AgentConfig {
   maxSteps: number
   /** Maximum total tokens per run (safety rail) */
   maxTokensPerRun: number
-  /** Timeout per individual tool execution in ms */
-  toolTimeoutMs: number
+  /**
+   * No per-tool timeout here on purpose. It used to be declared and was never
+   * read: the timeout a tool call actually gets comes from the ToolRegistry
+   * (registry-wide, or the tool's own — see ToolRegistry.getToolTimeoutMs), and
+   * the registry is one instance shared by every run, so a per-run value could
+   * not be honoured without one run changing another run's limits.
+   */
   /** Overall timeout for the entire agent run in ms */
   runTimeoutMs: number
   /** Enable progress recitation: inject step summary into next turn (Manus-inspired) */
