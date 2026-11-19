@@ -635,7 +635,7 @@ describe('FIX C: undo trusts only batches this app recorded outside the project'
     extraDeps = {
       hooks: {
         afterVerify: async () => {
-          recordedBeforeWrite = (await ledger.lookup(fs.realpathSync(project), RUN, 1)) !== undefined
+          recordedBeforeWrite = (await ledger.lookup(RUN, 1)) !== undefined
         }
       }
     }
@@ -661,9 +661,93 @@ describe('FIX C: undo trusts only batches this app recorded outside the project'
     const rows = new Map<string, unknown>()
     const small = createSnapshotLedger({ get: (k, d) => rows.get(k) ?? d, set: (k, v) => void rows.set(k, v) }, 3)
     for (let i = 1; i <= 4; i++) await small.record('/p', 'r', i, 'h' + i)
-    expect(await small.lookup('/p', 'r', 1)).toBeUndefined()
-    expect(await small.lookup('/p', 'r', 4)).toBe('h4')
+    expect(await small.lookup('r', 1)).toBeUndefined()
+    expect(await small.lookup('r', 4)).toBe('h4')
     expect(LEDGER_MAX_ROWS).toBeGreaterThan(3)
+  })
+})
+
+describe('round 2: undo survives a restart and a move, and still trusts only the ledger', () => {
+  async function applied(): Promise<string> {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    expect((await acceptEditsForRun(RUN, 'dir-1', deps())).kind).toBe('applied')
+    return a
+  }
+
+  it('undo works after the in-memory registry is gone (restart), given the row and the snapshot', async () => {
+    const a = await applied()
+    runDirs = createRunDirectoryRegistry()
+    const out = await undoRunForDirectory(RUN, 'dir-1', deps())
+    expect(out).toEqual({ kind: 'restored', restored: ['a.ts'], skipped: [] })
+    expect(read(a)).toBe(ORIGINAL)
+  })
+
+  it('accept does NOT work without the registry record (pending proposals die with the process anyway)', async () => {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    runDirs = createRunDirectoryRegistry()
+    expect((await acceptEditsForRun(RUN, 'dir-1', deps())).kind).toBe('refused')
+    expect(read(a)).toBe(ORIGINAL)
+  })
+
+  it('undo works after the project moved to a new path: the row is found by run id and batch', async () => {
+    await applied()
+    runDirs = createRunDirectoryRegistry()
+    const moved = path.join(outside, 'moved-project')
+    fs.renameSync(project, moved)
+    grants = [grant({ path: moved })]
+    const out = await undoRunForDirectory(RUN, 'dir-1', deps())
+    expect(out).toEqual({ kind: 'restored', restored: ['a.ts'], skipped: [] })
+    expect(fs.readFileSync(path.join(moved, 'a.ts'), 'utf8')).toBe(ORIGINAL)
+  })
+
+  it('a moved project still refuses a manifest that does not match its row', async () => {
+    await applied()
+    const moved = path.join(outside, 'moved-project')
+    fs.renameSync(project, moved)
+    grants = [grant({ path: moved })]
+    const manifest = path.join(moved, '.mingly', 'snapshots', RUN, 'batch-1', 'manifest.json')
+    fs.writeFileSync(manifest, fs.readFileSync(manifest, 'utf8') + ' ')
+    const out = await undoRunForDirectory(RUN, 'dir-1', deps())
+    expect(out.kind).toBe('refused')
+    if (out.kind === 'refused') expect(out.reason).toMatch(/no record in this app/)
+  })
+
+  it('without the registry, a snapshot that is not physically under the grant is not found', async () => {
+    await applied()
+    runDirs = createRunDirectoryRegistry()
+    const elsewhere = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-apply-else-')))
+    try {
+      grants = [grant({ path: elsewhere })]
+      expect((await undoRunForDirectory(RUN, 'dir-1', deps())).kind).toBe('refused')
+      expect(fs.existsSync(path.join(elsewhere, '.mingly'))).toBe(false)
+    } finally {
+      fs.rmSync(elsewhere, { recursive: true, force: true })
+    }
+  })
+
+  it('without the registry and without a row, a planted snapshot is refused', async () => {
+    const a = write('a.ts', ORIGINAL)
+    const planted = path.join(ws.snapshotDir, 'batch-1')
+    fs.mkdirSync(planted)
+    const evil = 'EVIL\n'
+    fs.writeFileSync(path.join(planted, '0.bak'), evil)
+    fs.writeFileSync(
+      path.join(planted, 'manifest.json'),
+      JSON.stringify({ version: 1, entries: [{ rel: 'a.ts', file: '0.bak', before: sha(evil), after: sha(ORIGINAL) }] })
+    )
+    runDirs = createRunDirectoryRegistry()
+    expect((await undoRunForDirectory(RUN, 'dir-1', deps())).kind).toBe('refused')
+    expect(read(a)).toBe(ORIGINAL)
+  })
+
+  it('within a session, a directory id that disagrees with the registry is still refused', async () => {
+    const a = await applied()
+    const after = read(a)
+    grants = [grant(), grant({ id: 'dir-2', path: project })]
+    expect((await undoRunForDirectory(RUN, 'dir-2', deps())).kind).toBe('refused')
+    expect(read(a)).toBe(after)
   })
 })
 
@@ -781,10 +865,12 @@ describe('handlers: R56 (the workspace is rebuilt from the grant) and R63 (propo
     expect(read(a)).toBe(applied)
   })
 
-  it('FIX A: a run with no recorded directory is refused, not answered from the parameter', async () => {
+  it('FIX A: accept for a run with no recorded directory is refused, not answered from the parameter', async () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2', 'unrecorded')
     expect((await acceptEditsForRun('unrecorded', 'dir-1', deps())).kind).toBe('refused')
+    // Undo does not need the registry (see FIX B round 2), but it needs a snapshot for the run in
+    // this very directory; none exists, so it refuses and creates nothing.
     expect((await undoRunForDirectory('unrecorded', 'dir-1', deps())).kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
     expect(fs.existsSync(path.join(project, '.mingly', 'snapshots', 'unrecorded'))).toBe(false)

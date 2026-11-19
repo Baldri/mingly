@@ -137,6 +137,8 @@ const REFUSE_RUN_DIRECTORY =
 const REFUSE_WORKSPACE = 'Nothing was written: the project workspace does not belong to this grant.'
 const REFUSE_SNAPSHOT =
   'Nothing was written: the snapshot could not be made, and no file is changed without one.'
+const REFUSE_NO_SNAPSHOT =
+  'Nothing was restored: there is no snapshot for this run in this directory.'
 const REFUSE_UNRECORDED =
   'Nothing was restored: this snapshot has no record in this app (it was not created here, its ' +
   'manifest was changed afterwards, or the record is gone). It will not be restored.'
@@ -745,7 +747,7 @@ export async function undoRun(
       // The disk inside the project vouches for nothing. The manifest must be
       // byte-for-byte what this app recorded outside the project, else the
       // batch is refused. Do not "repair" a missing record by trusting the disk.
-      const recorded = await deps.ledger.lookup(scope.realRoot, runId, number)
+      const recorded = await deps.ledger.lookup(runId, number)
       if (recorded === undefined || recorded !== sha256(raw)) throw new UndoRefusal(REFUSE_UNRECORDED)
       parsed.push({ batchDir, manifest: parseManifest(raw.toString('utf-8')) })
     }
@@ -787,7 +789,22 @@ function validIds(runId: unknown, directoryId: unknown): runId is string {
   )
 }
 
+/** The run's snapshot directory physically exists under the grant (a real directory, not a link). */
+async function snapshotPresent(grantPath: string, runId: string): Promise<boolean> {
+  try {
+    const dir = path.join(path.resolve(grantPath), WORKSPACE_DIR, 'snapshots', runId)
+    return (await fs.promises.lstat(dir)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
 /**
+ * ACCEPT keeps the registry as the only authority, on purpose and unlike undo:
+ * pending proposals live in memory and die with the process, so accept cannot
+ * work after a restart whatever is checked, and requiring the record costs
+ * nothing. Undo works from files, so it must not depend on memory.
+ *
  * The directory the run started in is the main process's record; the id the
  * renderer sent is only checked against it. No record, or a different id, is a
  * refusal: never a silent preference for either side, and never a fallback to
@@ -856,9 +873,17 @@ export async function undoRunForDirectory(
 ): Promise<UndoOutcome> {
   try {
     if (!validIds(runId, directoryId)) return refused(REFUSE_INPUT)
-    if (!runBelongsTo(deps, runId, directoryId)) return refused(REFUSE_RUN_DIRECTORY)
+    // Within a session the registry is the stronger test: a renderer that
+    // disagrees with the main process is refused and surfaced. It is only an
+    // ADDITIONAL check here. After a restart it has no record, and undo must
+    // still work: "what" may be restored is the ledger's manifest hash, "where"
+    // is the user's own grant plus the snapshot being physically present under
+    // it (checked below). Nothing is trusted that was not already trusted.
+    const known = deps.runDirectories?.get(runId)
+    if (known !== undefined && known !== directoryId) return refused(REFUSE_RUN_DIRECTORY)
     const grant = await deps.findGrant(directoryId as string)
     if (!permitsEdit(grant)) return refused(REFUSE_GRANT)
+    if (!(await snapshotPresent(grant.path, runId))) return refused(REFUSE_NO_SNAPSHOT)
 
     let ws: ProjectWorkspace
     try {
