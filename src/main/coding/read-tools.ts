@@ -325,6 +325,10 @@ async function listFiles(
     let truncatedReason = ''
     let visited = 0
     const budget: WorkBudget = { left: LIST_FILES_WORK_BUDGET }
+    // Steps spent on ignore rules for DIRECTORIES: that work precedes any pattern
+    // test, so it decides which advice the incomplete marker may give.
+    let dirSteps = 0
+    let advice = ' Narrow it with the "pattern" argument.'
 
     const walk = async (relDir: string, depth: number): Promise<void> => {
       if (truncated) return
@@ -357,7 +361,14 @@ async function listFiles(
         if (entry.isSymbolicLink()) continue
 
         if (entry.isDirectory()) {
-          if (isIgnored(rules, rel, true, budget)) continue
+          const before = budget.left
+          let ignoredDir: boolean
+          try {
+            ignoredDir = isIgnored(rules, rel, true, budget)
+          } finally {
+            dirSteps += before - Math.max(budget.left, 0)
+          }
+          if (ignoredDir) continue
           await walk(rel, depth + 1)
         } else if (entry.isFile()) {
           // The pattern is tested FIRST for files: an entry nobody asked for
@@ -387,13 +398,20 @@ async function listFiles(
       // Same honesty as every other cut: say the list is incomplete.
       truncated = true
       truncatedReason = 'matching work budget reached'
+      // Mostly spent on directory ignore rules: narrowing cannot help, so say what
+      // is true instead of offering a remedy the code knows does not apply.
+      if (dirSteps * 2 > LIST_FILES_WORK_BUDGET) {
+        truncatedReason =
+          'matching work budget reached while evaluating the .gitignore rules for directories ' +
+          '(the cost is in those ignore rules, not in the breadth of the request)'
+        advice = ''
+      }
     }
 
     const lines = found.length > 0 ? found : ['(no files)']
     if (truncated) {
       lines.push(
-        `[truncated: ${truncatedReason}; showing ${found.length} entries and the list is INCOMPLETE. ` +
-          'Narrow it with the "pattern" argument.]'
+        `[truncated: ${truncatedReason}; showing ${found.length} entries and the list is INCOMPLETE.${advice}]`
       )
     }
     return lines.join('\n')

@@ -618,8 +618,25 @@ describe('pattern matching cannot hang the main process', () => {
     const t = Date.now()
     const out = await call('list_files', {}, ctx)
     const elapsed = Date.now() - t
-    expect(elapsed).toBeLessThan(2500)
+    // Bound derived, not guessed: this test took 481-498 ms over six runs on the
+    // development machine (2026-11-19, 100M-step budget, ~5 ns per step). The bound
+    // is 4x the largest measurement. Re-derive it whenever the budget changes:
+    // bound = 4 x (measured ms), measured by running this test a few times.
+    expect(elapsed).toBeLessThan(2000)
     expect(out).toMatch(/INCOMPLETE/)
+    // File-rule cost: narrowing with `pattern` genuinely helps, so the advice stays.
+    expect(out).toMatch(/pattern/)
+  })
+
+  it('budget spent on DIRECTORY ignore rules: says incomplete and does NOT advise a remedy that cannot apply', async () => {
+    // Directory-only rules run before any pattern test, so `pattern` cannot help.
+    const rule = '*' + 'a'.repeat(150) + 'b/'
+    write('.gitignore', Array.from({ length: 300 }, () => rule).join('\n') + '\n')
+    for (let i = 0; i < 400; i++) write(`${'a'.repeat(230)}${String(i).padStart(3, '0')}/f.ts`, 'x')
+    const out = await call('list_files', {}, await ctxFor())
+    expect(out).toMatch(/INCOMPLETE/)
+    expect(out).not.toMatch(/narrow|pattern/i)
+    expect(out).toMatch(/ignore rules/i)
   })
 
   it('a narrowed pattern is not charged for the ignore rules of entries it excludes', async () => {

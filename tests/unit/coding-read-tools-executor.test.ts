@@ -303,24 +303,27 @@ describe('read_file through the real executor', () => {
     ])
   })
 
-  it('a write arriving after its step has finished changes nothing, for that step or the next', async () => {
-    fs.writeFileSync(path.join(projectPath, 'a.ts'), 'export const a = 1\n')
+  it('a write arriving after its step has finished changes nothing, and nothing leaks into the next step', async () => {
     let captured: ToolContext | undefined
     getToolRegistry().registerBuiltIn(
       { name: 'probe_late', description: 'probe', inputSchema: { type: 'object', properties: {} } },
       async (_args, ctx) => {
         captured = ctx
+        // Written DURING step 1 under index key '0'. A sink shared across steps
+        // would still hold this when step 2 looks up its own index 0.
+        ctx?.resolvedPaths?.set(ctx.callKey ?? '', 'STEP1.ts')
         return 'ok'
       },
       (ctx) => ctx?.coding !== undefined
     )
-    llmResponses = [step('probe_late', {}), step('read_file', { path: 'a.ts' })]
+    // Step 2, index 0: a REFUSED read. It must report no path at all; if step
+    // 1's entry were still reachable, its origin would show STEP1.ts.
+    llmResponses = [step('probe_late', {}), step('read_file', { path: '../outside.ts' })]
     await run()
-    expect(captured?.resolvedPaths).toBeDefined()
-    // The straggler: step 1 is over; its sink is closed.
+    expect(guardOrigins[1][0]).toEqual({ toolName: 'read_file' })
+    // The straggler: step 1 is over; its sink is closed and emptied.
+    expect(captured!.resolvedPaths!.get('0')).toBeUndefined()
     captured!.resolvedPaths!.set('0', 'LATE.ts')
     expect(captured!.resolvedPaths!.get('0')).toBeUndefined()
-    // And step 2 (a different sink) reported its own path, not the late one.
-    expect(guardOrigins[1][0]).toEqual({ toolName: 'read_file', filePath: 'a.ts' })
   })
 })
