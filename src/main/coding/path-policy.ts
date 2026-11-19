@@ -34,11 +34,18 @@ export const CODING_BLOCKED_PATTERNS: readonly string[] = [
   "id_ecdsa*",
   "id_dsa*",
   "credentials.json",
-  "secrets.yaml",
-  "secrets.yml",
+  "secrets.*",
   ".npmrc",
   ".netrc",
   "*.db",
+  // Added in fix round 2, by family. `.git` blocks the whole directory at any
+  // depth (config, config.worktree, modules/*/config, hooks): an agent reads
+  // git state through git commands, not as files. It does not touch
+  // `.gitignore` or `.gitattributes`: the match is on the whole segment.
+  ".git",
+  "service-account*.json",
+  ".docker/config.json",
+  ".yarnrc.yml",
 ];
 
 /** Extensions (lower-case, no dot) the coding tools may read. */
@@ -120,6 +127,10 @@ function foldPath(input: unknown): Fold {
     return { kind: "unclassifiable" };
   }
   if (CONTROL_CHARS.test(input)) return { kind: "unclassifiable" };
+  // A project-relative path has no legitimate colon on any platform this
+  // ships to, and on NTFS `a.key::$DATA` or `a.pem:stream` opens the data
+  // stream of the blocked file. Refuse outright; this also refuses `C:\x`.
+  if (input.includes(":")) return { kind: "unclassifiable" };
 
   const segments: string[] = [];
   const resolved: string[] = [];
@@ -160,10 +171,28 @@ function compileSegment(glob: string): RegExp {
   return new RegExp(`^${body}$`, "s");
 }
 
+/**
+ * Compile one blocked pattern (segments separated by `/`) to one RegExp per
+ * segment. Throws on glob syntax other than `*`. Exported so the throw can be
+ * tested: the constant list can never trigger it.
+ */
+export function compileBlockedPattern(pattern: string): readonly RegExp[] {
+  return pattern.split("/").map(compileSegment);
+}
+
 const COMPILED_PATTERNS: readonly (readonly RegExp[])[] =
-  CODING_BLOCKED_PATTERNS.map((pattern) =>
-    pattern.split("/").map(compileSegment),
-  );
+  CODING_BLOCKED_PATTERNS.map(compileBlockedPattern);
+
+/**
+ * The folded, lexically resolved segments of a path (`.` removed, `..`
+ * applied, a `..` that cannot pop is kept), or null when the path cannot be
+ * classified. Exposed for the tests and for a second blocklist pass on a
+ * resolved real path.
+ */
+export function resolvePathSegments(path: string): string[] | null {
+  const folded = foldPath(path);
+  return folded.kind === "ok" ? folded.resolved : null;
+}
 
 const MULTI_SEGMENT_PATTERNS = COMPILED_PATTERNS.filter((p) => p.length > 1);
 
@@ -198,7 +227,7 @@ function sequenceMatches(
  *
  * Single-segment patterns are checked against EVERY segment (a directory
  * named `.env` or `x.pem` blocks everything below it; over-blocking is the
- * accepted error). Multi-segment patterns (`.git/config`) are checked against
+ * accepted error). Multi-segment patterns (`.docker/config.json`) are checked against
  * the lexically resolved path, at any depth.
  *
  * Expects a path relative to the granted directory. An absolute path is not

@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   CODING_BLOCKED_PATTERNS,
+  compileBlockedPattern,
+  resolvePathSegments,
   CODING_READ_EXTENSIONS,
   isBlockedPath,
   isReadableExtension,
@@ -22,11 +24,14 @@ describe("coding path policy: blocklist", () => {
       "id_ecdsa*",
       "id_dsa*",
       "credentials.json",
-      "secrets.yaml",
-      "secrets.yml",
+      "secrets.*",
       ".npmrc",
       ".netrc",
       "*.db",
+      ".git",
+      "service-account*.json",
+      ".docker/config.json",
+      ".yarnrc.yml",
     ]);
   });
 
@@ -93,13 +98,22 @@ describe("coding path policy: blocklist", () => {
   });
 
   it("folds Unicode case variants that APFS treats as the same name", () => {
-    // Measured on APFS: "a.Key" (Kelvin sign) opens a.key.
-    expect(isBlockedPath("a.Key")).toBe(true);
-    // NFD spelling of an umlaut name resolves to the NFC file.
-    expect(isBlockedPath("ü.pem")).toBe(true);
-    // Fullwidth full stop and letters normalise (NFKC) to .env.
-    expect(isBlockedPath("．env")).toBe(true);
-    expect(isBlockedPath("．ｅｎｖ")).toBe(true);
+    // Measured on APFS: "a.\u212aey" (Kelvin sign) opens a.key.
+    expect(isBlockedPath("a.\u212aey")).toBe(true);
+  });
+
+  it("applies compatibility normalisation where it alone decides", () => {
+    // The patterns are ASCII, so canonical NFC/NFD differences cannot decide
+    // anything (an NFD "u\u0308.pem" is blocked by *.pem under any fold, which
+    // is why it is not asserted here). Fullwidth forms are different: they
+    // match a basename family only after NFKC.
+    expect(isBlockedPath("\uff0eenv")).toBe(true);
+    expect(isBlockedPath("\uff0e\uff45\uff4e\uff56")).toBe(true);
+    expect(isBlockedPath("\uff49\uff44\u005f\uff52\uff53\uff41")).toBe(true); // id_rsa
+    expect(isBlockedPath("\uff43redentials.json")).toBe(true);
+    expect(isBlockedPath("\uff33ECRETS.json")).toBe(true);
+    // Neighbour: fullwidth letters in an unrelated name stay allowed.
+    expect(isBlockedPath("\uff4bey.ts")).toBe(false);
   });
 
   it("ignores ./ and .. segments, so one file cannot hide behind a detour", () => {
@@ -117,7 +131,9 @@ describe("coding path policy: blocklist", () => {
     }
     // A detour that lands on an ordinary file stays allowed.
     expect(isBlockedPath("src/../README.md")).toBe(false);
-    expect(isBlockedPath(".git/../config.ts")).toBe(false);
+    // `.git` is blocked as a segment even when a later `..` cancels it: the
+    // detour is over-cautious by design, never a way in.
+    expect(isBlockedPath(".git/../config.ts")).toBe(true);
   });
 
   it("treats a backslash as a separator", () => {
@@ -133,8 +149,8 @@ describe("coding path policy: blocklist", () => {
   });
 
   it("ignores invisible format characters inside a name", () => {
-    expect(isBlockedPath(".e​nv")).toBe(true);
-    expect(isBlockedPath("a.p‍em")).toBe(true);
+    expect(isBlockedPath(".e\u200bnv")).toBe(true);
+    expect(isBlockedPath("a.p\u200dem")).toBe(true);
   });
 
   it("blocks a pattern hit on any segment, including directories", () => {
@@ -167,7 +183,7 @@ describe("coding path policy: blocklist", () => {
       "id_ecdsa", "id_ecdsa.pub",
       "id_dsa", "id_dsa.pub",
       "credentials.json", "cfg/Credentials.JSON",
-      "secrets.yaml", "secrets.yml", "deploy/SECRETS.YML",
+      "secrets.yaml", "secrets.yml", "secrets.json", "secrets.toml", "deploy/SECRETS.YML",
       ".npmrc", "pkg/.NPMRC",
       ".netrc",
       "app.db", "data/APP.DB",
@@ -178,7 +194,7 @@ describe("coding path policy: blocklist", () => {
       "src/id_generator.ts", "src/my_id_ed25519.ts", "src/id_ecdsa_notes".replace("id_ecdsa_", "ids_") + ".md",
       "src/id_dsa.ts".replace("id_dsa", "ids_dsa"),
       "src/credentials.ts", "docs/credentials.md", "credentials.json.md",
-      "src/secrets.ts", "secrets.yaml.md", "secrets.yamls.md",
+      "src/secret.ts", "secrets-guide.md", "secrets", "src/secretsmanager.ts",
       "npmrc.md", ".npmignore",
       "netrc.ts",
       "src/db.ts", "db/schema.ts", "docs/mydb.md",
@@ -215,6 +231,99 @@ describe("coding path policy: blocklist", () => {
   });
 });
 
+describe("coding path policy: fix round 2", () => {
+  it("blocks the whole .git directory at any depth, but not .gitignore", () => {
+    for (const p of [
+      ".git/config",
+      ".git/config.worktree",
+      ".git/modules/sub/config",
+      "vendor/lib/.git/modules/x/config",
+      ".git/HEAD",
+      ".git/hooks/pre-commit",
+      ".GIT/Config",
+      "sub/.git",
+    ]) {
+      expect(isBlockedPath(p), p).toBe(true);
+    }
+    for (const p of [
+      ".gitignore",
+      ".gitattributes",
+      "src/.gitkeep",
+      "docs/git/config.md",
+      "src/gitconfig.ts",
+      ".github/workflows/ci.yml",
+    ]) {
+      expect(isBlockedPath(p), p).toBe(false);
+    }
+  });
+
+  it("blocks credential files by family and lets neighbours through", () => {
+    for (const p of [
+      "secrets.json",
+      "secrets.toml",
+      "cfg/Secrets.TOML",
+      "service-account.json",
+      "service-account-prod.json",
+      "keys/SERVICE-ACCOUNT-ci.JSON",
+      ".docker/config.json",
+      "home/.Docker/Config.json",
+      ".yarnrc.yml",
+      "pkg/.YARNRC.YML",
+    ]) {
+      expect(isBlockedPath(p), p).toBe(true);
+    }
+    for (const p of [
+      "service-account-docs.md",
+      "src/service-account.ts",
+      "docker/config.json",
+      ".docker/compose.yml",
+      "src/docker/config.json",
+      "yarnrc.md",
+      ".yarn/releases/yarn.cjs",
+      ".yarnrc",
+    ]) {
+      expect(isBlockedPath(p), p).toBe(false);
+    }
+  });
+
+  it("refuses a colon in a project-relative path (NTFS alternate streams)", () => {
+    for (const p of [
+      "a.key::$DATA",
+      "a.pem:stream",
+      "src/a.ts:x",
+      ".env:Zone.Identifier",
+      "C:/proj/src/index.ts",
+      "C:\\proj\\a.ts",
+    ]) {
+      expect(isBlockedPath(p), p).toBe(true);
+    }
+    expect(isBlockedPath("src/a.ts")).toBe(false);
+  });
+
+  it("resolves .. lexically and keeps unresolvable leading .. visible", () => {
+    expect(resolvePathSegments("a/b/../c")).toEqual(["a", "c"]);
+    expect(resolvePathSegments("../x")).toEqual(["..", "x"]);
+    // Two leading .. must stay two: the second may not pop the first.
+    expect(resolvePathSegments("../../x")).toEqual(["..", "..", "x"]);
+    expect(resolvePathSegments("a/../..")).toEqual([".."]);
+    expect(resolvePathSegments("./a//b/")).toEqual(["a", "b"]);
+    expect(resolvePathSegments("a\\b")).toEqual(["a", "b"]);
+    expect(resolvePathSegments("a\u0000b")).toBeNull();
+    expect(resolvePathSegments("")).toBeNull();
+    expect(resolvePathSegments("a/.../b")).toBeNull();
+  });
+
+  it("rejects glob syntax it cannot classify instead of matching nothing", () => {
+    for (const bad of ["a?b", "[ab].pem", "{a,b}.key", "x/[y]"]) {
+      expect(() => compileBlockedPattern(bad), bad).toThrow(/Unsupported glob/);
+    }
+    const [re] = compileBlockedPattern("*.pem");
+    expect(re.test("a.pem")).toBe(true);
+    expect(re.test("a.pem.ts")).toBe(false);
+    expect(compileBlockedPattern(".docker/config.json")).toHaveLength(2);
+  });
+});
+
 describe("coding path policy: read extensions", () => {
   it("allows common source, config and doc files", () => {
     for (const p of ["a.ts", "a.tsx", "x/y.py", "m.md", "c.json", "s.yml", "q.sql", "s.sh", "Dockerfile", "Makefile", ".gitignore"]) {
@@ -236,6 +345,14 @@ describe("coding path policy: read extensions", () => {
     for (const bad of [undefined, null, 1, {}]) {
       expect(isReadableExtension(bad as unknown as string)).toBe(false);
     }
+  });
+
+  it("does not read a bare dotfile name as an extension", () => {
+    // ".ts" is a file called ".ts", not a TypeScript file with an empty name.
+    for (const p of [".ts", ".md", ".json", "dir/.py"]) {
+      expect(isReadableExtension(p), p).toBe(false);
+    }
+    expect(isReadableExtension("a.ts")).toBe(true);
   });
 
   it("judges by the last segment only", () => {
