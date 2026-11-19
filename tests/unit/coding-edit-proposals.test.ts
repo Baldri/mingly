@@ -18,6 +18,7 @@ import {
   getEditProposalStore,
   EDIT_MAX_FAILED_ATTEMPTS_PER_PATH,
   EDIT_MAX_RETAINED_RUNS,
+  EDIT_PENDING_BYTES_BUDGET,
   type EditProposalStore
 } from '../../src/main/coding/edit-proposals'
 import { ensureProjectWorkspace } from '../../src/main/coding/project-workspace'
@@ -344,6 +345,135 @@ describe('end of a run: abandoned versus finished', () => {
     store.endRun('extra', 'finished')
     expect(store.pending('run-0')).toHaveLength(1) // nobody was evicted
     expect(store.pending('extra')).toHaveLength(1)
+  })
+})
+
+describe('global byte budget over everything pending', () => {
+  /** One proposal of a given size: a single long line, replaced by another. */
+  const big = (n: number) => ({
+    edit: { path: 'a.ts', oldText: 'x'.repeat(n), newText: 'y'.repeat(n) },
+    content: 'x'.repeat(n)
+  })
+  const propose = (st: EditProposalStore, runId: string, p: string, n: number) => {
+    const { edit, content } = big(n)
+    return st.propose(runId, 1, { ...edit, path: p }, content)
+  }
+  const finish = (st: EditProposalStore, runId: string) => st.endRun(runId, 'finished')
+
+  /** Bytes one proposal of size n costs in this store, measured, not assumed. */
+  function measure(n: number): number {
+    const probe = createEditProposalStore()
+    propose(probe, 'probe', 'a.ts', n)
+    return probe.pendingBytes()
+  }
+
+  it('has a default budget sized for a real session, far below gigabytes', () => {
+    expect(EDIT_PENDING_BYTES_BUDGET).toBeGreaterThanOrEqual(8 * 1024 * 1024)
+    expect(EDIT_PENDING_BYTES_BUDGET).toBeLessThanOrEqual(128 * 1024 * 1024)
+  })
+
+  it('counts what is held and returns it on resolve', () => {
+    expect(store.pendingBytes()).toBe(0)
+    propose(store, RUN, 'a.ts', 1000)
+    expect(store.pendingBytes()).toBeGreaterThan(2000)
+    store.resolve(RUN, true)
+    expect(store.pendingBytes()).toBe(0)
+  })
+
+  it('returns the bytes of an abandoned run', () => {
+    propose(store, RUN, 'a.ts', 1000)
+    store.endRun(RUN, 'abandoned')
+    expect(store.pendingBytes()).toBe(0)
+  })
+
+  it('one oversized run pushes the store past the budget: the OLDEST retained run is evicted and the store stays under', () => {
+    const per = measure(2000)
+    const small = createEditProposalStore({ byteBudget: Math.floor(per * 2.5) })
+    propose(small, 'old', 'a.ts', 2000)
+    finish(small, 'old')
+    propose(small, 'newer', 'a.ts', 2000)
+    finish(small, 'newer')
+    expect(small.pendingBytes()).toBe(per * 2)
+
+    expect(propose(small, 'active', 'a.ts', 2000).kind).toBe('proposed')
+
+    expect(small.pending('old')).toEqual([])
+    expect(small.pending('newer')).toHaveLength(1)
+    expect(small.pending('active')).toHaveLength(1)
+    expect(small.pendingBytes()).toBeLessThanOrEqual(Math.floor(per * 2.5))
+  })
+
+  it('eviction prefers the oldest retained run, one at a time, and stops as soon as it fits', () => {
+    const per = measure(2000)
+    const small = createEditProposalStore({ byteBudget: per * 3 })
+    for (const id of ['r1', 'r2', 'r3']) {
+      propose(small, id, 'a.ts', 2000)
+      finish(small, id)
+    }
+    propose(small, 'r4', 'a.ts', 2000)
+    expect(small.pending('r1')).toEqual([])
+    expect(small.pending('r2')).toHaveLength(1)
+    expect(small.pending('r3')).toHaveLength(1)
+    expect(small.pending('r4')).toHaveLength(1)
+    // a proposal needing two slots evicts the two oldest remaining
+    propose(small, 'r5', 'a.ts', 4000)
+    expect(small.pending('r2')).toEqual([])
+    expect(small.pending('r3')).toEqual([])
+    expect(small.pending('r4')).toHaveLength(1)
+    expect(small.pendingBytes()).toBeLessThanOrEqual(per * 3)
+  })
+
+  it('a run under review is evicted like any other retained run: no special protection', () => {
+    // Policy: retained means "awaiting review", and that is exactly the set that
+    // is evictable. Only runs that are still running are protected.
+    const per = measure(2000)
+    const small = createEditProposalStore({ byteBudget: per * 1.5 })
+    propose(small, 'reviewing', 'a.ts', 2000)
+    finish(small, 'reviewing')
+    propose(small, 'active', 'a.ts', 2000)
+    expect(small.pending('reviewing')).toEqual([])
+    expect(small.pending('active')).toHaveLength(1)
+  })
+
+  it('records each eviction for the audit, naming the budget', () => {
+    const per = measure(2000)
+    const small = createEditProposalStore({ byteBudget: per * 1.5 })
+    propose(small, 'old', 'a.ts', 2000)
+    finish(small, 'old')
+    propose(small, 'active', 'a.ts', 2000)
+    const rec = small.auditRecords('old').records.find((r) => r.outcome === 'package-abandoned')
+    expect(rec).toMatchObject({ edits: 1 })
+    expect(rec?.reason).toMatch(/budget/i)
+  })
+
+  it('never evicts a run that is still running: the new proposal is refused instead', () => {
+    const per = measure(2000)
+    const small = createEditProposalStore({ byteBudget: per * 1.5 })
+    expect(propose(small, 'active', 'a.ts', 2000).kind).toBe('proposed')
+    const second = propose(small, 'active', 'b.ts', 2000)
+    expect(second).toEqual({ kind: 'rejected', reason: expect.stringMatching(/budget|too much/i) })
+    expect(small.pending('active')).toHaveLength(1)
+    expect(small.pendingBytes()).toBeLessThanOrEqual(per * 1.5)
+  })
+
+  it('a single proposal larger than the whole budget is refused and nothing is evicted for it', () => {
+    const per = measure(2000)
+    const small = createEditProposalStore({ byteBudget: per * 2 })
+    propose(small, 'old', 'a.ts', 2000)
+    finish(small, 'old')
+    const huge = propose(small, 'active', 'a.ts', 20000)
+    expect(huge.kind).toBe('rejected')
+    expect(small.pending('old')).toHaveLength(1)
+    expect(small.pending('active')).toEqual([])
+  })
+
+  it('a refused (budget) proposal is not recorded as stored and leaves the byte count unchanged', () => {
+    const per = measure(2000)
+    const small = createEditProposalStore({ byteBudget: per })
+    propose(small, 'active', 'a.ts', 2000)
+    const before = small.pendingBytes()
+    propose(small, 'active', 'b.ts', 2000)
+    expect(small.pendingBytes()).toBe(before)
   })
 })
 

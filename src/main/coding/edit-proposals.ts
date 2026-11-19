@@ -73,6 +73,16 @@ const AUDIT_MAX_FINISHED_RUNS = 50
  * (EDIT_MAX_PENDING_PER_RUN, EDIT_TEXT_MAX_CHARS) bound each run's size.
  */
 export const EDIT_MAX_RETAINED_RUNS = 20
+/**
+ * Global ceiling on what the store holds across ALL runs (path, old text, new
+ * text and diff of every pending proposal, in bytes). Each per-run and per-text
+ * cap is fine alone; their product is gigabytes in the main process, where that
+ * is a crash and not a slowdown. 32 MiB is sized for a real session: a typical
+ * proposal is a few KB, a large one 30 KB, so this holds the 20 retained runs at
+ * about 50 large proposals each. Over it, the oldest RETAINED runs (finished,
+ * awaiting review) are evicted; a run that is still running is never evicted.
+ */
+export const EDIT_PENDING_BYTES_BUDGET = 32 * 1024 * 1024
 const AUDIT_REASON_MAX_CHARS = 500
 const CONTEXT_LINES = 3
 
@@ -131,6 +141,8 @@ export interface EditProposalStore {
    * for the last AUDIT_MAX_FINISHED_RUNS runs.
    */
   endRun(runId: string, how: 'abandoned' | 'finished'): void
+  /** Bytes held by pending proposals across all runs (diagnostic and test seam). */
+  pendingBytes(): number
   /** Records for the audit task to consume. Copies. */
   auditRecords(runId: string): { records: EditAuditRecord[]; dropped: number }
 }
@@ -167,6 +179,8 @@ export interface EditAuditRecord {
 }
 
 interface Entry {
+  /** Size in the store's accounting: path + old + new + diff. */
+  bytes: number
   stepNumber: number
   /** Collision key of the path: see pathKey(). */
   key: string
@@ -311,12 +325,46 @@ function cleanReason(reason: unknown): string | undefined {
   return reason.replace(HIDDEN_CHAR, ' ').slice(0, AUDIT_REASON_MAX_CHARS)
 }
 
-export function createEditProposalStore(): EditProposalStore {
+export function createEditProposalStore(
+  options: { byteBudget?: number } = {}
+): EditProposalStore {
+  const byteBudget = options.byteBudget ?? EDIT_PENDING_BYTES_BUDGET
+  let totalBytes = 0
   const runs = new Map<string, RunState>()
   const finished = new Map<string, { records: EditAuditRecord[]; dropped: number }>()
   /** Ids of finished runs with a package still under review, oldest first. */
   const retained: string[] = []
   let counter = 0
+
+  /** Empty a run's package and give its bytes back. */
+  const releaseEntries = (st: RunState): void => {
+    for (const e of st.entries) totalBytes -= e.bytes
+    st.entries = []
+  }
+
+  /**
+   * Drop the oldest retained run's package (recorded for the audit). A run
+   * under review is treated like any other retained run: awaiting review is
+   * exactly what makes a run evictable. Returns false when nothing is retained.
+   */
+  const evictOldestRetained = (reason: string): boolean => {
+    const oldestId = retained[0]
+    if (oldestId === undefined) return false
+    const old = runs.get(oldestId)
+    if (!old) {
+      retained.shift()
+      return true
+    }
+    record(old, {
+      runId: oldestId,
+      outcome: 'package-abandoned',
+      edits: old.entries.length,
+      reason
+    })
+    releaseEntries(old)
+    retire(oldestId, old)
+    return true
+  }
 
   /** The run no longer holds a package: keep only its audit records. */
   const retire = (runId: string, st: RunState): void => {
@@ -450,7 +498,31 @@ export function createEditProposalStore(): EditProposalStore {
           removedLines: built.removedLines,
           introducesHiddenCharacters: hidden
         }
-        st.entries.push({ stepNumber, key, edit: stored })
+        const bytes =
+          Buffer.byteLength(stored.path) +
+          Buffer.byteLength(stored.oldText) +
+          Buffer.byteLength(stored.newText) +
+          Buffer.byteLength(stored.diff)
+        // Make room by evicting the oldest RETAINED runs. Never the running one:
+        // when only running runs are left and it still does not fit, refuse.
+        // Evict only if eviction can make it fit: a proposal that cannot fit even
+        // with every retained run gone must not cost anyone their package.
+        let retainedBytes = 0
+        for (const id of retained) {
+          for (const e of runs.get(id)?.entries ?? []) retainedBytes += e.bytes
+        }
+        const fitsAfterEviction = totalBytes - retainedBytes + bytes <= byteBudget
+        while (fitsAfterEviction && totalBytes + bytes > byteBudget && retained.length > 0) {
+          evictOldestRetained('dropped: pending proposals exceed the byte budget')
+        }
+        if (totalBytes + bytes > byteBudget) {
+          return reject(
+            'too much pending change data in this session (byte budget). Propose smaller edits ' +
+              'or wait for the pending ones to be resolved.'
+          )
+        }
+        totalBytes += bytes
+        st.entries.push({ bytes, stepNumber, key, edit: stored })
         record(st, {
           runId,
           stepNumber,
@@ -478,7 +550,7 @@ export function createEditProposalStore(): EditProposalStore {
         edits: st.entries.length,
         reason: cleanReason(reason)
       })
-      st.entries = []
+      releaseEntries(st)
       if (st.ended) retire(runId, st)
     },
 
@@ -495,28 +567,19 @@ export function createEditProposalStore(): EditProposalStore {
         st.ended = 'finished'
         retained.push(runId)
         while (retained.length > EDIT_MAX_RETAINED_RUNS) {
-          const oldestId = retained[0]
-          const old = runs.get(oldestId)
-          if (old) {
-            record(old, {
-              runId: oldestId,
-              outcome: 'package-abandoned',
-              edits: old.entries.length,
-              reason: 'dropped: too many finished runs awaiting review'
-            })
-            old.entries = []
-            retire(oldestId, old)
-          } else {
-            retained.shift()
-          }
+          if (!evictOldestRetained('dropped: too many finished runs awaiting review')) break
         }
         return
       }
       if (st.entries.length > 0) {
         record(st, { runId, outcome: 'package-abandoned', edits: st.entries.length })
-        st.entries = []
+        releaseEntries(st)
       }
       retire(runId, st)
+    },
+
+    pendingBytes(): number {
+      return totalBytes
     },
 
     auditRecords(runId): { records: EditAuditRecord[]; dropped: number } {
