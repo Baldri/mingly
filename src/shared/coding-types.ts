@@ -123,4 +123,11 @@ export interface ProposedEdit {
   diff: string;
   addedLines: number;
   removedLines: number;
+  /**
+   * True when the proposal puts invisible or direction-changing characters
+   * (bidi controls, zero-width, other control and format characters) into the
+   * file that its old text did not contain. The reviewer must be told: the
+   * displayed diff shows them escaped, the write is byte-exact.
+   */
+  introducesHiddenCharacters: boolean;
 }

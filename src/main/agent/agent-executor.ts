@@ -31,6 +31,7 @@ import {
 import type { CodingRunOptions } from '../../shared/coding-types'
 import { getToolRegistry, type ToolContext, type ToolRegistry } from './tool-registry'
 import { StepPaths } from './step-paths'
+import { getEditProposalStore } from '../coding/edit-proposals'
 import { getCodingModeStore } from '../coding/coding-mode-store'
 import { ensureProjectWorkspace } from '../coding/project-workspace'
 import { getAgentContextManager } from './agent-context-manager'
@@ -534,6 +535,14 @@ export class AgentExecutor {
       clearTimeout(runTimeout)
       this.activeRuns.delete(runId)
       circuitBreaker.endAgentRun(runId)
+      // Proposals left pending by a run that ends (done, cancelled or failed)
+      // are abandoned, never applied: a write the user did not get to decide on
+      // must not be acceptable later.
+      try {
+        getEditProposalStore().endRun(runId)
+      } catch {
+        // Ignore cleanup errors
+      }
       run.durationMs = Date.now() - startTime
 
       // Task 4: Clean up externalized temp files after run completion

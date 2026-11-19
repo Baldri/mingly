@@ -15,6 +15,7 @@ import type { Message, ToolDefinition, AgentToolCall } from '../../src/shared/ty
 import type { ToolUseResponse } from '../../src/main/llm-clients/client-manager'
 import type { CodingMode } from '../../src/shared/coding-types'
 import type { ToolContext } from '../../src/main/agent/tool-registry'
+import { getEditProposalStore } from '../../src/main/coding/edit-proposals'
 
 vi.mock('../../src/main/security/request-guard-deps', () => ({
   getGuardDeps: () => ({
@@ -53,6 +54,8 @@ vi.mock('../../src/main/llm-clients/client-manager', () => ({
 
 const BIG = 'x'.repeat(5000)
 let registryCalls: Array<{ ctx: ToolContext | undefined }> = []
+// Runs inside the mocked executeToolCalls, with the step's context.
+let toolCallHook: ((ctx: ToolContext | undefined) => void | Promise<void>) | undefined
 let toolListCtx: Array<ToolContext | undefined> = []
 
 vi.mock('../../src/main/agent/tool-registry', () => ({
@@ -66,6 +69,7 @@ vi.mock('../../src/main/agent/tool-registry', () => ({
     }),
     executeToolCalls: vi.fn(async (calls: AgentToolCall[], ctx?: ToolContext) => {
       registryCalls.push({ ctx })
+      await toolCallHook?.(ctx)
       return calls.map((tc) => ({ toolCallId: tc.id, content: BIG, isError: false }))
     }),
   })),
@@ -117,6 +121,7 @@ beforeEach(() => {
   llmResponses = []
   seenToolMessages = []
   registryCalls = []
+  toolCallHook = undefined
   toolListCtx = []
   storedModes = {}
   projectPath = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-coding-wiring-')))
@@ -334,5 +339,69 @@ describe('coding run with mode off behaves like a plain run', () => {
 
     expect(run.status).toBe('failed')
     expect(llmCallCount).toBe(0)
+  })
+})
+
+describe('edit proposals do not outlive their run', () => {
+  const coding = () => ({ directoryId: 'dir-1', projectPath, mode: 'propose' as const })
+
+  function seedProposal(ctx: ToolContext | undefined): void {
+    const out = getEditProposalStore().propose(
+      ctx?.runId ?? '',
+      ctx?.stepNumber ?? 0,
+      { path: 'a.ts', oldText: 'a', newText: 'b' },
+      'a'
+    )
+    expect(out.kind).toBe('proposed')
+  }
+
+  it('clears the proposals of a run that completes without resolving them', async () => {
+    storedModes['dir-1'] = 'propose'
+    llmResponses = [toolCallStep('tc-1')]
+    toolCallHook = seedProposal
+
+    const run = await executor.execute('task', 'anthropic', 'm', [], undefined, coding())
+
+    expect(run.status).toBe('completed')
+    expect(getEditProposalStore().pending(run.id)).toEqual([])
+  })
+
+  it('clears the proposals of a CANCELLED run', async () => {
+    storedModes['dir-1'] = 'propose'
+    llmResponses = [toolCallStep('tc-1'), toolCallStep('tc-2')]
+    toolCallHook = (ctx) => {
+      seedProposal(ctx)
+      expect(executor.cancelRun(ctx?.runId ?? '')).toBe(true)
+    }
+
+    const run = await executor.execute('task', 'anthropic', 'm', [], undefined, coding())
+
+    expect(run.status).toBe('cancelled')
+    expect(getEditProposalStore().pending(run.id)).toEqual([])
+  })
+
+  it('clears the proposals of a run that THROWS', async () => {
+    storedModes['dir-1'] = 'propose'
+    llmResponses = [toolCallStep('tc-1')]
+    toolCallHook = (ctx) => {
+      seedProposal(ctx)
+      throw new Error('boom')
+    }
+
+    const run = await executor.execute('task', 'anthropic', 'm', [], undefined, coding())
+
+    expect(run.status).toBe('failed')
+    expect(getEditProposalStore().pending(run.id)).toEqual([])
+  })
+
+  it('records the abandoned package for the audit', async () => {
+    storedModes['dir-1'] = 'propose'
+    llmResponses = [toolCallStep('tc-1')]
+    toolCallHook = seedProposal
+
+    const run = await executor.execute('task', 'anthropic', 'm', [], undefined, coding())
+
+    const { records } = getEditProposalStore().auditRecords(run.id)
+    expect(records.some((r) => r.outcome === 'package-abandoned' && r.edits === 1)).toBe(true)
   })
 })

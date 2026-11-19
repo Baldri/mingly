@@ -13,6 +13,18 @@
  * with neighbouring lines would be a second read path that skips the consent
  * guard `read_file` results pass through.
  *
+ * Three things bound what this tool can leak or mislead with:
+ *   - the content it reads to verify the old text is collected BY THE AGENT, so
+ *     it passes the same sensitive-data scan as every other collected content;
+ *     where it trips, no refusal carries a count (the uniform message).
+ *     A per-path cap on failed attempts is defence in depth for the files the
+ *     scan does not flag. Together they close the count oracle where it matters
+ *     and bound it where it does not; the cap alone is NOT the answer.
+ *   - at most ONE pending proposal per file per run, so the diff a human
+ *     approves was computed against the file as it will be when written;
+ *   - the displayed diff shows invisible and direction-changing characters
+ *     escaped (Trojan Source), while the stored text stays byte-exact.
+ *
  * The file is opened through the SAME path discipline as `read_file`
  * (`resolveReadableFile` in read-tools.ts); this module has no path logic of
  * its own. Every refusal that depends on the file system is one uniform text.
@@ -43,6 +55,17 @@ export const EDIT_TEXT_MAX_CHARS = 1_000_000
 /** Proposals one run may hold unresolved. */
 export const EDIT_MAX_PENDING_PER_RUN = 200
 const RUN_ID_MAX_CHARS = 256
+/**
+ * Failed (ambiguous or not-found) attempts per path per run before the path is
+ * closed for the rest of the run. An honest agent needs one or two (it misses
+ * once, then corrects); 5 leaves room for three misses. A probe that extracts
+ * content one guess at a time needs far more "no" answers than that.
+ */
+export const EDIT_MAX_FAILED_ATTEMPTS_PER_PATH = 5
+/** Audit records kept per run, and finished runs kept readable. */
+const AUDIT_MAX_RECORDS_PER_RUN = 1000
+const AUDIT_MAX_FINISHED_RUNS = 50
+const AUDIT_REASON_MAX_CHARS = 500
 const CONTEXT_LINES = 3
 
 const REFUSED = 'Refused: this file cannot be edited by the coding tools.'
@@ -52,6 +75,13 @@ const BAD_TYPE = 'Refused: this file type is not on the coding edit list.'
 const BINARY = 'Refused: the file looks binary and cannot be edited.'
 const NOT_UTF8 = 'Refused: the file is not valid UTF-8 and cannot be edited.'
 const TOO_LARGE = 'Refused: the file is too large to edit.'
+const LIMIT_REACHED =
+  'the limit of failed edit attempts for this file was reached in this run; no further edit ' +
+  'proposals for this file are accepted in this run.'
+/** One text for zero matches and for several, on a file the scan flagged. */
+const UNIFORM_NO_MATCH =
+  'the old text could not be applied to this file as exactly one match. For this file no ' +
+  'further detail is given.'
 
 // ---------------------------------------------------------------------------
 // The store
@@ -70,13 +100,57 @@ export interface EditProposalStore {
   propose(
     runId: string,
     stepNumber: number,
-    edit: Omit<ProposedEdit, 'diff' | 'addedLines' | 'removedLines'>,
-    fileContent: string
+    edit: Pick<ProposedEdit, 'path' | 'oldText' | 'newText'>,
+    fileContent: string,
+    options?: { contentSensitive?: boolean }
   ): ProposeOutcome
   /** Copies, in proposal order. */
   pending(runId: string): ProposedEdit[]
-  /** Acceptance or rejection of the whole package: either way the run's list is cleared. */
+  /**
+   * Acceptance or rejection of the pending package: clears the run's pending
+   * list and records the decision (`accepted`, bounded `reason`) for the audit.
+   * It does NOT reset the failed-attempt counters: those live as long as the run.
+   */
   resolve(runId: string, accepted: boolean, reason?: string): void
+  /**
+   * The run is over. Clears whatever is still pending (an abandoned package is
+   * recorded, never applied) and the failed-attempt counters. The audit records
+   * stay readable for the last AUDIT_MAX_FINISHED_RUNS runs.
+   */
+  endRun(runId: string): void
+  /** Records for the audit task to consume. Copies. */
+  auditRecords(runId: string): { records: EditAuditRecord[]; dropped: number }
+}
+
+export type EditAuditOutcome =
+  | 'proposed'
+  | 'rejected-ambiguous'
+  | 'rejected-not-found'
+  | 'limit-reached'
+  | 'package-accepted'
+  | 'package-rejected'
+  | 'package-abandoned'
+
+/**
+ * One fact about an edit proposal, shaped for the audit that a later task
+ * builds (that task wires THIS record; it must not invent a second trail).
+ * Never holds the old or new text: a probe string may be the very secret being
+ * guessed. `occurrences` is the real count even where the model was refused
+ * detail (`contentSensitive`).
+ */
+export interface EditAuditRecord {
+  runId: string
+  stepNumber?: number
+  path?: string
+  outcome: EditAuditOutcome
+  occurrences?: number
+  /** Failed attempts on this path in this run, including this one. */
+  failedAttempts?: number
+  contentSensitive?: boolean
+  /** Size of the package, for package-* outcomes. */
+  edits?: number
+  reason?: string
+  at: number
 }
 
 interface Entry {
@@ -116,7 +190,7 @@ function toLines(text: string): string[] {
 }
 
 function displayLine(prefix: string, line: string): string {
-  const body = line.endsWith('\n') ? line.slice(0, -1) : line
+  const body = escapeHidden(line.endsWith('\n') ? line.slice(0, -1) : line)
   return line.endsWith('\n')
     ? `${prefix}${body}`
     : `${prefix}${body}\n\\ No newline at end of file`
@@ -128,8 +202,43 @@ interface BuiltDiff {
   removedLines: number
 }
 
+/**
+ * Characters that can make displayed text differ from what is stored. Tab is
+ * deliberately not among them. Rendered visibly in the diff, never removed.
+ */
+const HIDDEN_CHAR = /[\r\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu
+
+function isHidden(ch: string): boolean {
+  return ch !== '\t' && ch !== '\n' && /[\r\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(ch)
+}
+
+function escapeHidden(text: string): string {
+  return text.replace(HIDDEN_CHAR, (ch) => {
+    if (ch === '\t') return ch
+    const hex = (ch.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')
+    return `<U+${hex}>`
+  })
+}
+
+/** True when `after` has more of some hidden code point than `before`. */
+function introducesHidden(before: string, after: string): boolean {
+  const tally = (t: string): Map<string, number> => {
+    const m = new Map<string, number>()
+    for (const ch of t) if (isHidden(ch)) m.set(ch, (m.get(ch) ?? 0) + 1)
+    return m
+  }
+  const b = tally(before)
+  for (const [ch, n] of tally(after)) if (n > (b.get(ch) ?? 0)) return true
+  return false
+}
+
 /** Unified diff of one replacement, `CONTEXT_LINES` of context, single hunk. */
-function buildDiff(displayPath: string, before: string, after: string): BuiltDiff {
+function buildDiff(
+  displayPath: string,
+  before: string,
+  after: string,
+  hiddenWarning: boolean
+): BuiltDiff {
   const a = toLines(before)
   const b = toLines(after)
   let prefix = 0
@@ -153,6 +262,12 @@ function buildDiff(displayPath: string, before: string, after: string): BuiltDif
   // A file name may carry anything; a line break in it would forge diff lines.
   const safePath = displayPath.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '?')
   const lines = [
+    ...(hiddenWarning
+      ? [
+          '!! This proposal adds invisible or direction-changing characters. They are shown ' +
+            'as <U+XXXX> below and are written as they are.'
+        ]
+      : []),
     `--- a/${safePath}`,
     `+++ b/${safePath}`,
     `@@ -${oldStart},${oldCount} +${oldStart},${newCount} @@`,
@@ -168,12 +283,43 @@ function reject(reason: string): ProposeOutcome {
   return { kind: 'rejected', reason }
 }
 
+interface RunState {
+  entries: Entry[]
+  /** Failed attempts per path key; lives as long as the run, not as long as a package. */
+  failures: Map<string, number>
+  records: EditAuditRecord[]
+  dropped: number
+}
+
+function cleanReason(reason: unknown): string | undefined {
+  if (typeof reason !== 'string') return undefined
+  return reason.replace(HIDDEN_CHAR, ' ').slice(0, AUDIT_REASON_MAX_CHARS)
+}
+
 export function createEditProposalStore(): EditProposalStore {
-  const runs = new Map<string, Entry[]>()
+  const runs = new Map<string, RunState>()
+  const finished = new Map<string, { records: EditAuditRecord[]; dropped: number }>()
   let counter = 0
 
+  const stateFor = (runId: string): RunState => {
+    let st = runs.get(runId)
+    if (!st) {
+      st = { entries: [], failures: new Map(), records: [], dropped: 0 }
+      runs.set(runId, st)
+    }
+    return st
+  }
+
+  const record = (st: RunState, rec: Omit<EditAuditRecord, 'at'>): void => {
+    if (st.records.length >= AUDIT_MAX_RECORDS_PER_RUN) {
+      st.dropped++
+      return
+    }
+    st.records.push({ ...rec, at: Date.now() })
+  }
+
   return {
-    propose(runId, stepNumber, edit, fileContent): ProposeOutcome {
+    propose(runId, stepNumber, edit, fileContent, options): ProposeOutcome {
       try {
         if (typeof runId !== 'string' || runId === '' || runId.length > RUN_ID_MAX_CHARS) {
           return reject('no valid run to attach the proposal to.')
@@ -203,40 +349,78 @@ export function createEditProposalStore(): EditProposalStore {
           return reject('the old or new text contains a NUL character.')
         }
 
+        const st = stateFor(runId)
+        const key = pathKey(edit.path)
+
+        // One pending proposal per file per run, across steps: a later one would
+        // be verified against the file without the earlier change, and the human
+        // would approve a diff computed against stale content.
+        if (st.entries.some((e) => e.key === key)) {
+          return reject(
+            'this file already has a pending proposal in this run. Combine all changes to the ' +
+              'file into a single edit_file call: old and new text may span the whole region ' +
+              'that changes. If the pending proposal was a mistake, wait for it to be resolved.'
+          )
+        }
+
+        const failedBefore = st.failures.get(key) ?? 0
+        if (failedBefore >= EDIT_MAX_FAILED_ATTEMPTS_PER_PATH) {
+          // Decided before the file is looked at: nothing about it can show.
+          record(st, {
+            runId,
+            stepNumber,
+            path: edit.path,
+            outcome: 'limit-reached',
+            failedAttempts: failedBefore,
+            ...(options?.contentSensitive ? { contentSensitive: true } : {})
+          })
+          return reject(LIMIT_REACHED)
+        }
+
         const { count, first } = countOccurrences(fileContent, edit.oldText)
         if (count !== 1) {
+          const failedAttempts = failedBefore + 1
+          st.failures.set(key, failedAttempts)
+          record(st, {
+            runId,
+            stepNumber,
+            path: edit.path,
+            outcome: count === 0 ? 'rejected-not-found' : 'rejected-ambiguous',
+            occurrences: count,
+            failedAttempts,
+            ...(options?.contentSensitive ? { contentSensitive: true } : {})
+          })
+          if (options?.contentSensitive) return reject(UNIFORM_NO_MATCH)
           return reject(
             `the old text occurs ${count} times in the file; it must occur exactly once. ` +
               'Nothing was changed. Use a longer, unique piece of the file as the old text.'
           )
         }
-
-        const list = runs.get(runId) ?? []
-        const key = pathKey(edit.path)
-        if (list.some((e) => e.stepNumber === stepNumber && e.key === key)) {
-          return reject(
-            'this step already proposed a change to this same file. Steps run their tool calls in ' +
-              'parallel, so a second old text would be checked against the file without the first ' +
-              'change. Put both changes into one edit, or propose the second in the next step.'
-          )
-        }
-        if (list.length >= EDIT_MAX_PENDING_PER_RUN) {
+        if (st.entries.length >= EDIT_MAX_PENDING_PER_RUN) {
           return reject('too many unresolved proposals in this run.')
         }
 
         const after =
           fileContent.slice(0, first) + edit.newText + fileContent.slice(first + edit.oldText.length)
-        const built = buildDiff(edit.path, fileContent, after)
+        const hidden = introducesHidden(edit.oldText, edit.newText)
+        const built = buildDiff(edit.path, fileContent, after, hidden)
         const stored: ProposedEdit = {
           path: edit.path,
           oldText: edit.oldText,
           newText: edit.newText,
           diff: built.diff,
           addedLines: built.addedLines,
-          removedLines: built.removedLines
+          removedLines: built.removedLines,
+          introducesHiddenCharacters: hidden
         }
-        list.push({ stepNumber, key, edit: stored })
-        runs.set(runId, list)
+        st.entries.push({ stepNumber, key, edit: stored })
+        record(st, {
+          runId,
+          stepNumber,
+          path: edit.path,
+          outcome: 'proposed',
+          failedAttempts: failedBefore
+        })
         counter++
         return { kind: 'proposed', editId: `edit-${counter}` }
       } catch {
@@ -245,11 +429,41 @@ export function createEditProposalStore(): EditProposalStore {
     },
 
     pending(runId): ProposedEdit[] {
-      return (runs.get(runId) ?? []).map((e) => ({ ...e.edit }))
+      return (runs.get(runId)?.entries ?? []).map((e) => ({ ...e.edit }))
     },
 
-    resolve(runId): void {
+    resolve(runId, accepted, reason): void {
+      const st = runs.get(runId)
+      if (!st || st.entries.length === 0) return
+      record(st, {
+        runId,
+        outcome: accepted ? 'package-accepted' : 'package-rejected',
+        edits: st.entries.length,
+        reason: cleanReason(reason)
+      })
+      st.entries = []
+    },
+
+    endRun(runId): void {
+      const st = runs.get(runId)
+      if (!st) return
+      if (st.entries.length > 0) {
+        record(st, { runId, outcome: 'package-abandoned', edits: st.entries.length })
+      }
       runs.delete(runId)
+      finished.delete(runId)
+      finished.set(runId, { records: st.records, dropped: st.dropped })
+      while (finished.size > AUDIT_MAX_FINISHED_RUNS) {
+        const oldest = finished.keys().next().value
+        if (oldest === undefined) break
+        finished.delete(oldest)
+      }
+    },
+
+    auditRecords(runId): { records: EditAuditRecord[]; dropped: number } {
+      const src = runs.get(runId) ?? finished.get(runId)
+      if (!src) return { records: [], dropped: 0 }
+      return { records: src.records.map((r) => ({ ...r })), dropped: src.dropped }
     }
   }
 }
@@ -267,6 +481,17 @@ export function getEditProposalStore(): EditProposalStore {
 
 export interface EditToolDeps extends ReadToolDeps {
   store: EditProposalStore
+  /**
+   * The sensitive-data scan, applied to the file content this tool reads. Same
+   * detector the loop guard uses. True means: tripped.
+   */
+  scanSensitive: (text: string) => Promise<boolean>
+}
+
+/** Lazy: the detector's module graph must not load when the registry is merely imported. */
+async function defaultScanSensitive(text: string): Promise<boolean> {
+  const { getSensitiveDataDetector } = await import('../security/sensitive-data-detector')
+  return getSensitiveDataDetector().scan(text).hasSensitiveData
 }
 
 const proposeGate: ToolGate = (ctx) => {
@@ -310,11 +535,21 @@ async function editFile(
     // The path as the file system spells it, never the model's spelling: this
     // is what the dialog shows and what the accept step will open.
     const realRel = resolved.realRel.split(path.sep).join('/')
+
+    // Content the agent collects passes the same classifier as text a human
+    // typed. Fail closed: a scan that cannot run counts as tripped.
+    let contentSensitive = true
+    try {
+      contentSensitive = await deps.scanSensitive(file.text)
+    } catch {
+      contentSensitive = true
+    }
     const outcome = deps.store.propose(
       runId,
       stepNumber,
       { path: realRel, oldText, newText },
-      file.text
+      file.text,
+      { contentSensitive }
     )
     if (outcome.kind === 'rejected') return `Rejected: ${outcome.reason}`
 
@@ -335,7 +570,8 @@ export function registerEditTools(
 ): void {
   const resolvedDeps = (): EditToolDeps => ({
     findGrant: deps.findGrant ?? defaultReadToolDeps.findGrant,
-    store: deps.store ?? getEditProposalStore()
+    store: deps.store ?? getEditProposalStore(),
+    scanSensitive: deps.scanSensitive ?? defaultScanSensitive
   })
 
   registry.registerBuiltIn(
