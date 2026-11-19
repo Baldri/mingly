@@ -293,6 +293,61 @@ describe('read_file', () => {
   })
 })
 
+describe('read_file result budget', () => {
+  const BUDGET = 400
+  let small: ToolRegistry
+
+  beforeEach(() => {
+    small = new ToolRegistry({ toolTimeoutMs: 5000, maxResultChars: BUDGET })
+    registerReadTools(small, { findGrant: async (id) => grants.find((g) => g.id === id) })
+  })
+
+  async function readSmall(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
+    return (await small.executeTool({ id: 't', name: 'read_file', arguments: args }, ctx)).content
+  }
+
+  it('pages a file larger than the budget with no gap, no repetition, and a present, correct hint every time', async () => {
+    const lines = Array.from({ length: 120 }, (_, i) => `line-${String(i + 1).padStart(3, '0')} ${'x'.repeat(20)}`)
+    write('long.ts', lines.join('\n'))
+    const ctx = await ctxFor()
+    const received: string[] = []
+    let offset = 1
+    let calls = 0
+    for (;;) {
+      calls++
+      expect(calls).toBeLessThan(200)
+      const out = await readSmall({ path: 'long.ts', offset }, ctx)
+      expect(out.length).toBeLessThanOrEqual(BUDGET)
+      expect(out).not.toContain('[truncated]')
+      const hint = /\n\[showing lines (\d+)-(\d+) of (\d+); (\d+) more lines; continue with offset=(\d+)\]$/.exec(out)
+      const body = hint ? out.slice(0, hint.index) : out
+      const got = body.split('\n')
+      received.push(...got)
+      if (!hint) break
+      expect(Number(hint[1])).toBe(offset)
+      expect(Number(hint[2])).toBe(offset + got.length - 1)
+      expect(Number(hint[3])).toBe(120)
+      expect(Number(hint[4])).toBe(120 - (offset + got.length - 1))
+      expect(Number(hint[5])).toBe(offset + got.length)
+      offset = Number(hint[5])
+    }
+    expect(calls).toBeGreaterThan(1)
+    expect(received).toEqual(lines)
+  })
+
+  it('says explicitly when a single line exceeds the budget, and names the offset that skips it', async () => {
+    write('wide.ts', ['short', 'y'.repeat(BUDGET * 3), 'after'].join('\n'))
+    const ctx = await ctxFor()
+    const out = await readSmall({ path: 'wide.ts', offset: 2 }, ctx)
+    expect(out.length).toBeLessThanOrEqual(BUDGET)
+    expect(out).toMatch(/line 2 .*longer than/i)
+    expect(out).toContain('offset=3')
+    expect(out).not.toContain('yyyyyyyyyy')
+    const next = await readSmall({ path: 'wide.ts', offset: 3 }, ctx)
+    expect(next).toBe('after')
+  })
+})
+
 describe('list_files', () => {
   it('lists files and hides .mingly', async () => {
     write('src/a.ts', 'a')

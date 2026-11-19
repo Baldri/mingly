@@ -103,6 +103,15 @@ export class ToolRegistry {
     this.config = { ...DEFAULT_CONFIG, ...config }
   }
 
+  /**
+   * The result budget in chars. Tools that page their own output size the
+   * whole result (hint included) to this, so the single cut in truncateResult
+   * never removes the part that tells the model how to continue.
+   */
+  getMaxResultChars(): number {
+    return this.config.maxResultChars
+  }
+
   // ── Registration ────────────────────────────────────────────
 
   /**

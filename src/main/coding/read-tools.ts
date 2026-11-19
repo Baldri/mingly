@@ -47,6 +47,8 @@ const MAX_PATTERN_LENGTH = 200
 const READ_FILE_MAX_BYTES = 2 * 1024 * 1024
 const BINARY_HEAD_BYTES = 8000
 const READ_DEFAULT_LIMIT = 2000
+/** Room kept for the continuation hint (three numbers of up to 7 digits plus text). */
+const HINT_RESERVE_CHARS = 120
 const ORIGIN_PATH_MAX_CHARS = 300
 
 const REFUSED = 'Refused: this path cannot be read by the coding tools.'
@@ -373,7 +375,8 @@ async function readHeadAndBody(
 async function readFile(
   args: Record<string, unknown>,
   ctx: ToolContext | undefined,
-  deps: ReadToolDeps
+  deps: ReadToolDeps,
+  maxResultChars: () => number
 ): Promise<string> {
   try {
     // 1. Grant present, read permission, workspace from the context.
@@ -417,12 +420,33 @@ async function readFile(
     if (offset > lines.length) {
       return `[offset ${offset} is beyond the end of the file, which has ${lines.length} lines]`
     }
-    const slice = lines.slice(offset - 1, offset - 1 + limit)
-    const remaining = lines.length - (offset - 1 + slice.length)
-    const body = slice.join('\n')
-    return remaining > 0
-      ? `${body}\n[${remaining} more lines; continue with offset=${offset + slice.length}]`
-      : body
+
+    // The whole result, hint included, must fit the registry's budget: the
+    // registry cuts at that length and a hint at the end would be the part lost.
+    const budget = maxResultChars()
+    const bodyBudget = budget - HINT_RESERVE_CHARS
+    const first = lines[offset - 1]
+    if (bodyBudget <= 0 || first.length > bodyBudget) {
+      const skip = offset < lines.length ? ` Continue after it with offset=${offset + 1}.` : ''
+      return `[line ${offset} is longer than the ${budget}-character result budget and cannot be returned.${skip}]`
+    }
+
+    let used = 0
+    let count = 0
+    while (count < limit && offset - 1 + count < lines.length) {
+      const cost = lines[offset - 1 + count].length + (count > 0 ? 1 : 0)
+      if (used + cost > bodyBudget) break
+      used += cost
+      count++
+    }
+    const last = offset + count - 1
+    const body = lines.slice(offset - 1, last).join('\n')
+    const remaining = lines.length - last
+    if (remaining === 0) return body
+    return (
+      `${body}\n[showing lines ${offset}-${last} of ${lines.length}; ` +
+      `${remaining} more lines; continue with offset=${last + 1}]`
+    )
   } catch {
     return UNREADABLE
   }
@@ -456,7 +480,8 @@ export function registerReadTools(registry: ToolRegistry, deps: ReadToolDeps = d
       name: 'read_file',
       description:
         'Read a text file inside the granted project directory. `path` is relative to the ' +
-        'project root. `offset` (1-based line) and `limit` (lines, max 2000) page through long files.',
+        'project root. `offset` (1-based line) and `limit` (lines, max 2000) page through long files; ' +
+        'the result is also bounded by a character budget, and a trailing note says which lines were returned and which offset continues.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -467,7 +492,7 @@ export function registerReadTools(registry: ToolRegistry, deps: ReadToolDeps = d
         required: ['path']
       }
     },
-    (args, ctx) => readFile(args, ctx, deps),
+    (args, ctx) => readFile(args, ctx, deps, () => registry.getMaxResultChars()),
     readOnlyGate
   )
 }
