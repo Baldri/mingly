@@ -345,15 +345,15 @@ git commit -m "feat(file-access): add edit permission, require the confirmation 
 Der Kern des Features. Nach diesem Task ist der Nachweis erbracht, **bevor** es ein schreibendes Werkzeug gibt.
 
 **Files:**
-- Create: `src/main/agent/coding-guard.ts`
+- Create: `src/main/agent/loop-guard.ts`
 - Modify: `src/main/agent/agent-executor.ts` — Signatur `execute` (Zeile 127), Guard-Aufruf nach Zeile 264 und **vor** 268, `postflightGuard` nach Zeile 235
-- Test: `tests/unit/coding-guard.test.ts` (neu), `tests/unit/agent-loop-guard.test.ts` (neu)
+- Test: `tests/unit/loop-guard.test.ts` (neu), `tests/unit/agent-loop-guard.test.ts` (neu)
 
 **Interfaces:**
 - Consumes: `guardInput`, `guardDispatch`, `postflightGuard`, `GuardDeps`, `SensitiveScan` aus `src/main/security/request-guard.ts`; `AgentToolResult` aus `src/shared/types.ts`; `CodingRunOptions` aus `src/shared/coding-types.ts` (Task 2).
 - Produces:
   ```ts
-  // src/main/agent/coding-guard.ts
+  // src/main/agent/loop-guard.ts
   export interface ToolResultOrigin { toolName: string; filePath?: string }
   export type LoopGuardOutcome =
     | { kind: 'ok' }
@@ -390,7 +390,7 @@ Verhalten, abschliessend:
 - [ ] **Step 1: Unit-Tests für `guardToolResults` schreiben**
 
 ```ts
-// tests/unit/coding-guard.test.ts
+// tests/unit/loop-guard.test.ts
 it('calls guardInput once per tool result', async () => { /* 3 Ergebnisse -> sanitize 3x aufgerufen */ })
 it('blocks on injection in the FIRST of several results', async () => {
   const out = await guardToolResults([injected, harmless], origins, ctx, deps)
@@ -408,16 +408,16 @@ it('positive control: harmless results pass', async () => {
 
 - [ ] **Step 2: Lauf, der fehlschlägt**
 
-Run: `npx vitest run tests/unit/coding-guard.test.ts`
+Run: `npx vitest run tests/unit/loop-guard.test.ts`
 Expected: FAIL — Modul nicht gefunden
 
-- [ ] **Step 3: `coding-guard.ts` implementieren**
+- [ ] **Step 3: `loop-guard.ts` implementieren**
 
 Keine neue Guard-Logik: `guardInput` je Ergebnis, `guardDispatch` einmal. Reine Orchestrierung, Abhängigkeiten als `GuardDeps` injiziert — damit bleibt die Datei ohne Electron-Modulgraph testbar, wie `request-guard.ts`.
 
 - [ ] **Step 4: Lauf grün**
 
-Run: `npx vitest run tests/unit/coding-guard.test.ts`
+Run: `npx vitest run tests/unit/loop-guard.test.ts`
 Expected: PASS (5 Tests)
 
 - [ ] **Step 5: Die Loop-Tests schreiben — der Nachweis des Features**
@@ -473,7 +473,7 @@ Expected: beide `0`
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src/main/agent/coding-guard.ts src/main/agent/agent-executor.ts tests/unit/coding-guard.test.ts tests/unit/agent-loop-guard.test.ts
+git add src/main/agent/loop-guard.ts src/main/agent/agent-executor.ts tests/unit/loop-guard.test.ts tests/unit/agent-loop-guard.test.ts
 git commit -m "feat(agent): guard every tool result before it reaches the provider"
 ```
 
