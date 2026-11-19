@@ -20,7 +20,11 @@ export class ContentChanged extends Error {
 
 
 export interface AtomicWriteOptions {
-  /** Permission bits of the new file. Default: those of the file it replaces, else 0o644. */
+  /**
+   * Permission bits of the new file. Default: those of the file it replaces,
+   * else 0o644. Callers that replace a file pass nothing: the default is the
+   * one place this is decided (pinned by a test).
+   */
   mode?: number
   /**
    * The inode the caller verified. Checked right before the rename: if the path
@@ -28,10 +32,17 @@ export interface AtomicWriteOptions {
    */
   expectIdentity?: { dev: number; ino: number }
   /**
-   * Called as the LAST check before the rename, after the identity check. It
-   * must throw (ContentChanged) when the file's content is no longer what the
-   * caller verified. Identity alone is the wrong property: an editor's in-place
-   * save keeps the inode, so the inode check passes while the content moved on.
+   * Called as the last check this module can make before the rename, after the
+   * identity check. It must throw (ContentChanged) when the file's content is no
+   * longer what the caller verified. Identity alone is the wrong property: an
+   * editor's in-place save keeps the inode, so the inode check passes while the
+   * content moved on.
+   *
+   * NOT a guarantee: there is still a CONTENT window, one await wide, between
+   * this hook's last read and the rename. Closing it needs a file lock or
+   * `renameat`-style APIs, neither of which Node offers. A save that lands in
+   * that window is overwritten (the snapshot then holds the pre-save text).
+   * DEBT: one-await content window -> a lock or renameat binding.
    */
   verifyBeforeRename?: () => Promise<void>
 }

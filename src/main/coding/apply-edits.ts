@@ -169,6 +169,9 @@ const REFUSE_UNRECORDED =
 const REFUSE_WITHDRAWN =
   'Permission was withdrawn while the package was being applied. Files already written cannot be ' +
   'restored without permission and stay applied; restore the grant and run undo for this run.'
+const REFUSE_MIXED =
+  'Nothing was restored: the files of the recorded snapshot were changed after the apply, and other ' +
+  'batches of this run have no valid record. See the list for each.'
 const REFUSE_BATCH_UNUSABLE =
   'Nothing was restored: the snapshot batches of this run are missing or unreadable.'
 const REFUSE_INTERRUPTED =
@@ -275,7 +278,6 @@ interface OpenedFile {
   data: Buffer
   dev: number
   ino: number
-  mode: number
 }
 
 async function openAndRead(
@@ -303,7 +305,7 @@ async function openAndRead(
     }
     if (position !== stat.size) throw new Refusal(REFUSE_FS)
     if (budget) budget.remaining -= stat.size
-    return { handle, data: buffer, dev: stat.dev, ino: stat.ino, mode: stat.mode & 0o777 }
+    return { handle, data: buffer, dev: stat.dev, ino: stat.ino }
   } catch {
     await handle?.close().catch(() => undefined)
     return null
@@ -517,7 +519,6 @@ async function restoreEntry(
     if (!snapshot || sha256(snapshot) !== entry.before) return SKIPPED('snapshot-damaged')
     try {
       await writeFileAtomic(resolved.realTarget, snapshot, {
-        mode: current.mode,
         expectIdentity: { dev: current.dev, ino: current.ino },
         verifyBeforeRename: () => assertHandleContent(current.handle, entry.after)
       })
@@ -593,11 +594,17 @@ async function applyInner(
         if (await hasMarker(path.join(ws.snapshotDir, `batch-${number}`))) interrupted.push(number)
       }
       if (interrupted.length > 0) {
+        // A marker next to a batch whose every file already holds the recorded
+        // result is a COMPLETE apply whose marker was not cleared: heal it.
+        // Anything else is a genuine partial state and stays a refusal.
+        let allComplete = true
         for (const number of interrupted) {
           const manifest = await readVouchedManifest(ws, runId, number, deps.ledger)
           if (manifest) await sweepStaleTemps(scope, manifest.entries)
+          if (!manifest || !(await batchComplete(manifest, scope))) allComplete = false
         }
-        throw new Refusal(REFUSE_INTERRUPTED)
+        if (!allComplete) throw new Refusal(REFUSE_INTERRUPTED)
+        for (const number of interrupted) await clearMarker(path.join(ws.snapshotDir, `batch-${number}`))
       }
     } catch (error) {
       throw error instanceof Refusal ? error : new Refusal(REFUSE_SNAPSHOT)
@@ -664,15 +671,18 @@ async function applyInner(
         const verified = await openVerified(edits[i], scope)
         if (!verified) throw new Refusal(REFUSE_FS)
         try {
-          if (sha256(verified.data) !== entries[i].before) throw new Refusal(REFUSE_FS)
+          // No separate `before`/`after` re-hash here, deliberately: openVerified
+          // has just run editStillMatches, which compares the hash of the content
+          // just read with the proposal's baseSha256, and pass 1 verified the same
+          // hash. The same text gives the same replacement, so both manifest
+          // hashes follow. They were redundant (removing them changed no result)
+          // and an untested branch that looks like a check is worse than none.
           const next = replaceAtMatch(edits[i], verified.text)
-          if (sha256(next) !== entries[i].after) throw new Refusal(REFUSE_FS)
           await deps.hooks?.afterVerify?.(i)
           // Grant and mode again, immediately before THIS write: the user may
           // change their mind halfway through the package.
           await recheckAuthority()
           await writeFileAtomic(verified.realTarget, next, {
-            mode: verified.mode,
             expectIdentity: { dev: verified.dev, ino: verified.ino },
             verifyBeforeRename: () => assertHandleContent(verified.handle, entries[i].before)
           })
@@ -769,6 +779,19 @@ async function sweepStaleTemps(scope: Scope, entries: ManifestEntry[]): Promise<
       }
     }
   }
+}
+
+/** Every file of the batch holds exactly the content this apply recorded as its result. */
+async function batchComplete(manifest: Manifest, scope: Scope): Promise<boolean> {
+  for (const entry of manifest.entries) {
+    const resolved = await resolveReadableFile(entry.rel, scope)
+    if (resolved.kind !== 'ok' || isInsideWorkspace(resolved.realRelPosix)) return false
+    const current = await openAndRead(resolved.realTarget)
+    if (!current) return false
+    await current.handle.close().catch(() => undefined)
+    if (sha256(current.data) !== entry.after) return false
+  }
+  return true
 }
 
 /** The manifest of a batch, only if the ledger vouches for it and it parses. */
@@ -1037,9 +1060,14 @@ export async function undoRunForDirectory(
     // refusal that says so, with the list, not an empty success.
     const batchLevel = result.skipped.filter((f) => f.reason.startsWith('batch-'))
     if (result.restored.length === 0 && batchLevel.length > 0) {
+      // A genuine batch whose files were all changed is not the same thing as an
+      // unrecorded one: say which.
+      const genuineButChanged = result.skipped.some((f) => !f.reason.startsWith('batch-'))
       return {
         kind: 'refused',
-        reason: batchLevel.some((f) => f.reason === 'batch-not-recorded' || f.reason === 'batch-manifest-changed')
+        reason: genuineButChanged
+          ? REFUSE_MIXED
+          : batchLevel.some((f) => f.reason === 'batch-not-recorded' || f.reason === 'batch-manifest-changed')
           ? REFUSE_UNRECORDED
           : REFUSE_BATCH_UNUSABLE,
         skipped: result.skipped

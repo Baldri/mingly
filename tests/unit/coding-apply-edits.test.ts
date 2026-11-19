@@ -890,6 +890,8 @@ describe('round 3, FIX 3: grant and mode are checked before EACH write', () => {
     extraDeps = { hooks: { afterVerify: () => { grants = [] } } }
     expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
+    // Nothing was written, so no marker is left claiming a partial state.
+    expect(fs.existsSync(path.join(ws.snapshotDir, 'batch-1', 'IN-PROGRESS'))).toBe(false)
   })
 })
 
@@ -1185,6 +1187,116 @@ describe('round 3, FIX 2: accept is bound to the package the human saw', () => {
     const out = await applyPendingEdits(RUN, ws, grants[0], deps())
     expect(out.kind).toBe('applied')
     if (out.kind === 'applied') expect(packageDigest(out.edits)).toBe(packageDigest(before))
+  })
+})
+
+describe('round 4', () => {
+  const MARKER = path.join('batch-1', 'IN-PROGRESS')
+  const baseEdit = {
+    path: 'a.ts', oldText: 'o', newText: 'n', diff: '', addedLines: 0, removedLines: 0,
+    introducesHiddenCharacters: false, baseSha256: 'h', matchIndex: 0
+  }
+
+  it('FIX A: the digest changes when ONLY the old text, ONLY the match index or ONLY the path changes', () => {
+    const d = packageDigest([baseEdit])
+    expect(packageDigest([{ ...baseEdit, oldText: 'p' }])).not.toBe(d)
+    expect(packageDigest([{ ...baseEdit, matchIndex: 1 }])).not.toBe(d)
+    expect(packageDigest([{ ...baseEdit, path: 'b.ts' }])).not.toBe(d)
+  })
+
+  it.each([
+    ['oldText', (e: { oldText: string }) => ({ ...e, oldText: e.oldText + ' ' })],
+    ['matchIndex', (e: { matchIndex: number }) => ({ ...e, matchIndex: e.matchIndex + 1 })]
+  ])('FIX A: accept refuses a package that differs from the shown one only in %s', async (_name, change) => {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    const [pending] = store.pending(RUN)
+    const shownOther = packageDigest([change(pending as never) as never])
+    const out = await acceptEditsForRun(RUN, 'dir-1', shownOther, deps())
+    expect(out.kind).toBe('refused')
+    expect(read(a)).toBe(ORIGINAL)
+    expect(store.pending(RUN)).toHaveLength(1)
+  })
+
+  it('FIX B: a grant whose path changed under the same id stops the write', async () => {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    extraDeps = { hooks: { afterVerify: () => { grants = [grant({ path: outside })] } } }
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect(read(a)).toBe(ORIGINAL)
+  })
+
+  it('FIX B/C: permission bits survive apply and undo, and writeFileAtomic keeps or overrides them', async () => {
+    const a = write('tool.ts', ORIGINAL)
+    fs.chmodSync(a, 0o750)
+    propose('tool.ts', 'const a = 1', 'const a = 2')
+    await applyPendingEdits(RUN, ws, grants[0], deps())
+    expect(fs.statSync(a).mode & 0o777).toBe(0o750)
+    expect((await undoRun(RUN, ws, deps())).restored).toEqual(['tool.ts'])
+    expect(read(a)).toBe(ORIGINAL)
+    expect(fs.statSync(a).mode & 0o777).toBe(0o750)
+    await writeFileAtomic(a, 'x\n')
+    expect(fs.statSync(a).mode & 0o777).toBe(0o750)
+    await writeFileAtomic(a, 'y\n', { mode: 0o640 })
+    expect(fs.statSync(a).mode & 0o777).toBe(0o640)
+  })
+
+  it('FIX D: a stale marker next to a COMPLETE apply heals itself and the next apply proceeds', async () => {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    store.resolve(RUN, true)
+    // The marker could not be cleared (or the process died just before).
+    fs.writeFileSync(path.join(ws.snapshotDir, MARKER), '{}')
+    fs.writeFileSync(path.join(project, '.mingly-tmp-0123456789abcdef'), 'stale')
+    const c = write('c.ts', 'y = 1\n')
+    propose('c.ts', 'y = 1', 'y = 2')
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    expect(out.kind).toBe('applied')
+    expect(read(c)).toBe('y = 2\n')
+    expect(read(a)).toContain('const a = 2')
+    expect(fs.existsSync(path.join(ws.snapshotDir, MARKER))).toBe(false)
+    expect(leftovers(project)).toEqual([])
+    // The first batch is still undoable: nothing about the good work was lost.
+    expect((await undoRun(RUN, ws, deps())).restored.sort()).toEqual(['a.ts', 'c.ts'])
+  })
+
+  it('FIX D: a marker with ONE file not at its recorded result is a genuine partial state and still refuses', async () => {
+    const a = write('a.ts', ORIGINAL)
+    const b = write('b.ts', 'x = 1\n')
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    propose('b.ts', 'x = 1', 'x = 2')
+    await applyPendingEdits(RUN, ws, grants[0], deps())
+    store.resolve(RUN, true)
+    fs.writeFileSync(path.join(ws.snapshotDir, MARKER), '{}')
+    fs.writeFileSync(b, 'x = 1\n')
+    const c = write('c.ts', 'y = 1\n')
+    propose('c.ts', 'y = 1', 'y = 2')
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    expect(out.kind).toBe('refused')
+    if (out.kind === 'refused') expect(out.reason).toMatch(/interrupted/)
+    expect(read(c)).toBe('y = 1\n')
+    expect(read(a)).toContain('const a = 2')
+    expect(fs.existsSync(path.join(ws.snapshotDir, MARKER))).toBe(true)
+  })
+
+  it('FIX E: a genuine batch whose files were all changed, next to an orphan, gets its own reason', async () => {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    await applyPendingEdits(RUN, ws, grants[0], deps())
+    fs.writeFileSync(a, read(a) + '// user work\n')
+    fs.mkdirSync(path.join(ws.snapshotDir, 'batch-2'))
+    const out = await undoRunForDirectory(RUN, 'dir-1', deps())
+    expect(out.kind).toBe('refused')
+    if (out.kind === 'refused') {
+      expect(out.reason).toMatch(/changed after the apply/)
+      expect(out.reason).toMatch(/no valid record/)
+      expect(out.reason).not.toMatch(/has no record in this app/)
+      expect(out.skipped).toEqual([
+        { path: '.mingly/snapshots/run1/batch-2', reason: 'batch-not-recorded' },
+        { path: 'a.ts', reason: 'changed-since-apply' }
+      ])
+    }
   })
 })
 
