@@ -136,9 +136,13 @@ describe('guardToolResults', () => {
 
     expect(out.kind).toBe('blocked')
     expect(out.kind === 'blocked' && out.reason).toContain('ollama')
+    expect(out.kind === 'blocked' && out.reason).toContain('routing')
   })
 
-  it('positive control for the coding block: without coding the suggested provider is adopted', async () => {
+  it('the block is not conditional on coding: without coding the redirect is refused too', async () => {
+    // guardInput evaluated the sensitive branch against ctx.provider. Adopting
+    // a redirect would send content that was never checked against the provider
+    // receiving it — true for every run type, not just coding runs.
     const deps = makeDeps({
       checkRouting: () => ({
         allowed: false,
@@ -149,8 +153,21 @@ describe('guardToolResults', () => {
 
     const out = await guardToolResults([harmless], [{ toolName: 'read_file' }], ctx, deps)
 
-    expect(out.kind).toBe('ok')
-    expect(out.kind === 'ok' && out.provider).toBe('ollama')
+    expect(out.kind).toBe('blocked')
+    expect(out.kind === 'blocked' && out.reason).toContain('ollama')
+    expect(out.kind === 'blocked' && out.reason).toContain('routing')
+  })
+
+  it('names a budget fallback as the cause when that is what redirected', async () => {
+    const deps = makeDeps({
+      checkBudget: () => ({ allowed: false, fallbackProvider: 'ollama' }),
+    })
+
+    const out = await guardToolResults([harmless], [{ toolName: 'read_file' }], ctx, deps)
+
+    expect(out.kind).toBe('blocked')
+    expect(out.kind === 'blocked' && out.reason).toContain('budget')
+    expect(out.kind === 'blocked' && out.reason).toContain('ollama')
   })
 
   it('positive control: harmless results pass', async () => {
@@ -162,7 +179,17 @@ describe('guardToolResults', () => {
     )
 
     expect(out.kind).toBe('ok')
-    expect(out.kind === 'ok' && out.provider).toBe('anthropic')
+  })
+
+  it('positive control: the same harmless results pass with coding active', async () => {
+    const out = await guardToolResults(
+      [harmless, harmless],
+      [{ toolName: 'search_docs' }, { toolName: 'search_docs' }],
+      codingCtx,
+      makeDeps(),
+    )
+
+    expect(out.kind).toBe('ok')
   })
 
   it('blocks when the sensitive-data upload is denied outright', async () => {

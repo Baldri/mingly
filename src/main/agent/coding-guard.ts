@@ -28,7 +28,10 @@ export interface ToolResultOrigin {
 }
 
 export type LoopGuardOutcome =
-  | { kind: 'ok'; provider: string }
+  // No provider field: a dispatch redirect is blocked rather than adopted, so
+  // the run always continues on the provider it came in with. A field that can
+  // only ever hold ctx.provider would invite the belief that it can hold more.
+  | { kind: 'ok' }
   | { kind: 'blocked'; reason: string }
   | {
       kind: 'consent'
@@ -41,10 +44,11 @@ export type LoopGuardOutcome =
 /**
  * What the guard needs to know about the step it is guarding.
  *
- * `coding` decides one thing only: a coding run must not be re-routed to
- * another provider mid-run, so a routing/budget redirect ends the run instead
- * of switching. Every other check runs for every agent run — comparison and
- * subagent runs push tool results to a provider just as unguarded.
+ * Every check here runs for every agent run: comparison and subagent runs push
+ * tool results to a provider just as unguarded as a coding run does. `coding`
+ * therefore changes **no** decision in this file — it is carried so a run can
+ * be identified downstream (Task 5's consent channel, Task 9's tool surface),
+ * and the tests pin that a run with and without it behaves identically.
  */
 export interface LoopGuardContext {
   provider: string
@@ -129,14 +133,27 @@ export async function guardToolResults(
     return { kind: 'blocked', reason: dispatch.reason ?? 'Blocked by the dispatch guard.' }
   }
 
-  if (dispatch.provider !== ctx.provider && ctx.coding) {
+  // No mid-run provider switch — for ANY run type, not just coding runs.
+  // guardInput evaluated the sensitive-data scan and the upload-permission
+  // branch against ctx.provider. Adopting a different provider here would send
+  // content that was never checked against the provider that receives it: a run
+  // on a local provider skips the whole sensitive branch (isCloudProvider
+  // false), accumulates tool results, and a budget fallback to a cloud provider
+  // would then ship the lot. Re-running both phases over the whole accumulated
+  // stack on every switch is the opposite of incremental, so the run ends.
+  if (dispatch.provider !== ctx.provider) {
+    const causes = dispatch.warnings
+      .filter((w) => w.type === 'budget_fallback' || w.type === 'routing_fallback')
+      .map((w) => (w.type === 'budget_fallback' ? 'budget' : 'routing'))
+    const cause = causes.length > 0 ? `${causes.join(' and ')} fallback` : 'a dispatch fallback'
     return {
       kind: 'blocked',
       reason:
-        `Collected content would be re-routed from ${ctx.provider} to ${dispatch.provider}; ` +
-        'a coding run does not switch providers mid-run.',
+        `Collected content would be re-routed from ${ctx.provider} to ${dispatch.provider} ` +
+        `(${cause}), but it was only ever checked against ${ctx.provider}. The run ends instead ` +
+        'of switching providers mid-run.',
     }
   }
 
-  return { kind: 'ok', provider: dispatch.provider }
+  return { kind: 'ok' }
 }

@@ -262,7 +262,7 @@ describe('Tool results pass the same guards as typed text', () => {
     expect(spies.executeToolCalls).not.toHaveBeenCalled()
   })
 
-  it('a coding run ends instead of switching providers mid-loop', async () => {
+  it('a provider redirect mid-loop ends the run when coding is set', async () => {
     llmResponses = [readFileStep(['tc-1']), FINAL_STEP]
     toolResultContents = { 'tc-1': `source with ${ROUTING_MARKER} inside` }
 
@@ -273,25 +273,42 @@ describe('Tool results pass the same guards as typed text', () => {
     expect(spies.sendMessageWithTools).toHaveBeenCalledTimes(1)
   })
 
-  it('comparison and subagent runs get no coding options', async () => {
+  it('a provider redirect mid-loop ends the run when coding is NOT set', async () => {
     llmResponses = [readFileStep(['tc-1']), FINAL_STEP]
     toolResultContents = { 'tc-1': `source with ${ROUTING_MARKER} inside` }
 
     // No 6th parameter — exactly how agent-handlers, subagent-orchestrator and
-    // agent-comparison-service call execute().
+    // agent-comparison-service call execute(). The block is a property of every
+    // agent run: guardInput checked this content against anthropic only, so
+    // adopting ollama would ship content ollama was never cleared for.
     const run = await executor.execute('read the file', 'anthropic', 'claude-3-5-sonnet')
 
-    // The incremental guard still ran over the tool result...
+    // The incremental guard ran over the tool result for a non-coding run too.
     expect(spies.checkRouting).toHaveBeenCalledWith(
       expect.stringContaining(ROUTING_MARKER),
       'anthropic',
       '',
     )
-    // ...but without coding the routing redirect is honoured instead of fatal.
+    expect(run.status).toBe('failed')
+    expect(run.error).toContain('ollama')
+    expect(spies.sendMessageWithTools).toHaveBeenCalledTimes(1)
+    // Never re-routed: the only call went to the provider the run started on.
+    expect(spies.sendMessageWithTools.mock.calls[0][0]).toBe('anthropic')
+  })
+
+  it('comparison and subagent runs get no coding options', async () => {
+    llmResponses = [readFileStep(['tc-1']), FINAL_STEP]
+    toolResultContents = { 'tc-1': 'export const answer = 42' }
+
+    // No 6th parameter, harmless content: a run without coding still completes,
+    // so the blocking tests above are not green merely because everything
+    // blocks.
+    const run = await executor.execute('read the file', 'anthropic', 'claude-3-5-sonnet')
+
     expect(run.status).toBe('completed')
     expect(spies.sendMessageWithTools).toHaveBeenCalledTimes(2)
-    expect(spies.sendMessageWithTools.mock.calls[0][0]).toBe('anthropic')
-    expect(spies.sendMessageWithTools.mock.calls[1][0]).toBe('ollama')
+    // The incremental guard ran over the tool result all the same.
+    expect(spies.sanitize).toHaveBeenCalledWith('export const answer = 42')
     // And no coding context reaches the tool surface.
     const firstToolsCall = spies.getAvailableTools.mock.calls[0] as unknown[] | undefined
     const toolsArg = firstToolsCall?.[0] as { coding?: unknown } | undefined

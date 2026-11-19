@@ -313,13 +313,10 @@ export class AgentExecutor {
             `${loopGuard.origin.toolName} (${loopGuard.scanResult.overallRiskLevel} risk).`
           break
         }
-        // A budget or routing fallback may have picked a different provider for
-        // the collected content; a coding run never gets here with a switch
-        // (guardToolResults blocks it). The provider-support check at the top of
-        // the run covered the initial provider only — a fallback that cannot do
-        // tool-use fails the next call, which the catch below turns into a
-        // failed run.
-        provider = loopGuard.provider
+        // `provider` is deliberately NOT reassigned from the guard: a budget or
+        // routing fallback inside the loop is blocked above, for every run type.
+        // Adopting one would send content that guardInput only ever checked
+        // against the previous provider.
 
         // Task 4: File-based context — externalize large tool results to temp files
         const contextManager = getAgentContextManager()
