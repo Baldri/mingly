@@ -607,22 +607,22 @@ describe('pattern matching cannot hang the main process', () => {
     expect(out).toContain(NAME)
   })
 
-  it('hostile .gitignore (many heavy rules) x 400 files completes quickly and says the list is incomplete', async () => {
-    // The review's case. Measured before the global budget: seconds of blocked event loop.
+  it('hostile .gitignore (many heavy rules) x 400 files is cut by the work budget and says so', async () => {
+    // The review's case. The property under test is that the WORK is bounded: the
+    // incomplete marker appears only when the step budget was exhausted, so the
+    // marker below is the proof. The budget is the invariant (the same number of
+    // steps on every machine); the clock is only its shadow on this hardware, and
+    // an assertion on it flaked at 5276 ms under a load average of ~30. Hence no
+    // wall-clock bound here. Record of what the budget costs in time: this test
+    // took 481-498 ms over six runs on the development machine (2026-11-19,
+    // 100M-step budget, ~5 ns per step).
     // '*' + a long literal run that nearly matches: the two-pointer matcher
     // re-compares the run at every start position, O(pattern x text) per pair.
     const rule = '*' + 'a'.repeat(150) + 'b'
     write('.gitignore', Array.from({ length: 300 }, () => rule).join('\n') + '\n')
     for (let i = 0; i < 400; i++) write(`files/${'a'.repeat(230)}${String(i).padStart(3, '0')}`, 'x')
-    const ctx = await ctxFor()
-    const t = Date.now()
-    const out = await call('list_files', {}, ctx)
-    const elapsed = Date.now() - t
-    // Bound derived, not guessed: this test took 481-498 ms over six runs on the
-    // development machine (2026-11-19, 100M-step budget, ~5 ns per step). The bound
-    // is 4x the largest measurement. Re-derive it whenever the budget changes:
-    // bound = 4 x (measured ms), measured by running this test a few times.
-    expect(elapsed).toBeLessThan(2000)
+    const out = await call('list_files', {}, await ctxFor())
+    expect(out).toMatch(/matching work budget reached/)
     expect(out).toMatch(/INCOMPLETE/)
     // File-rule cost: narrowing with `pattern` genuinely helps, so the advice stays.
     expect(out).toMatch(/pattern/)
