@@ -84,6 +84,19 @@ describe('resolveCodingRun (R35)', () => {
     expect(out.kind).toBe('refused')
   })
 
+  it('refuses a stored mode that proposes edits when the grant no longer carries edit', async () => {
+    const downgraded: AllowedDirectory = { ...GRANT, permissions: ['read', 'create'] }
+    for (const mode of ['propose', 'propose-run'] as const) {
+      const out = await resolveCodingRun({ directoryId: 'd1' }, deps({ getMode: () => mode }, downgraded))
+      expect(out.kind).toBe('refused')
+    }
+    // Controls: read-only needs no edit, and the same modes resolve with edit.
+    const ro = await resolveCodingRun({ directoryId: 'd1' }, deps({ getMode: () => 'read-only' }, downgraded))
+    expect(ro.kind).toBe('resolved')
+    const withEdit = await resolveCodingRun({ directoryId: 'd1' }, deps({ getMode: () => 'propose-run' }))
+    expect(withEdit.kind).toBe('resolved')
+  })
+
   it('takes the mode from the store; a different claimed mode is refused, not overridden', async () => {
     const claim = await resolveCodingRun({ directoryId: 'd1', mode: 'propose-run' }, deps())
     expect(claim.kind).toBe('refused')

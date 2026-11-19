@@ -1,7 +1,8 @@
 import { useEffect } from 'react'
 import { useCodingStore } from '../stores/coding-store'
 import { CODING_MODE_CHOICES } from '../../shared/coding-types'
-import { displayText, getPermissionLabel } from '../lib/coding-display'
+import { displayText, getPermissionLabel, isCodingFeatureAllowed } from '../lib/coding-display'
+import { useSubscriptionStore } from '../stores/subscription-store'
 
 /** Offers a CSV string as a file download. */
 function downloadCsv(filename: string, csv: string): void {
@@ -35,9 +36,20 @@ export function CodingModePicker() {
   const exportAudit = useCodingStore((s) => s.exportAudit)
   const clearError = useCodingStore((s) => s.clearError)
 
+  const features = useSubscriptionStore((s) => s.features)
+  const loadAllFeatures = useSubscriptionStore((s) => s.loadAllFeatures)
+  const openUpgradeDialog = useSubscriptionStore((s) => s.openUpgradeDialog)
+  const allowed = isCodingFeatureAllowed(features)
+
+  // The feature map is empty until loaded; unknown reads as not allowed.
   useEffect(() => {
-    void loadProjects()
-  }, [loadProjects])
+    void loadAllFeatures()
+  }, [loadAllFeatures])
+
+  // Projects are only fetched for a tier that may use them: every coding channel is gated.
+  useEffect(() => {
+    if (allowed) void loadProjects()
+  }, [allowed, loadProjects])
 
   const selected = grants.find((g) => g.id === selectedDirectoryId) ?? null
   const currentMode = selected ? (modes[selected.id] ?? 'off') : 'off'
@@ -45,6 +57,19 @@ export function CodingModePicker() {
   const handleExport = async (): Promise<void> => {
     const csv = await exportAudit()
     if (csv !== null) downloadCsv(`mingly-coding-audit-${new Date().toISOString().slice(0, 10)}.csv`, csv)
+  }
+
+  if (!allowed) {
+    return (
+      <div className="mb-3 text-sm" data-testid="coding-mode-locked">
+        <button
+          onClick={() => openUpgradeDialog('agentic_mode')}
+          className="rounded border border-gray-300 px-2 py-1 text-gray-600 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+        >
+          Coding-Projekt (Pro) – Upgrade ansehen
+        </button>
+      </div>
+    )
   }
 
   return (

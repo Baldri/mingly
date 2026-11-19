@@ -234,6 +234,42 @@ describe('coding store', () => {
       expect(useCodingStore.getState().consent).toBeNull()
     })
 
+    it('tells the user when the answer settled nothing (the question had expired)', async () => {
+      h.consentCallback?.(request(['send', 'drop-file']))
+      h.api.codingConsent.respond.mockResolvedValue({ success: true, settled: false })
+      await useCodingStore.getState().respondConsent('send')
+      const state = useCodingStore.getState()
+      // The question is gone, but the user is told what really happened.
+      expect(state.consent).toBeNull()
+      expect(state.error).toMatch(/abgelaufen/)
+      expect(state.error).toMatch(/ohne diese Datei/)
+    })
+
+    it('a reply without a settled flag is not read as settled', async () => {
+      h.consentCallback?.(request(['send', 'drop-file']))
+      h.api.codingConsent.respond.mockResolvedValue({ success: true })
+      await useCodingStore.getState().respondConsent('send')
+      expect(useCodingStore.getState().error).toMatch(/abgelaufen/)
+    })
+
+    it('a refused call (success: false) keeps the question open and shows the reason', async () => {
+      h.consentCallback?.(request(['send', 'drop-file']))
+      h.api.codingConsent.respond.mockResolvedValue({ success: false, error: 'Rate limit exceeded.' })
+      await useCodingStore.getState().respondConsent('send')
+      const state = useCodingStore.getState()
+      expect(state.consent).not.toBeNull()
+      expect(state.error).toContain('Rate limit exceeded.')
+    })
+
+    it('a non-Error throw still renders a non-empty error', async () => {
+      h.consentCallback?.(request(['send', 'drop-file']))
+      h.api.codingConsent.respond.mockRejectedValue('boom')
+      await useCodingStore.getState().respondConsent('send')
+      const error = useCodingStore.getState().error
+      expect(typeof error).toBe('string')
+      expect((error ?? '').length).toBeGreaterThan(0)
+    })
+
     it('does not send a choice the request did not offer', async () => {
       h.consentCallback?.(request(['send', 'drop-file']))
       await useCodingStore.getState().respondConsent('anonymize')

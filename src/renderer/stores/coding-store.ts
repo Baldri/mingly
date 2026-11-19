@@ -84,6 +84,12 @@ interface UndoReply {
   error?: string
   outcome?: CodingUndoOutcome
 }
+/** What CODING_CONSENT_RESPOND answers: `settled` is the broker's own boolean. */
+interface ConsentReply {
+  success?: boolean
+  settled?: boolean
+  error?: string
+}
 interface AuditReply {
   success?: boolean
   csv?: string
@@ -141,6 +147,22 @@ function api(): Window['electronAPI'] | null {
 }
 
 const NO_API = 'Die Anwendungsschnittstelle ist nicht verfügbar.'
+const UNKNOWN_ERROR = 'Ein unbekannter Fehler ist aufgetreten.'
+const CONSENT_NOT_SETTLED =
+  'Ihre Antwort wurde nicht übernommen: Die Frage war bereits abgelaufen. ' +
+  'Der Lauf wurde ohne diese Datei fortgesetzt.'
+const CONSENT_REFUSED = 'Die Antwort wurde nicht angenommen. Die Frage bleibt offen.'
+
+/**
+ * A thrown value as text for the error box. The surface renders under
+ * `{error && …}`, so a non-Error throw or an empty message must never become
+ * `undefined` or `''`: the failure would vanish from the one place that reports it.
+ */
+function errorText(error: unknown): string {
+  if (error instanceof Error && error.message !== '') return error.message
+  if (typeof error === 'string' && error !== '') return error
+  return UNKNOWN_ERROR
+}
 
 export const useCodingStore = create<CodingState>((set, get) => {
   // The main process asks, mid-run, about a finding in ONE tool result. The run
@@ -190,7 +212,7 @@ export const useCodingStore = create<CodingState>((set, get) => {
         )
         set({ grants, modes: Object.fromEntries(entries) })
       } catch (error) {
-        set({ error: (error as Error).message })
+        set({ error: errorText(error) })
       }
     },
 
@@ -213,7 +235,7 @@ export const useCodingStore = create<CodingState>((set, get) => {
           selectedDirectoryId: directory.id
         }))
       } catch (error) {
-        set({ error: (error as Error).message })
+        set({ error: errorText(error) })
       }
     },
 
@@ -242,7 +264,7 @@ export const useCodingStore = create<CodingState>((set, get) => {
           modes: { ...state.modes, [directoryId]: parseCodingMode(reply.mode) }
         }))
       } catch (error) {
-        set({ error: (error as Error).message })
+        set({ error: errorText(error) })
       }
     },
 
@@ -313,7 +335,7 @@ export const useCodingStore = create<CodingState>((set, get) => {
               set({ error: reply.error ?? 'Die vorgeschlagenen Änderungen konnten nicht geladen werden.' })
             }
           } catch (error) {
-            set({ error: (error as Error).message })
+            set({ error: errorText(error) })
           }
         }
       }
@@ -331,13 +353,27 @@ export const useCodingStore = create<CodingState>((set, get) => {
         return
       }
       try {
-        await bridge.respond(consent.runId, consent.requestId, choice)
+        const reply: ConsentReply | undefined = await bridge.respond(
+          consent.runId,
+          consent.requestId,
+          choice
+        )
+        // A refused call (rate limit, feature gate) settled nothing and the
+        // question is still open: say why, and leave it open.
+        if (reply?.success !== true) {
+          set({ error: reply?.error ?? CONSENT_REFUSED })
+          return
+        }
+        // `settled` is the broker's verdict. Anything but an explicit true is
+        // read as "not settled by this click": the question had already expired
+        // (it settles itself to drop-file) and the run went on without the file.
+        const notice = reply.settled === true ? {} : { error: CONSENT_NOT_SETTLED }
         // Only the question that was answered is closed: a newer one stays.
         set((state) =>
-          state.consent?.requestId === consent.requestId ? { consent: null } : {}
+          state.consent?.requestId === consent.requestId ? { consent: null, ...notice } : notice
         )
       } catch (error) {
-        set({ error: (error as Error).message })
+        set({ error: errorText(error) })
       }
     },
 
@@ -365,7 +401,7 @@ export const useCodingStore = create<CodingState>((set, get) => {
           error: reply.outcome?.reason ?? reply.error ?? 'Die Änderungen wurden nicht geschrieben.'
         })
       } catch (error) {
-        set({ error: (error as Error).message })
+        set({ error: errorText(error) })
       }
     },
 
@@ -382,7 +418,7 @@ export const useCodingStore = create<CodingState>((set, get) => {
         }
         set({ error: reply.outcome?.reason ?? reply.error ?? 'Die Ablehnung wurde nicht übernommen.' })
       } catch (error) {
-        set({ error: (error as Error).message })
+        set({ error: errorText(error) })
       }
     },
 
@@ -399,7 +435,7 @@ export const useCodingStore = create<CodingState>((set, get) => {
         }
         set({ error: reply.error ?? 'Rückgängig machen ist fehlgeschlagen.' })
       } catch (error) {
-        set({ error: (error as Error).message })
+        set({ error: errorText(error) })
       }
     },
 
@@ -415,7 +451,7 @@ export const useCodingStore = create<CodingState>((set, get) => {
         set({ error: reply.error ?? 'Der Audit-Export ist fehlgeschlagen.' })
         return null
       } catch (error) {
-        set({ error: (error as Error).message })
+        set({ error: errorText(error) })
         return null
       }
     },

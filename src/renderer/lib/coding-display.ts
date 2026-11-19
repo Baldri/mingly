@@ -27,13 +27,36 @@ export interface DiffLineView {
   text: string
 }
 
-/** A diff split into display lines, each escaped. The kind follows the first character. */
+/**
+ * A diff split into display lines, each escaped.
+ *
+ * Only the header block `buildDiff` emits is `meta`: optional `!!` warning
+ * lines, then `--- `, then `+++ `, then the `@@` hunk header. After the hunk
+ * header every line is body and its kind follows its single prefix character,
+ * so model-supplied content such as `++i` (shown as `+++i`) or a deleted SQL
+ * comment `-- x` (shown as `--- x`) cannot pass for a header. The header is read
+ * in that exact order; the first line that does not fit it starts the body, so
+ * without a hunk header nothing beyond the expected prefix can hide as meta.
+ */
 export function diffLines(diff: string): DiffLineView[] {
+  // 0: warnings or `---`, 1: expects `+++`, 2: expects `@@`, 3: body.
+  let stage = 0
   return diff.split('\n').map((line) => {
     const text = escapeHiddenCharacters(line)
-    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('@@') || line.startsWith('!!')) {
+    if (stage === 0 && line.startsWith('!!')) return { kind: 'meta', text }
+    if (stage === 0 && line.startsWith('--- ')) {
+      stage = 1
       return { kind: 'meta', text }
     }
+    if (stage === 1 && line.startsWith('+++ ')) {
+      stage = 2
+      return { kind: 'meta', text }
+    }
+    if (stage === 2 && line.startsWith('@@')) {
+      stage = 3
+      return { kind: 'meta', text }
+    }
+    stage = 3
     if (line.startsWith('+')) return { kind: 'add', text }
     if (line.startsWith('-')) return { kind: 'remove', text }
     return { kind: 'context', text }
@@ -134,4 +157,20 @@ export function getPermissionLabel(permissions: readonly FileAccessPermission[])
 
   if (canEdit) return base === '' ? 'Edit' : `${base} + Edit`
   return base === '' ? 'Unknown' : base
+}
+
+// ---------------------------------------------------------------------------
+// Feature gate
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether the coding controls may be offered. The main process gates every coding
+ * channel on `agentic_mode`; the renderer mirrors it so a tier without it is sent
+ * to the upgrade dialog instead of into a gate error. Unknown (not loaded yet,
+ * absent key) is NOT allowed: the stricter side.
+ */
+export function isCodingFeatureAllowed(
+  features: Readonly<Record<string, { allowed?: boolean } | undefined>> | undefined
+): boolean {
+  return features?.agentic_mode?.allowed === true
 }

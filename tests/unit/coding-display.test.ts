@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest'
 import {
   displayText,
   diffLines,
+  isCodingFeatureAllowed,
   describeUndo,
   getPermissionLabel
 } from '../../src/renderer/lib/coding-display'
@@ -30,9 +31,42 @@ describe('approval surface text', () => {
     expect(lines.find((l) => l.kind === 'add')?.text).toBe('+new<U+202E>')
   })
 
-  it('classifies diff lines by their first character', () => {
+  // Re-pinned against the requirement "only the header block is meta; after the
+  // hunk header a line's kind follows its single prefix character". The earlier
+  // test pinned the implementation (a prefix sniff on every line) and so encoded
+  // the bug that a body line starting with `++` or `--` rendered as a header.
+  it('classifies the header block as meta and the body by its single prefix character', () => {
     const kinds = diffLines('--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n ctx\n-old\n+new').map((l) => l.kind)
     expect(kinds).toEqual(['meta', 'meta', 'meta', 'context', 'remove', 'add'])
+  })
+
+  it('renders an added line whose content starts with ++ as an addition, not a header', () => {
+    const lines = diffLines('--- a/x\n+++ b/x\n@@ -1,1 +1,2 @@\n ctx\n+++ b/innocent.ts\n+++i')
+    expect(lines.map((l) => l.kind)).toEqual(['meta', 'meta', 'meta', 'context', 'add', 'add'])
+  })
+
+  it('renders a removed line whose content starts with -- as a removal, not neutral metadata', () => {
+    const lines = diffLines('--- a/x\n+++ b/x\n@@ -2,1 +1,0 @@\n--- DROP TABLE kunden\n-- comment')
+    expect(lines.map((l) => l.kind)).toEqual(['meta', 'meta', 'meta', 'remove', 'remove'])
+  })
+
+  it('never reads a body line as a hunk header or warning', () => {
+    const lines = diffLines('--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-@@ gone\n+!! new')
+    expect(lines.map((l) => l.kind)).toEqual(['meta', 'meta', 'meta', 'remove', 'add'])
+  })
+
+  it('without a hunk header, only a leading warning/--- /+++ block is meta (fail towards add/remove)', () => {
+    const lines = diffLines('+++ looks like a header\n+added')
+    // No hunk header was seen and no --- line opened a header block: nothing may hide as meta.
+    expect(lines.map((l) => l.kind)).toEqual(['add', 'add'])
+  })
+
+  it('offers the coding picker only when agentic_mode is explicitly allowed', () => {
+    expect(isCodingFeatureAllowed({ agentic_mode: { allowed: true } })).toBe(true)
+    expect(isCodingFeatureAllowed({ agentic_mode: { allowed: false } })).toBe(false)
+    expect(isCodingFeatureAllowed({})).toBe(false)
+    expect(isCodingFeatureAllowed(undefined)).toBe(false)
+    expect(isCodingFeatureAllowed({ agents: { allowed: true } })).toBe(false)
   })
 
   it('keeps a hidden-characters warning line from the main process as a meta line', () => {

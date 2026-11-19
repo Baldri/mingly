@@ -15,6 +15,7 @@
 import * as path from 'path'
 import {
   CODING_MODE_CHOICES,
+  CODING_MODE_ORDER,
   parseCodingMode,
   type CodingMode,
   type CodingRunOptions,
@@ -68,6 +69,8 @@ const REFUSE_PATH =
   'Coding run refused: the project path in the request does not belong to the grant for that directory.'
 const REFUSE_MODE =
   'Coding run refused: the mode in the request is not the mode stored for that directory.'
+const REFUSE_EDIT =
+  'Coding run refused: the stored mode proposes edits, but the grant for that directory has no edit permission.'
 const REFUSE_STORE = 'Coding run refused: the coding mode could not be read.'
 
 function refusedRun(reason: string): ResolvedRun {
@@ -99,6 +102,12 @@ export async function resolveCodingRun(
 
     const mode = parseCodingMode(await deps.getMode(directoryId))
     if (raw.mode !== undefined && raw.mode !== mode) return refusedRun(REFUSE_MODE)
+
+    // The edit requirement was checked when the mode was STORED; the grant may
+    // have changed since. Refused, not downgraded: a mismatch is never corrected.
+    if (CODING_MODE_ORDER[mode] >= CODING_MODE_ORDER.propose && !hasPermission(grant, 'edit')) {
+      return refusedRun(REFUSE_EDIT)
+    }
 
     return { kind: 'resolved', coding: { directoryId, projectPath, mode } }
   } catch {
