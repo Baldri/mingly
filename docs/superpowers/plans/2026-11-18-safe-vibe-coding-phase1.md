@@ -1352,6 +1352,21 @@ gesenkt, die Datei hat sich seit dem Vorschlag geaendert, oder ein Ziel liegt in
 `.mingly/`. Wer den Grund nicht liest, sieht nur «ging nicht» und hat keine Chance, es zu
 beheben.
 
+**Pflicht, nicht optional (Entscheid R90): ohne Paket-Digest gibt es kein Accept.**
+Task 11 bindet die Abnahme an die Identitaet des **gezeigten** Pakets: `acceptEditsForRun`
+verlangt einen `expectedDigest` und **lehnt ohne ihn ab**. Das ist Absicht — ein Accept,
+das an den **Run** bindet statt an das **Set**, nimmt Vorschlaege ab, die der Mensch nie
+gesehen hat, und gibt solche frei, die nie geschrieben wurden (beides reproduziert).
+
+Dieser Task muss den Digest also **vom Main-Prozess zur Oberflaeche und zurueck** fuehren:
+zusammen mit der Liste der offenen Vorschlaege ausliefern und beim Abnahmeklick
+unveraendert zurueckgeben. **Solange das fehlt, funktioniert Accept gar nicht** — die
+Mechanik ist fertig, die Verdrahtung nicht.
+
+Und die Ablehnung bei Abweichung ist kein Fehler, sondern eine Aufforderung: die
+Vorschlaege haben sich seit der Anzeige geaendert und muessen **erneut geprueft** werden.
+Die Oberflaeche zeigt dann die neue Liste, statt die alte Abnahme zu wiederholen.
+
 **Pflicht, nicht optional (Entscheid R82): «nichts zu tun» ist keine Verweigerung.**
 Der Schreibpfad liefert drei verschiedene Gruende, und die Oberflaeche darf sie **nicht**
 gleich aussehen lassen:
