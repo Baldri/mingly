@@ -15,10 +15,12 @@
  * - Cancellation via AbortController
  * - Step-by-step event emission for UI tracking
  */
-import { preflightGuard } from '../security/request-guard'
+import { postflightGuard, preflightGuard } from '../security/request-guard'
 import { getGuardDeps } from '../security/request-guard-deps'
 
 import { nanoid } from 'nanoid'
+import { guardToolResults } from './coding-guard'
+import type { CodingRunOptions } from '../../shared/coding-types'
 import { getToolRegistry, type ToolRegistry } from './tool-registry'
 import { getAgentContextManager } from './agent-context-manager'
 import { getClientManager } from '../llm-clients/client-manager'
@@ -123,13 +125,16 @@ export class AgentExecutor {
    * @param model - Model name
    * @param conversationHistory - Previous messages (optional context)
    * @param systemPrompt - System prompt (optional)
+   * @param coding - Coding-run context (optional). Left out by the comparison
+   *                 and subagent callers, which therefore get no coding run.
    */
   async execute(
     task: string,
     provider: string,
     model: string,
     conversationHistory: Message[] = [],
-    systemPrompt?: string
+    systemPrompt?: string,
+    coding?: CodingRunOptions
   ): Promise<AgentRun> {
     const runId = nanoid()
     const startTime = Date.now()
@@ -240,6 +245,18 @@ export class AgentExecutor {
           run.totalTokens.output += llmResponse.tokens.output
         }
 
+        // Post-flight output guardrails — every LLM turn, not just the last:
+        // an intermediate turn is what the next tool call is built from.
+        // Tokens are counted first, so a blocked turn still shows its cost.
+        const postflight = postflightGuard(llmResponse.text, systemPrompt ?? '', getGuardDeps())
+        if (!postflight.ok) {
+          run.status = 'failed'
+          run.error =
+            'Output blocked by guardrails: ' +
+            postflight.violations.map((v) => `${v.type} (${v.severity})`).join(', ')
+          break
+        }
+
         // Build step
         const step: AgentStep = {
           stepNumber: stepNum,
@@ -262,6 +279,47 @@ export class AgentExecutor {
 
         // Execute tool calls
         const rawToolResults = await toolRegistry.executeToolCalls(llmResponse.toolCalls)
+
+        // The guard inside the loop. Tool results are content the AGENT
+        // collected; the pre-flight guard above never saw them, yet every
+        // later sendMessageWithTools call ships them to the provider.
+        //
+        // Runs BEFORE compaction: compaction keeps a raw 200-character preview
+        // of the result, and that preview is the part that travels. Checking
+        // afterwards would check what no longer goes out and pass what does.
+        //
+        // Fail closed: the run ends with the reason, like the pre-flight above.
+        // The step is deliberately not pushed and no step_complete is emitted —
+        // blocked content must not travel onwards to the renderer either.
+        const loopGuard = await guardToolResults(
+          rawToolResults,
+          rawToolResults.map((r) => ({
+            toolName: llmResponse.toolCalls.find((tc) => tc.id === r.toolCallId)?.name ?? 'unknown'
+          })),
+          { provider, model, conversationId: run.conversationId, coding },
+          getGuardDeps(),
+        )
+        if (loopGuard.kind === 'blocked') {
+          run.status = 'failed'
+          run.error = loopGuard.reason
+          break
+        }
+        if (loopGuard.kind === 'consent') {
+          // No consent channel on this path (Task 5 adds one) — fail closed,
+          // exactly as preflightGuard treats `requiresConsent`.
+          run.status = 'failed'
+          run.error =
+            `User consent required for sensitive data in the result of ` +
+            `${loopGuard.origin.toolName} (${loopGuard.scanResult.overallRiskLevel} risk).`
+          break
+        }
+        // A budget or routing fallback may have picked a different provider for
+        // the collected content; a coding run never gets here with a switch
+        // (guardToolResults blocks it). The provider-support check at the top of
+        // the run covered the initial provider only — a fallback that cannot do
+        // tool-use fails the next call, which the catch below turns into a
+        // failed run.
+        provider = loopGuard.provider
 
         // Task 4: File-based context — externalize large tool results to temp files
         const contextManager = getAgentContextManager()
