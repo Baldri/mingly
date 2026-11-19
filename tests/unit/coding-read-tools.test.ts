@@ -581,30 +581,32 @@ describe('pattern matching cannot hang the main process', () => {
   // N=28 326 ms, N=32 1982 ms, growing roughly 6x per +4. N=34 is several seconds.
   const NASTY = '*a'.repeat(10) + '*b'
   const NAME = 'a'.repeat(34)
-  const BOUND_MS = 500
+  // No wall-clock assertions in this block: the claim is about WORK, not seconds.
+  // A pathological pattern must be answered correctly and COMPLETELY, i.e. without
+  // spending the work budget (no incomplete marker). Measured here: 2-3 ms each
+  // (2026-11-19); a regex-compiled glob took seconds on the same input. A
+  // regression to unbounded matching still fails: the test would not finish.
 
-  it('list_files pattern', async () => {
+  it('list_files pattern: a pathological pattern is evaluated correctly and completely', async () => {
     write(NAME, 'x')
     write('aaab', 'x')
     const ctx = await ctxFor()
-    const t = Date.now()
     const out = await call('list_files', { pattern: NASTY }, ctx)
-    const elapsed = Date.now() - t
-    expect(elapsed).toBeLessThan(BOUND_MS)
     expect(out).not.toContain(NAME)
+    expect(out).not.toMatch(/INCOMPLETE|truncated/)
     // positive control: the same shape of pattern still matches
     expect(await call('list_files', { pattern: '*a*a*b' }, ctx)).toContain('aaab')
   })
 
-  it('.gitignore rule written by the project', async () => {
+  it('.gitignore rule written by the project: a pathological rule is bounded and does not hide files wrongly', async () => {
     write(NAME, 'x')
     write('aaab', 'x')
     write('.gitignore', `${NASTY}\n`)
-    const t = Date.now()
     const out = await call('list_files', {}, await ctxFor())
-    const elapsed = Date.now() - t
-    expect(elapsed).toBeLessThan(BOUND_MS)
+    // Complete (the budget was not spent) and correct (the rule does not match).
     expect(out).toContain(NAME)
+    expect(out).toContain('aaab')
+    expect(out).not.toMatch(/INCOMPLETE|truncated/)
   })
 
   it('hostile .gitignore (many heavy rules) x 400 files is cut by the work budget and says so', async () => {
@@ -641,17 +643,21 @@ describe('pattern matching cannot hang the main process', () => {
 
   it('a narrowed pattern is not charged for the ignore rules of entries it excludes', async () => {
     // The incomplete marker advises narrowing with `pattern`; that advice is only
-    // true if the pattern is tested BEFORE the ignore rules for files.
+    // true if the pattern is tested BEFORE the ignore rules for files. The claim is
+    // relative and holds on every machine: the SAME tree exhausts the work budget
+    // without a pattern and comes back complete with one. (Time on the development
+    // machine, 2026-11-19: about 0.5 s for the unnarrowed run, tens of ms narrowed;
+    // recorded only, not asserted.)
     const rule = '*' + 'a'.repeat(150) + 'b'
     write('.gitignore', Array.from({ length: 300 }, () => rule).join('\n') + '\n')
     for (let i = 0; i < 400; i++) write(`files/${'a'.repeat(230)}${String(i).padStart(3, '0')}`, 'x')
     write('files/target.ts', 'x')
-    const t = Date.now()
-    const out = await call('list_files', { pattern: 'target.ts' }, await ctxFor())
-    const elapsed = Date.now() - t
-    expect(out).toContain('files/target.ts')
-    expect(out).not.toMatch(/INCOMPLETE/)
-    expect(elapsed).toBeLessThan(1500)
+    const ctx = await ctxFor()
+    const wide = await call('list_files', {}, ctx)
+    expect(wide).toMatch(/matching work budget reached/)
+    const narrow = await call('list_files', { pattern: 'target.ts' }, ctx)
+    expect(narrow).toContain('files/target.ts')
+    expect(narrow).not.toMatch(/INCOMPLETE|truncated/)
   })
 
   it('an ordinary 400-file listing with an ordinary .gitignore is complete and unchanged', async () => {
