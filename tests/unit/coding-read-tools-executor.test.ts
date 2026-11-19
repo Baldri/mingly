@@ -258,4 +258,69 @@ describe('read_file through the real executor', () => {
       { toolName: 'read_file', filePath: 'a.ts' }
     ])
   })
+
+  it('two calls with IDENTICAL provider ids each report their own path', async () => {
+    fs.writeFileSync(path.join(projectPath, 'a.ts'), 'export const a = 1\n')
+    fs.writeFileSync(path.join(projectPath, 'b.ts'), 'export const b = 1\n')
+    llmResponses = [
+      {
+        text: 'go',
+        toolCalls: [
+          { id: 'dup', name: 'read_file', arguments: { path: 'a.ts' } },
+          { id: 'dup', name: 'read_file', arguments: { path: 'b.ts' } }
+        ],
+        done: false,
+        stopReason: 'tool_use',
+        tokens: { input: 10, output: 10 }
+      }
+    ]
+    await run()
+    expect(guardOrigins[0]).toEqual([
+      { toolName: 'read_file', filePath: 'a.ts' },
+      { toolName: 'read_file', filePath: 'b.ts' }
+    ])
+  })
+
+  it('two calls with EMPTY provider ids each report their own path', async () => {
+    fs.writeFileSync(path.join(projectPath, 'a.ts'), 'export const a = 1\n')
+    fs.writeFileSync(path.join(projectPath, 'b.ts'), 'export const b = 1\n')
+    llmResponses = [
+      {
+        text: 'go',
+        toolCalls: [
+          { id: '', name: 'read_file', arguments: { path: 'a.ts' } },
+          { id: '', name: 'read_file', arguments: { path: 'b.ts' } }
+        ],
+        done: false,
+        stopReason: 'tool_use',
+        tokens: { input: 10, output: 10 }
+      }
+    ]
+    await run()
+    expect(guardOrigins[0]).toEqual([
+      { toolName: 'read_file', filePath: 'a.ts' },
+      { toolName: 'read_file', filePath: 'b.ts' }
+    ])
+  })
+
+  it('a write arriving after its step has finished changes nothing, for that step or the next', async () => {
+    fs.writeFileSync(path.join(projectPath, 'a.ts'), 'export const a = 1\n')
+    let captured: ToolContext | undefined
+    getToolRegistry().registerBuiltIn(
+      { name: 'probe_late', description: 'probe', inputSchema: { type: 'object', properties: {} } },
+      async (_args, ctx) => {
+        captured = ctx
+        return 'ok'
+      },
+      (ctx) => ctx?.coding !== undefined
+    )
+    llmResponses = [step('probe_late', {}), step('read_file', { path: 'a.ts' })]
+    await run()
+    expect(captured?.resolvedPaths).toBeDefined()
+    // The straggler: step 1 is over; its sink is closed.
+    captured!.resolvedPaths!.set('0', 'LATE.ts')
+    expect(captured!.resolvedPaths!.get('0')).toBeUndefined()
+    // And step 2 (a different sink) reported its own path, not the late one.
+    expect(guardOrigins[1][0]).toEqual({ toolName: 'read_file', filePath: 'a.ts' })
+  })
 })

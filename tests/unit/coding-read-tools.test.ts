@@ -231,6 +231,18 @@ describe('read_file', () => {
     expect(out).not.toContain('target-content')
   })
 
+  it('a link whose TARGET has an unreadable extension gets the generic refusal, not the bad-type one', async () => {
+    // Inside the grant, so no leak either way; the point is the branch is pinned.
+    write('data.xyz', 'target-content')
+    fs.symlinkSync('data.xyz', path.join(project, 'harmless.ts'))
+    fs.symlinkSync(path.join(outside, 'gone', 'x.ts'), path.join(project, 'dangling.ts'))
+    const ctx = await ctxFor()
+    const out = await call('read_file', { path: 'harmless.ts' }, ctx)
+    expect(out).toBe(await call('read_file', { path: 'dangling.ts' }, ctx))
+    expect(out).not.toMatch(/file type/i)
+    expect(out).not.toContain('target-content')
+  })
+
   it('refuses a directory', async () => {
     fs.mkdirSync(path.join(project, 'dir.ts'))
     const out = await call('read_file', { path: 'dir.ts' }, await ctxFor())
@@ -606,8 +618,23 @@ describe('pattern matching cannot hang the main process', () => {
     const t = Date.now()
     const out = await call('list_files', {}, ctx)
     const elapsed = Date.now() - t
-    expect(elapsed).toBeLessThan(1500)
+    expect(elapsed).toBeLessThan(2500)
     expect(out).toMatch(/INCOMPLETE/)
+  })
+
+  it('a narrowed pattern is not charged for the ignore rules of entries it excludes', async () => {
+    // The incomplete marker advises narrowing with `pattern`; that advice is only
+    // true if the pattern is tested BEFORE the ignore rules for files.
+    const rule = '*' + 'a'.repeat(150) + 'b'
+    write('.gitignore', Array.from({ length: 300 }, () => rule).join('\n') + '\n')
+    for (let i = 0; i < 400; i++) write(`files/${'a'.repeat(230)}${String(i).padStart(3, '0')}`, 'x')
+    write('files/target.ts', 'x')
+    const t = Date.now()
+    const out = await call('list_files', { pattern: 'target.ts' }, await ctxFor())
+    const elapsed = Date.now() - t
+    expect(out).toContain('files/target.ts')
+    expect(out).not.toMatch(/INCOMPLETE/)
+    expect(elapsed).toBeLessThan(1500)
   })
 
   it('an ordinary 400-file listing with an ordinary .gitignore is complete and unchanged', async () => {

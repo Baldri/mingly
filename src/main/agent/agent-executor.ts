@@ -30,6 +30,7 @@ import {
 } from '../coding/consent-broker'
 import type { CodingRunOptions } from '../../shared/coding-types'
 import { getToolRegistry, type ToolContext, type ToolRegistry } from './tool-registry'
+import { StepPaths } from './step-paths'
 import { getCodingModeStore } from '../coding/coding-mode-store'
 import { ensureProjectWorkspace } from '../coding/project-workspace'
 import { getAgentContextManager } from './agent-context-manager'
@@ -257,7 +258,7 @@ export class AgentExecutor {
         if (storedMode !== 'off') {
           const workspace = await ensureProjectWorkspace(coding.projectPath, runId)
           contextDir = workspace.contextDir
-          toolCtx = { coding, workspace, resolvedPaths: new Map<string, string>() }
+          toolCtx = { coding, workspace }
         }
       }
 
@@ -348,7 +349,13 @@ export class AgentExecutor {
         }
 
         // Execute tool calls
-        const rawToolResults = await toolRegistry.executeToolCalls(llmResponse.toolCalls, toolCtx)
+        // One path sink per step, closed once the origins are built: a late write
+        // from a straggler cannot reach this step's origins or the next step's.
+        const stepPaths = new StepPaths()
+        const stepCtx: ToolContext | undefined = toolCtx
+          ? { ...toolCtx, resolvedPaths: stepPaths }
+          : undefined
+        const rawToolResults = await toolRegistry.executeToolCalls(llmResponse.toolCalls, stepCtx)
 
         // The guard inside the loop. Tool results are content the AGENT
         // collected; the pre-flight guard above never saw them, yet every
@@ -366,15 +373,14 @@ export class AgentExecutor {
         // originForToolCall fills ToolResultOrigin.filePath from the path the tool
         // RESOLVED and read, so the consent dialog and the withheld notice name
         // the file that was read, not the spelling the model wrote.
-        const origins = rawToolResults.map((r): ToolResultOrigin => {
-          const call = llmResponse.toolCalls.find((tc) => tc.id === r.toolCallId)
+        // Matched BY INDEX: executeToolCalls returns results in call order, and the
+        // provider's call id may repeat or be empty, so it identifies nothing.
+        const origins = rawToolResults.map((_r, index): ToolResultOrigin => {
+          const call = llmResponse.toolCalls[index]
           if (!call) return { toolName: 'unknown' }
-          // Keyed by call id: the same spelling twice (paging) and other tools
-          // with a `path` argument cannot confuse two calls.
-          const resolved = toolCtx?.resolvedPaths?.get(call.id)
-          toolCtx?.resolvedPaths?.delete(call.id)
-          return originForToolCall(call, resolved)
+          return originForToolCall(call, stepPaths.get(String(index)))
         })
+        stepPaths.close()
         const guardCtx = { provider, model, conversationId: run.conversationId }
 
         // A `consent` outcome settles ONE result, then the guard continues over

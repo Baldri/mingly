@@ -21,6 +21,7 @@ import type {
 } from '../../shared/types'
 import type { CodingRunOptions } from '../../shared/coding-types'
 import type { ProjectWorkspace } from '../coding/project-workspace'
+import type { StepPaths } from './step-paths'
 import { registerReadTools } from '../coding/read-tools'
 
 // ── Built-in tool handler type ─────────────────────────────────
@@ -40,18 +41,18 @@ export interface ToolContext {
    */
   workspace?: ProjectWorkspace
   /**
-   * tool call id -> project-relative path a coding tool ACTUALLY read (the
-   * resolved real path, in display form). The handler writes it under its own
-   * call id (see toolCallId), the executor takes it when it builds the guard's
-   * origin, so a consent dialog names the file that was read and not the
-   * spelling the model used. Absent entry = no path was resolved.
+   * Where coding tools report the path they ACTUALLY read (resolved real path,
+   * display form), keyed by `callKey`. One sink per loop step; the executor
+   * reads it when it builds the guard's origin, so a consent dialog names the
+   * file that was read and not the spelling the model used.
    */
-  resolvedPaths?: Map<string, string>
+  resolvedPaths?: StepPaths
   /**
-   * Set by the registry on the context it hands to a handler: the id of the
-   * call being run. The run's own context never carries it.
+   * Minted by the registry, per call, on the context a handler receives (the
+   * index of the call in its step). Never derived from the provider's call id:
+   * that arrives from outside, may repeat and may be empty.
    */
-  toolCallId?: string
+  callKey?: string
 }
 
 /**
@@ -258,8 +259,12 @@ export class ToolRegistry {
     toolCalls: AgentToolCall[],
     ctx?: ToolContext
   ): Promise<AgentToolResult[]> {
+    // The key a handler reports under is the call's index in THIS step, minted
+    // here: nothing security-relevant may hang off the provider's call id.
     const results = await Promise.allSettled(
-      toolCalls.map((tc) => this.executeTool(tc, ctx))
+      toolCalls.map((tc, index) =>
+        this.executeTool(tc, ctx ? { ...ctx, callKey: String(index) } : ctx)
+      )
     )
 
     return results.map((result, index) => {
@@ -295,10 +300,7 @@ export class ToolRegistry {
           isError: true
         }
       }
-      const result = await builtIn.handler(
-        toolCall.arguments,
-        ctx ? { ...ctx, toolCallId: toolCall.id } : ctx
-      )
+      const result = await builtIn.handler(toolCall.arguments, ctx)
       return {
         toolCallId: toolCall.id,
         content: this.truncateResult(result),

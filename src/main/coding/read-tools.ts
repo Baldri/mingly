@@ -160,7 +160,7 @@ async function resolveScope(
  * bound one rule, not rules x entries, so the budget is global: when it is
  * spent the listing ends and says it is incomplete.
  */
-export const LIST_FILES_WORK_BUDGET = 20_000_000
+export const LIST_FILES_WORK_BUDGET = 100_000_000
 
 class WorkBudgetExceeded extends Error {}
 
@@ -360,11 +360,16 @@ async function listFiles(
           if (isIgnored(rules, rel, true, budget)) continue
           await walk(rel, depth + 1)
         } else if (entry.isFile()) {
-          if (isIgnored(rules, rel, false, budget)) continue
+          // The pattern is tested FIRST for files: an entry nobody asked for
+          // costs one cheap match instead of every ignore rule, which is what
+          // makes "narrow it with `pattern`" true advice. Directories are the
+          // other way round: ignore rules must run for them, or the walk would
+          // descend into ignored trees (node_modules) only to discard each file.
           if (patternSegments) {
             const subject = patternHasSlash ? rel.split('/') : [entry.name]
             if (!matchSegments(patternSegments, subject, budget)) continue
           }
+          if (isIgnored(rules, rel, false, budget)) continue
           if (found.length >= LIST_FILES_MAX_ENTRIES) {
             truncated = true
             truncatedReason = `more than ${LIST_FILES_MAX_ENTRIES} entries match`
@@ -507,7 +512,7 @@ async function readFile(
     // text the model wrote.
     // Display form: the name as the file system spells it, NOT the folded form
     // built for matching (case folding and NFKC are for the blocklist only).
-    if (ctx?.toolCallId !== undefined) ctx.resolvedPaths?.set(ctx.toolCallId, realRel.split(path.sep).join('/'))
+    if (ctx?.callKey !== undefined) ctx.resolvedPaths?.set(ctx.callKey, realRel.split(path.sep).join('/'))
 
     const lines = result.text.split('\n')
     // A final newline ends the last line; it does not start another.
