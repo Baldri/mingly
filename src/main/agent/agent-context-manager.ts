@@ -47,21 +47,32 @@ export class AgentContextManager {
   /**
    * Process a tool result: if it's large, externalize to file.
    * Returns the (possibly modified) tool result.
+   *
+   * `targetDir` (coding mode) redirects the file into the project workspace so
+   * project content never lands in os.tmpdir(). It is strict: it must be an
+   * absolute path to an EXISTING directory, it is never created here, and on
+   * any problem the result stays in context unchanged. There is deliberately
+   * no fall-back to the temp dir, because that would move the content out of
+   * the project boundary. Without `targetDir` behaviour is unchanged.
    */
-  compactToolResult(runId: string, result: AgentToolResult): AgentToolResult {
+  compactToolResult(runId: string, result: AgentToolResult, targetDir?: string): AgentToolResult {
     // Don't externalize errors (they should stay visible for Error Preservation)
     if (result.isError) return result
 
     // Don't externalize small results
     if (result.content.length <= this.config.compactionThreshold) return result
 
-    // Write to temp file
+    const baseDir = targetDir === undefined ? this.config.tempDir : targetDir
+    if (targetDir !== undefined && !this.isUsableTargetDir(targetDir)) return result
+
+    // Write to file
     const filename = `agent-${runId}-${nanoid(8)}.txt`
-    const filepath = path.join(this.config.tempDir, filename)
+    const filepath = path.join(baseDir, filename)
 
     try {
-      fs.writeFileSync(filepath, result.content, 'utf-8')
-      this.trackFile(runId, filepath)
+      // 0o600 only matters for a target dir (project content); harmless for temp.
+      fs.writeFileSync(filepath, result.content, { encoding: 'utf-8', mode: 0o600 })
+      this.trackFile(runId, filepath, baseDir)
 
       // Replace content with compact reference
       const lineCount = result.content.split('\n').length
@@ -174,10 +185,19 @@ export class AgentContextManager {
     }
   }
 
-  private trackFile(runId: string, filepath: string): void {
-    // Validate path stays within tempDir (prevent path traversal)
+  private isUsableTargetDir(dir: string): boolean {
+    if (typeof dir !== 'string' || !path.isAbsolute(dir)) return false
+    try {
+      return fs.statSync(dir).isDirectory()
+    } catch {
+      return false
+    }
+  }
+
+  private trackFile(runId: string, filepath: string, baseDir: string = this.config.tempDir): void {
+    // Validate path stays within the directory it was written to (prevent path traversal)
     const resolved = path.resolve(filepath)
-    const tempDirResolved = path.resolve(this.config.tempDir)
+    const tempDirResolved = path.resolve(baseDir)
     if (!resolved.startsWith(tempDirResolved + path.sep) && resolved !== tempDirResolved) {
       console.warn(`[AgentContextManager] Path escape blocked: ${filepath}`)
       return

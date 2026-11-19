@@ -598,6 +598,76 @@ describe('Task 4: AgentContextManager', () => {
     expect(size).toBe(200)
   })
 
+  describe('target dir (coding mode)', () => {
+    let projectDir: string
+    let contextDir: string
+
+    beforeEach(() => {
+      projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-ctx-project-'))
+      contextDir = path.join(projectDir, '.mingly', 'context', 'run-1')
+      fs.mkdirSync(contextDir, { recursive: true })
+    })
+
+    afterEach(() => {
+      fs.rmSync(projectDir, { recursive: true, force: true })
+    })
+
+    const big: AgentToolResult = { toolCallId: 'tc-1', content: 'X'.repeat(200), isError: false }
+
+    function pathFrom(content: string): string {
+      const match = content.match(/externalized to file: (.+?)\]/)
+      expect(match).not.toBeNull()
+      return match![1]
+    }
+
+    it('writes externalized results into the project when a target dir is given', () => {
+      const compacted = manager.compactToolResult('run-1', big, contextDir)
+      const filepath = pathFrom(compacted.content)
+      expect(filepath.startsWith(contextDir + path.sep)).toBe(true)
+      expect(fs.readFileSync(filepath, 'utf-8')).toBe(big.content)
+      expect(fs.statSync(filepath).mode & 0o777).toBe(0o600)
+      // nothing leaked into the temp dir
+      expect(fs.existsSync(tempDir) ? fs.readdirSync(tempDir) : []).toEqual([])
+    })
+
+    it('still uses the temp dir when no target is given', () => {
+      const compacted = manager.compactToolResult('run-1', big)
+      const filepath = pathFrom(compacted.content)
+      expect(filepath.startsWith(tempDir + path.sep)).toBe(true)
+      expect(fs.readdirSync(contextDir)).toEqual([])
+    })
+
+    it('tracks target-dir files so cleanup removes them and size is reported', () => {
+      const compacted = manager.compactToolResult('run-1', big, contextDir)
+      const filepath = pathFrom(compacted.content)
+      expect(manager.getExternalizedSize('run-1')).toBe(200)
+      manager.cleanup('run-1')
+      expect(fs.existsSync(filepath)).toBe(false)
+    })
+
+    it('keeps the content in context and writes nothing when the target is relative', () => {
+      const compacted = manager.compactToolResult('run-1', big, 'relative/dir')
+      expect(compacted).toBe(big)
+      expect(fs.existsSync(path.join(process.cwd(), 'relative'))).toBe(false)
+      expect(fs.existsSync(tempDir) ? fs.readdirSync(tempDir) : []).toEqual([])
+    })
+
+    it('does not fall back to the temp dir when the target is unusable', () => {
+      const blocker = path.join(projectDir, 'blocker')
+      fs.writeFileSync(blocker, 'a file, not a directory')
+      const compacted = manager.compactToolResult('run-1', big, path.join(blocker, 'sub'))
+      expect(compacted).toBe(big)
+      expect(fs.existsSync(tempDir) ? fs.readdirSync(tempDir) : []).toEqual([])
+    })
+
+    it('does not create a missing target dir', () => {
+      const missing = path.join(projectDir, '.mingly', 'context', 'never-created')
+      const compacted = manager.compactToolResult('run-1', big, missing)
+      expect(compacted).toBe(big)
+      expect(fs.existsSync(missing)).toBe(false)
+    })
+  })
+
   it('should compact messages array by externalizing large tool results', () => {
     const messages: Message[] = [
       { id: 'm-1', role: 'user', content: 'Find data' },

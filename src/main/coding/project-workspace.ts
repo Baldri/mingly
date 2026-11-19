@@ -1,0 +1,151 @@
+/**
+ * Project workspace — `<project>/.mingly/`.
+ *
+ * Snapshots and externalized tool results live INSIDE the project, not in
+ * os.tmpdir(): project source must not leave the project boundary, and that
+ * holds for backup copies as much as for the files the agent reads. As a side
+ * effect `.mingly/context/` sits inside the granted directory, so `read_file`
+ * can open an externalized result without widening the grant.
+ *
+ * Every decision here fails closed: anything unexpected throws a
+ * ProjectWorkspaceError, and all checks run BEFORE the first write.
+ */
+
+import * as fs from 'fs'
+import * as path from 'path'
+
+export interface ProjectWorkspace {
+  /** <project>/.mingly */
+  root: string
+  /** <project>/.mingly/snapshots/<runId> */
+  snapshotDir: string
+  /** <project>/.mingly/context/<runId> */
+  contextDir: string
+}
+
+export class ProjectWorkspaceError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ProjectWorkspaceError'
+  }
+}
+
+const WORKSPACE_DIR = '.mingly'
+const GITIGNORE_ENTRY = '.mingly/'
+/** Equivalent spellings that already ignore the workspace. */
+const GITIGNORE_EQUIVALENTS = new Set(['.mingly', '.mingly/', '/.mingly', '/.mingly/'])
+const DIR_MODE = 0o700
+/** One path segment, no separators, no dots-only names. */
+const SAFE_RUN_ID = /^[A-Za-z0-9_-]{1,128}$/
+
+async function lstatOrNull(target: string): Promise<fs.Stats | null> {
+  try {
+    return await fs.promises.lstat(target)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw new ProjectWorkspaceError(`Cannot inspect ${target}: ${(error as Error).message}`)
+  }
+}
+
+async function assertWritableDir(dir: string): Promise<void> {
+  try {
+    await fs.promises.access(dir, fs.constants.W_OK | fs.constants.X_OK)
+  } catch {
+    throw new ProjectWorkspaceError(`Directory is not writable: ${dir}`)
+  }
+}
+
+export async function ensureProjectWorkspace(
+  projectPath: string,
+  runId: string
+): Promise<ProjectWorkspace> {
+  if (typeof projectPath !== 'string' || !path.isAbsolute(projectPath)) {
+    throw new ProjectWorkspaceError('Project path must be absolute')
+  }
+  if (typeof runId !== 'string' || !SAFE_RUN_ID.test(runId)) {
+    throw new ProjectWorkspaceError('Run id is not a safe path segment')
+  }
+
+  const project = path.resolve(projectPath)
+  const root = path.join(project, WORKSPACE_DIR)
+  const snapshotsDir = path.join(root, 'snapshots')
+  const contextsDir = path.join(root, 'context')
+  const snapshotDir = path.join(snapshotsDir, runId)
+  const contextDir = path.join(contextsDir, runId)
+
+  // ── Pass 1: inspect everything, write nothing ───────────────────────────
+  // The project root itself may be reached through a symlink (e.g. /var on
+  // macOS), so it is followed with stat; the workspace components below it
+  // must not be symlinks and are checked with lstat.
+  let projectIsDir = false
+  try {
+    projectIsDir = (await fs.promises.stat(project)).isDirectory()
+  } catch {
+    projectIsDir = false
+  }
+  if (!projectIsDir) {
+    throw new ProjectWorkspaceError(`Project path is not an existing directory: ${project}`)
+  }
+
+  const components = [root, snapshotsDir, contextsDir, snapshotDir, contextDir]
+  const missing = new Set<string>()
+  for (const component of components) {
+    const stat = await lstatOrNull(component)
+    if (!stat) {
+      missing.add(component)
+      continue
+    }
+    // lstat: a symlink is rejected even when it points at a directory, because
+    // writes through it would leave the project.
+    if (!stat.isDirectory()) {
+      throw new ProjectWorkspaceError(
+        `${component} exists but is not a plain directory (file or symlink)`
+      )
+    }
+    await assertWritableDir(component)
+  }
+
+  // Components are created top-down, so only the first missing one is created
+  // inside a directory that already exists.
+  const firstMissing = components.find((c) => missing.has(c))
+  if (firstMissing) await assertWritableDir(path.dirname(firstMissing))
+
+  const gitignorePath = path.join(project, '.gitignore')
+  const gitignoreStat = await lstatOrNull(gitignorePath)
+  let gitignoreNeedsEntry = false
+  let gitignoreContent = ''
+  if (gitignoreStat) {
+    if (!gitignoreStat.isFile()) {
+      throw new ProjectWorkspaceError('.gitignore exists but is not a regular file')
+    }
+    try {
+      await fs.promises.access(gitignorePath, fs.constants.W_OK)
+      gitignoreContent = await fs.promises.readFile(gitignorePath, 'utf-8')
+    } catch {
+      throw new ProjectWorkspaceError('.gitignore is not readable and writable')
+    }
+    gitignoreNeedsEntry = !gitignoreContent
+      .split(/\r?\n/)
+      .some((line) => GITIGNORE_EQUIVALENTS.has(line.trim()))
+  }
+
+  // ── Pass 2: write ───────────────────────────────────────────────────────
+  try {
+    for (const component of components) {
+      if (missing.has(component)) {
+        await fs.promises.mkdir(component, { mode: DIR_MODE })
+      }
+      // Explicit chmod: mkdir's mode is ignored for a directory that already
+      // exists, and is filtered by the umask for a new one.
+      await fs.promises.chmod(component, DIR_MODE)
+    }
+    if (gitignoreNeedsEntry) {
+      const separator = gitignoreContent === '' || gitignoreContent.endsWith('\n') ? '' : '\n'
+      await fs.promises.appendFile(gitignorePath, `${separator}${GITIGNORE_ENTRY}\n`, 'utf-8')
+    }
+  } catch (error) {
+    throw new ProjectWorkspaceError(`Cannot create project workspace: ${(error as Error).message}`)
+  }
+
+  return { root, snapshotDir, contextDir }
+}
