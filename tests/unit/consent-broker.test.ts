@@ -13,6 +13,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   buildConsentRequest,
   createConsentBroker,
+  defaultResolutionDeps,
   resolveConsentChoice,
   type ConsentResolutionDeps,
 } from '../../src/main/coding/consent-broker'
@@ -277,5 +278,68 @@ describe('createConsentBroker', () => {
     })
 
     await expect(broker.ask(requestFor(EMAIL_SCAN))).resolves.toBe('drop-file')
+  })
+
+  it('settles an unanswered request to drop-file once the answer timeout passes', async () => {
+    // The run timeout is SUSPENDED while a dialog is open, so an unanswered
+    // dialog hangs the run forever. A renderer with no consent listener is the
+    // reachable case: publish() succeeds, the IPC goes out, nobody replies.
+    // Not answering must withhold the one file, not kill the run.
+    vi.useFakeTimers()
+    try {
+      const broker = createConsentBroker({
+        publish: () => undefined,
+        answerTimeoutMs: 60_000,
+      })
+      const pending = broker.ask(requestFor(EMAIL_SCAN))
+
+      vi.advanceTimersByTime(60_000)
+
+      await expect(pending).resolves.toBe('drop-file')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not let an answered question expire into the next one', async () => {
+    // The deadline of a question that was already answered must not settle a
+    // LATER question for the same run.
+    vi.useFakeTimers()
+    try {
+      const broker = createConsentBroker({
+        publish: () => undefined,
+        answerTimeoutMs: 60_000,
+      })
+      const first = broker.ask(requestFor(EMAIL_SCAN))
+      expect(broker.respond('run-1', 'send')).toBe(true)
+      await expect(first).resolves.toBe('send')
+
+      vi.advanceTimersByTime(30_000)
+      const second = broker.ask(requestFor(EMAIL_SCAN))
+      // Past the FIRST question's deadline, while the second one is open.
+      vi.advanceTimersByTime(30_001)
+
+      expect(broker.respond('run-1', 'anonymize')).toBe(true)
+      await expect(second).resolves.toBe('anonymize')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('the anonymisation mode of the consent path', () => {
+  it('redacts rather than substituting plausible fake data', async () => {
+    // `vault` replaces every entity with [CATEGORY] and has no carve-out.
+    // `shield` would substitute a plausible fake address here, and keeps
+    // MEDICAL entities unreplaced entirely - a carve-out no detector reaches
+    // today, but one this path must not inherit if a detector ever does.
+    // Regex detection covers EMAIL, so this runs without the NER model.
+    const out = await defaultResolutionDeps().anonymize(
+      'run-1',
+      'write to anna.muster@example.com today',
+    )
+
+    expect(out).toContain('[EMAIL]')
+    expect(out).not.toContain('anna.muster@example.com')
   })
 })

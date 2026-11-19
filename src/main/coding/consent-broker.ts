@@ -188,20 +188,36 @@ export async function resolveConsentChoice(
 }
 
 /**
+ * The mode this path anonymizes with, fixed on purpose.
+ *
+ * The conversation's configured mode IS reachable from here — the privacy IPC
+ * handlers export their per-session anonymizers, keyed by the conversation id
+ * the loop guard carries — and is deliberately not used. A button labelled
+ * "send anonymised" must not be weakened by a display preference: under
+ * `transparent` the anonymizer returns the text unchanged, so the button would
+ * send the original and lie about it.
+ *
+ * `vault` rather than `shield`, for two reasons:
+ *   - This content travels one way to the provider and is never rehydrated,
+ *     so shield's reversible fake values buy nothing here, while `[CATEGORY]`
+ *     is unambiguous about what was removed.
+ *   - `shield` carries a carve-out: MEDICAL entities are detected and left in
+ *     place. No detector labels anything MEDICAL today, so the carve-out is
+ *     unreachable — but the category and its UI label exist, and a future
+ *     medical detector would silently open it on this very path. `vault`
+ *     replaces every category without exception.
+ */
+export const CONSENT_ANONYMIZATION_MODE: PrivacyMode = "vault";
+
+/**
  * The real anonymizer and detector, loaded on demand.
  *
  * `await import` on purpose: a static import would pull the PII pipeline (and
  * its NER worker) into the module graph of everything that reaches the agent
  * executor, for a path most runs never take.
- *
- * The mode is `shield` — the stricter of the two replacing modes. There is no
- * per-run configured privacy mode to read today: the modes live per
- * conversation session inside the privacy IPC handlers, keyed by a session id
- * the loop guard does not carry. When one becomes reachable, it is resolved
- * here; `shield` stays the fallback.
  */
-function defaultResolutionDeps(): ConsentResolutionDeps {
-  const mode: PrivacyMode = "shield";
+export function defaultResolutionDeps(): ConsentResolutionDeps {
+  const mode: PrivacyMode = CONSENT_ANONYMIZATION_MODE;
   return {
     anonymize: async (sessionId, text) => {
       const { PIIAnonymizer } = await import("../privacy/anonymizer");
@@ -233,18 +249,37 @@ export interface ConsentBroker {
   cancel(runId: string): void;
 }
 
+/**
+ * How long a question may stay open before it settles itself.
+ *
+ * The run timeout is suspended while a dialog is open, so an unanswered
+ * question would hang the run with no deadline at all. The reachable case is
+ * not a slow reader: it is a renderer with no consent listener, where
+ * `publish` succeeds, the IPC goes out and nobody ever replies.
+ *
+ * Expiry settles to `drop-file`, it does not abort the run. Killing the run
+ * would teach the user to click without reading, which is the opposite of what
+ * asking is for; withholding the one unanswered file is the conservative
+ * option and lets the run carry on.
+ */
+export const DEFAULT_CONSENT_ANSWER_TIMEOUT_MS = 300_000;
+
 export interface ConsentBrokerDeps {
   /**
    * Hand the request to whoever can answer it. A thrown error or a rejected
    * promise means nobody received it, and the request then fails closed.
    */
   publish(req: CodingConsentRequest): void | Promise<void>;
+  /** Upper bound per question. Defaults to DEFAULT_CONSENT_ANSWER_TIMEOUT_MS. */
+  answerTimeoutMs?: number;
 }
 
 interface PendingRequest {
   /** The offers actually made — what an incoming answer is validated against. */
   offers: readonly CodingConsentChoice[];
   settle: (choice: CodingConsentChoice) => void;
+  /** Cleared on settle, so an answered question leaves no live deadline. */
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 export function createConsentBroker(deps: ConsentBrokerDeps): ConsentBroker {
@@ -265,6 +300,7 @@ export function createConsentBroker(deps: ConsentBrokerDeps): ConsentBroker {
     if (!entry) return false;
     if (expected && entry !== expected) return false;
     pending.delete(runId);
+    if (entry.timer !== undefined) clearTimeout(entry.timer);
     entry.settle(choice);
     return true;
   };
@@ -279,6 +315,17 @@ export function createConsentBroker(deps: ConsentBrokerDeps): ConsentBroker {
       return new Promise<CodingConsentChoice>((resolve) => {
         const entry: PendingRequest = { offers: req.offers, settle: resolve };
         pending.set(req.runId, entry);
+
+        // Armed BEFORE publishing: a publish that fails synchronously settles
+        // the entry at once, and settle is what clears the deadline. The
+        // settle is pinned to THIS entry, so an expiry can never close a
+        // question that has meanwhile been replaced by a newer one.
+        entry.timer = setTimeout(() => {
+          console.warn(
+            `[Consent] no answer for run ${req.runId}, withholding the file`,
+          );
+          settle(req.runId, "drop-file", entry);
+        }, deps.answerTimeoutMs ?? DEFAULT_CONSENT_ANSWER_TIMEOUT_MS);
 
         const failClosed = (error: Error): void => {
           console.warn(
