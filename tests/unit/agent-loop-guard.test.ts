@@ -121,7 +121,7 @@ const CODING: CodingRunOptions = {
 
 const TOOLS: ToolDefinition[] = [
   {
-    name: 'read_file',
+    name: 'mingly_read_file',
     description: 'Read a file',
     inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] }
   }
@@ -130,7 +130,7 @@ const TOOLS: ToolDefinition[] = [
 function readFileStep(ids: string[], text = 'Let me read that.'): ToolUseResponse {
   return {
     text,
-    toolCalls: ids.map((id) => ({ id, name: 'read_file', arguments: { path: `${id}.txt` } })),
+    toolCalls: ids.map((id) => ({ id, name: 'mingly_read_file', arguments: { path: `${id}.txt` } })),
     done: false,
     stopReason: 'tool_use',
     tokens: { input: 100, output: 30 }
@@ -321,7 +321,7 @@ describe('Tool results pass the same guards as typed text', () => {
 
     expect(run.status).toBe('failed')
     expect(run.error).toContain('Credential upload to a cloud provider denied.')
-    expect(run.error).toContain('read_file')
+    expect(run.error).toContain('mingly_read_file')
     expect(spies.sendMessageWithTools).toHaveBeenCalledTimes(1)
   })
 
@@ -487,7 +487,7 @@ describe('A finding the user has to decide about', () => {
     // The user was asked about the right step, and the question carried no value.
     expect(requests).toHaveLength(1)
     expect(requests[0].stepNumber).toBe(1)
-    expect(requests[0].toolName).toBe('read_file')
+    expect(requests[0].toolName).toBe('mingly_read_file')
     expect(JSON.stringify(requests[0])).not.toContain('sk-live')
   })
 

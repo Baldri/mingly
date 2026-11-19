@@ -50,8 +50,8 @@ describe('guardToolResults', () => {
       toolResult('third result', 'tc-3'),
     ]
     const origins: ToolResultOrigin[] = [
-      { toolName: 'read_file' },
-      { toolName: 'read_file' },
+      { toolName: 'mingly_read_file' },
+      { toolName: 'mingly_read_file' },
       { toolName: 'search_docs' },
     ]
 
@@ -69,7 +69,7 @@ describe('guardToolResults', () => {
   it('blocks on injection in the FIRST of several results', async () => {
     const injected = toolResult(INJECTION, 'tc-1')
     const origins: ToolResultOrigin[] = [
-      { toolName: 'read_file', filePath: 'README.md' },
+      { toolName: 'mingly_read_file', filePath: 'README.md' },
       { toolName: 'search_docs' },
     ]
     const deps = makeDeps({
@@ -107,8 +107,8 @@ describe('guardToolResults', () => {
     const out = await guardToolResults(
       [harmless, sensitive],
       [
-        { toolName: 'read_file', filePath: 'a.ts' },
-        { toolName: 'read_file', filePath: '.config' },
+        { toolName: 'mingly_read_file', filePath: 'a.ts' },
+        { toolName: 'mingly_read_file', filePath: '.config' },
       ],
       ctx,
       deps,
@@ -133,7 +133,7 @@ describe('guardToolResults', () => {
       }),
     })
 
-    const out = await guardToolResults([harmless], [{ toolName: 'read_file' }], ctx, deps)
+    const out = await guardToolResults([harmless], [{ toolName: 'mingly_read_file' }], ctx, deps)
 
     expect(out.kind).toBe('blocked')
     expect(out.kind === 'blocked' && out.reason).toContain('ollama')
@@ -157,7 +157,7 @@ describe('guardToolResults', () => {
           : { allowed: true },
     })
 
-    const out = await guardToolResults([harmless], [{ toolName: 'read_file' }], ctx, deps)
+    const out = await guardToolResults([harmless], [{ toolName: 'mingly_read_file' }], ctx, deps)
 
     expect(out.kind).toBe('blocked')
     expect(out.kind === 'blocked' && out.reason).toContain('budget')
@@ -169,7 +169,7 @@ describe('guardToolResults', () => {
       checkBudget: () => ({ allowed: false, fallbackProvider: 'ollama' }),
     })
 
-    const out = await guardToolResults([harmless], [{ toolName: 'read_file' }], ctx, deps)
+    const out = await guardToolResults([harmless], [{ toolName: 'mingly_read_file' }], ctx, deps)
 
     expect(out.kind).toBe('blocked')
     expect(out.kind === 'blocked' && out.reason).toContain('budget')
@@ -197,7 +197,7 @@ describe('guardToolResults', () => {
       checkUploadPermission: async () => ({ decision: 'denied', reason: 'Credential upload denied.' }),
     })
 
-    const out = await guardToolResults([toolResult(CREDENTIAL, 'tc-1')], [{ toolName: 'read_file', filePath: '.env' }], ctx, deps)
+    const out = await guardToolResults([toolResult(CREDENTIAL, 'tc-1')], [{ toolName: 'mingly_read_file', filePath: '.env' }], ctx, deps)
 
     expect(out.kind).toBe('blocked')
     expect(out.kind === 'blocked' && out.reason).toContain('Credential upload denied.')
@@ -208,7 +208,7 @@ describe('guardToolResults', () => {
       checkRouting: () => ({ allowed: false, reason: 'No safe provider available for this content.' }),
     })
 
-    const out = await guardToolResults([harmless], [{ toolName: 'read_file' }], ctx, deps)
+    const out = await guardToolResults([harmless], [{ toolName: 'mingly_read_file' }], ctx, deps)
 
     expect(out.kind).toBe('blocked')
     expect(out.kind === 'blocked' && out.reason).toContain('No safe provider')

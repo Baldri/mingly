@@ -80,6 +80,30 @@ describe("coding mode store", () => {
     expect(store.getMode("dir-1")).toBe("read-only");
   });
 
+  it("forgetMode clears one directory and persists the removal", () => {
+    const backing = memoryBacking();
+    const store = createCodingModeStore(backing);
+    store.setMode("a", "propose-run");
+    store.setMode("b", "read-only");
+
+    store.forgetMode("a");
+
+    expect(store.getMode("a")).toBe("off");
+    expect(store.getMode("b")).toBe("read-only");
+    // Gone from the backing store, not only from this instance's view.
+    expect(createCodingModeStore(backing).getMode("a")).toBe("off");
+    expect(createCodingModeStore(backing).getMode("b")).toBe("read-only");
+  });
+
+  it("forgetMode on an unknown, inherited or malformed entry does nothing", () => {
+    const backing = memoryBacking({ modes: "garbage" });
+    const store = createCodingModeStore(backing);
+    expect(() => store.forgetMode("nobody")).not.toThrow();
+    expect(() => store.forgetMode("__proto__")).not.toThrow();
+    expect(() => store.forgetMode("toString")).not.toThrow();
+    expect(store.getMode("nobody")).toBe("off");
+  });
+
   it("getCodingModeStore returns a singleton", () => {
     expect(getCodingModeStore()).toBe(getCodingModeStore());
   });

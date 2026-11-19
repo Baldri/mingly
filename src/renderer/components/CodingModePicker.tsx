@@ -151,19 +151,48 @@ export function CodingModePicker() {
         </div>
       )}
 
+      {/*
+        Two states, one box: a package that WAS written, and one where an
+        apply broke off and files may already be on disk. The second must
+        offer undo just as plainly — every refusal that sets it tells the user
+        to run undo, and this is the only place the surface offers one.
+        The box says "zuletzt angewendet" because `applied` survives a later
+        run: it would otherwise read as that run's result.
+      */}
       {applied && (
-        <div className="mt-2 rounded border border-green-200 bg-green-50 p-2 dark:border-green-900 dark:bg-green-900/20">
-          <p className="font-medium text-green-800 dark:text-green-300">
-            {applied.paths.length} {applied.paths.length === 1 ? 'Datei' : 'Dateien'} geschrieben
-          </p>
-          <ul className="mt-1 list-inside list-disc font-mono text-xs text-green-900 dark:text-green-200">
-            {applied.paths.map((p) => (
-              <li key={p}>{displayText(p)}</li>
-            ))}
-          </ul>
+        <div
+          className={`mt-2 rounded border p-2 ${
+            applied.uncertain
+              ? 'border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/20'
+              : 'border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-900/20'
+          }`}
+        >
+          {applied.uncertain ? (
+            <p className="font-medium text-amber-900 dark:text-amber-200">
+              Das Anwenden wurde abgebrochen. Es können bereits Dateien geschrieben worden sein;
+              welche, steht hier nicht fest. Machen Sie den Lauf rückgängig – dabei wird gemeldet,
+              welche Dateien wiederhergestellt wurden und welche nicht.
+            </p>
+          ) : (
+            <>
+              <p className="font-medium text-green-800 dark:text-green-300">
+                Zuletzt angewendet: {applied.paths.length}{' '}
+                {applied.paths.length === 1 ? 'Datei' : 'Dateien'} geschrieben
+              </p>
+              <ul className="mt-1 list-inside list-disc font-mono text-xs text-green-900 dark:text-green-200">
+                {applied.paths.map((p) => (
+                  <li key={p}>{displayText(p)}</li>
+                ))}
+              </ul>
+            </>
+          )}
           <button
             onClick={() => void undoLast()}
-            className="mt-2 rounded border border-green-700 px-2 py-1 text-green-800 hover:bg-green-100 dark:text-green-300 dark:hover:bg-green-900/40"
+            className={`mt-2 rounded border px-2 py-1 ${
+              applied.uncertain
+                ? 'border-amber-700 text-amber-900 hover:bg-amber-100 dark:text-amber-200 dark:hover:bg-amber-900/40'
+                : 'border-green-700 text-green-800 hover:bg-green-100 dark:text-green-300 dark:hover:bg-green-900/40'
+            }`}
           >
             Rückgängig machen
           </button>

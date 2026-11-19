@@ -1,5 +1,5 @@
 /**
- * list_files / read_file (Task 9).
+ * mingly_list_files / mingly_read_file (Task 9).
  *
  * The tools are exercised through ToolRegistry.executeTool, so the gate and
  * the handler run exactly as they do in a coding run. Grants and workspace
@@ -75,17 +75,17 @@ afterEach(() => {
   fs.rmSync(outside, { recursive: true, force: true })
 })
 
-describe('read_file', () => {
+describe('mingly_read_file', () => {
   it('reads a file inside the grant', async () => {
     write('src/a.ts', 'const a = 1\nconst b = 2\n')
-    const out = await call('read_file', { path: 'src/a.ts' }, await ctxFor())
+    const out = await call('mingly_read_file', { path: 'src/a.ts' }, await ctxFor())
     expect(out).toContain('const a = 1')
     expect(out).toContain('const b = 2')
   })
 
   it('honours offset and limit and says that the read stopped', async () => {
     write('big.ts', Array.from({ length: 10 }, (_, i) => `line${i + 1}`).join('\n'))
-    const out = await call('read_file', { path: 'big.ts', offset: 3, limit: 2 }, await ctxFor())
+    const out = await call('mingly_read_file', { path: 'big.ts', offset: 3, limit: 2 }, await ctxFor())
     expect(out).toContain('line3')
     expect(out).toContain('line4')
     expect(out).not.toContain('line5')
@@ -94,14 +94,14 @@ describe('read_file', () => {
   })
 
   it('refuses a path outside the grant', async () => {
-    const out = await call('read_file', { path: '../../../../../../etc/passwd' }, await ctxFor())
+    const out = await call('mingly_read_file', { path: '../../../../../../etc/passwd' }, await ctxFor())
     expect(out).toMatch(/refused/i)
     expect(out).not.toContain('root:')
   })
 
   it('refuses an absolute path outside the project', async () => {
     fs.writeFileSync(path.join(outside, 'x.ts'), 'outside-secret-content')
-    const out = await call('read_file', { path: path.join(outside, 'x.ts') }, await ctxFor())
+    const out = await call('mingly_read_file', { path: path.join(outside, 'x.ts') }, await ctxFor())
     expect(out).toMatch(/refused/i)
     expect(out).not.toContain('outside-secret-content')
   })
@@ -109,14 +109,14 @@ describe('read_file', () => {
   it('refuses a symlink that points outside the grant', async () => {
     fs.writeFileSync(path.join(outside, 'passwd.ts'), 'outside-secret-content')
     fs.symlinkSync(outside, path.join(project, 'out'))
-    const out = await call('read_file', { path: 'out/passwd.ts' }, await ctxFor())
+    const out = await call('mingly_read_file', { path: 'out/passwd.ts' }, await ctxFor())
     expect(out).toMatch(/refused/i)
     expect(out).not.toContain('outside-secret-content')
   })
 
   it('refuses a blocklisted file even in read-only mode', async () => {
     write('.env', 'API_KEY=hunter2-value')
-    const out = await call('read_file', { path: '.env' }, await ctxFor())
+    const out = await call('mingly_read_file', { path: '.env' }, await ctxFor())
     expect(out).toMatch(/refused/i)
     expect(out).not.toContain('hunter2-value')
   })
@@ -125,7 +125,7 @@ describe('read_file', () => {
     write('.env', 'API_KEY=hunter2-value')
     fs.mkdirSync(path.join(project, 'src'))
     fs.symlinkSync('../.env', path.join(project, 'src', 'config.ts'))
-    const out = await call('read_file', { path: 'src/config.ts' }, await ctxFor())
+    const out = await call('mingly_read_file', { path: 'src/config.ts' }, await ctxFor())
     expect(out).toMatch(/refused/i)
     expect(out).not.toContain('hunter2-value')
   })
@@ -137,9 +137,25 @@ describe('read_file', () => {
     write('.env.ts', 'export const KEY = "hunter2-value"')
     fs.mkdirSync(path.join(project, 'src'))
     fs.symlinkSync('../.env.ts', path.join(project, 'src', 'config.ts'))
-    const out = await call('read_file', { path: 'src/config.ts' }, await ctxFor())
+    const out = await call('mingly_read_file', { path: 'src/config.ts' }, await ctxFor())
     expect(out).toMatch(/refused/i)
     expect(out).not.toContain('hunter2-value')
+  })
+
+  it('refuses a link whose target is a blocked DATA name that only FOLDS to an exempt one', async () => {
+    // `secrets.ts.` is a data file named secrets, not the module the code
+    // exemption exists for. The second blocklist pass must see the name as the
+    // filesystem spells it: handed the folded form it reads `secrets.ts` and
+    // exempts the very payload this check is for.
+    write('secrets.ts.', 'export const KEY = "folded-secret-value"')
+    fs.symlinkSync('secrets.ts.', path.join(project, 'notes.ts'))
+    const out = await call('mingly_read_file', { path: 'notes.ts' }, await ctxFor())
+    expect(out).toMatch(/refused/i)
+    expect(out).not.toContain('folded-secret-value')
+    // Positive control: a link to the real module still reads.
+    write('secrets.ts', 'export const KEY = "module-value"')
+    fs.symlinkSync('secrets.ts', path.join(project, 'alias.ts'))
+    expect(await call('mingly_read_file', { path: 'alias.ts' }, await ctxFor())).toContain('module-value')
   })
 
   it('refuses a link whose target is a blocked DATA name (secrets.json, credentials.json)', async () => {
@@ -149,7 +165,7 @@ describe('read_file', () => {
     fs.symlinkSync('credentials.json', path.join(project, 'plain.json'))
     const ctx = await ctxFor()
     for (const name of ['config.json', 'plain.json']) {
-      const out = await call('read_file', { path: name }, ctx)
+      const out = await call('mingly_read_file', { path: name }, ctx)
       expect(out).toMatch(/refused/i)
       expect(out).not.toContain('data-value')
     }
@@ -158,7 +174,7 @@ describe('read_file', () => {
   it('refuses a link that reaches a MULTI-segment blocked pattern (.docker/config.json)', async () => {
     write('.docker/config.json', '{"auth":"docker-auth-value"}')
     fs.symlinkSync('.docker/config.json', path.join(project, 'dc.json'))
-    const out = await call('read_file', { path: 'dc.json' }, await ctxFor())
+    const out = await call('mingly_read_file', { path: 'dc.json' }, await ctxFor())
     expect(out).toMatch(/refused/i)
     expect(out).not.toContain('docker-auth-value')
   })
@@ -171,10 +187,10 @@ describe('read_file', () => {
     fs.symlinkSync(path.join(outside, 'o.xyz'), path.join(project, 'exists.xyz'))
     fs.symlinkSync(path.join(outside, 'gone', 'nowhere.xyz'), path.join(project, 'dangling.xyz'))
     const ctx = await ctxFor()
-    const a = await call('read_file', { path: 'exists.ts' }, ctx)
-    const b = await call('read_file', { path: 'dangling.ts' }, ctx)
-    const c = await call('read_file', { path: 'exists.xyz' }, ctx)
-    const d = await call('read_file', { path: 'dangling.xyz' }, ctx)
+    const a = await call('mingly_read_file', { path: 'exists.ts' }, ctx)
+    const b = await call('mingly_read_file', { path: 'dangling.ts' }, ctx)
+    const c = await call('mingly_read_file', { path: 'exists.xyz' }, ctx)
+    const d = await call('mingly_read_file', { path: 'dangling.xyz' }, ctx)
     expect(b).toBe(a)
     expect(d).toBe(c)
   })
@@ -182,7 +198,7 @@ describe('read_file', () => {
   it('refuses a symlinked DIRECTORY that leads into a blocked directory inside the grant', async () => {
     write('.git/hooks/x.ts', 'hook-content')
     fs.symlinkSync('.git', path.join(project, 'g'))
-    const out = await call('read_file', { path: 'g/hooks/x.ts' }, await ctxFor())
+    const out = await call('mingly_read_file', { path: 'g/hooks/x.ts' }, await ctxFor())
     expect(out).toMatch(/refused/i)
     expect(out).not.toContain('hook-content')
   })
@@ -190,9 +206,9 @@ describe('read_file', () => {
   it('gives the same answer for a blocked, an outside and a missing-grant path (reveals nothing)', async () => {
     write('.env', 'x=1')
     const ctx = await ctxFor()
-    const blocked = await call('read_file', { path: '.env' }, ctx)
-    const nested = await call('read_file', { path: 'nope/.env' }, ctx)
-    const outsidePath = await call('read_file', { path: '../x.ts' }, ctx)
+    const blocked = await call('mingly_read_file', { path: '.env' }, ctx)
+    const nested = await call('mingly_read_file', { path: 'nope/.env' }, ctx)
+    const outsidePath = await call('mingly_read_file', { path: '../x.ts' }, ctx)
     expect(nested).toBe(blocked)
     expect(outsidePath).toBe(blocked)
   })
@@ -204,7 +220,7 @@ describe('read_file', () => {
     write('blob.json', Buffer.from([0x7b, 0x00, 0x7d]))
     const ctx = await ctxFor()
     for (const name of ['logo.ts', 'blob.json']) {
-      const out = await call('read_file', { path: name }, ctx)
+      const out = await call('mingly_read_file', { path: name }, ctx)
       expect(out).toMatch(/binary/i)
       expect(out).not.toContain('\u0000')
     }
@@ -212,14 +228,14 @@ describe('read_file', () => {
 
   it('refuses a real image by type', async () => {
     write('logo.png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02]))
-    const out = await call('read_file', { path: 'logo.png' }, await ctxFor())
+    const out = await call('mingly_read_file', { path: 'logo.png' }, await ctxFor())
     expect(out).toMatch(/file type/i)
     expect(out).not.toContain('\u0000')
   })
 
   it('refuses a file with an extension that is not on the read list', async () => {
     write('data.xyz', 'hello')
-    const out = await call('read_file', { path: 'data.xyz' }, await ctxFor())
+    const out = await call('mingly_read_file', { path: 'data.xyz' }, await ctxFor())
     expect(out).toMatch(/not readable|not on the read list|file type/i)
     expect(out).not.toContain('hello')
   })
@@ -227,7 +243,7 @@ describe('read_file', () => {
   it('refuses a symlink whose NAME is readable but whose TARGET has an unreadable extension', async () => {
     write('real.xyz', 'target-content')
     fs.symlinkSync('real.xyz', path.join(project, 'looks-fine.ts'))
-    const out = await call('read_file', { path: 'looks-fine.ts' }, await ctxFor())
+    const out = await call('mingly_read_file', { path: 'looks-fine.ts' }, await ctxFor())
     expect(out).not.toContain('target-content')
   })
 
@@ -237,15 +253,15 @@ describe('read_file', () => {
     fs.symlinkSync('data.xyz', path.join(project, 'harmless.ts'))
     fs.symlinkSync(path.join(outside, 'gone', 'x.ts'), path.join(project, 'dangling.ts'))
     const ctx = await ctxFor()
-    const out = await call('read_file', { path: 'harmless.ts' }, ctx)
-    expect(out).toBe(await call('read_file', { path: 'dangling.ts' }, ctx))
+    const out = await call('mingly_read_file', { path: 'harmless.ts' }, ctx)
+    expect(out).toBe(await call('mingly_read_file', { path: 'dangling.ts' }, ctx))
     expect(out).not.toMatch(/file type/i)
     expect(out).not.toContain('target-content')
   })
 
   it('refuses a directory', async () => {
     fs.mkdirSync(path.join(project, 'dir.ts'))
-    const out = await call('read_file', { path: 'dir.ts' }, await ctxFor())
+    const out = await call('mingly_read_file', { path: 'dir.ts' }, await ctxFor())
     expect(out).toMatch(/refused|cannot be read|not a regular file/i)
   })
 
@@ -253,7 +269,7 @@ describe('read_file', () => {
     write('locked.ts', 'locked-content')
     fs.chmodSync(path.join(project, 'locked.ts'), 0o000)
     try {
-      const out = await call('read_file', { path: 'locked.ts' }, await ctxFor())
+      const out = await call('mingly_read_file', { path: 'locked.ts' }, await ctxFor())
       expect(out).not.toContain('locked-content')
       expect(out).not.toMatch(/EACCES|permission denied/i)
     } finally {
@@ -262,7 +278,7 @@ describe('read_file', () => {
   })
 
   it('refuses a missing file without an errno detail', async () => {
-    const out = await call('read_file', { path: 'missing.ts' }, await ctxFor())
+    const out = await call('mingly_read_file', { path: 'missing.ts' }, await ctxFor())
     expect(out).not.toMatch(/ENOENT/)
     expect(out).toMatch(/cannot be read|refused/i)
   })
@@ -270,7 +286,7 @@ describe('read_file', () => {
   it('refuses without a grant for the directory id', async () => {
     write('a.ts', 'content-a')
     grants = []
-    const out = await call('read_file', { path: 'a.ts' }, await ctxFor())
+    const out = await call('mingly_read_file', { path: 'a.ts' }, await ctxFor())
     expect(out).toMatch(/refused/i)
     expect(out).not.toContain('content-a')
   })
@@ -278,7 +294,7 @@ describe('read_file', () => {
   it('refuses when the grant has no read permission', async () => {
     write('a.ts', 'content-a')
     grants = [grant({ permissions: ['create'] })]
-    const out = await call('read_file', { path: 'a.ts' }, await ctxFor())
+    const out = await call('mingly_read_file', { path: 'a.ts' }, await ctxFor())
     expect(out).toMatch(/refused/i)
     expect(out).not.toContain('content-a')
   })
@@ -286,7 +302,7 @@ describe('read_file', () => {
   it('refuses when the project path is not inside the grant', async () => {
     write('a.ts', 'content-a')
     grants = [grant({ path: outside })]
-    const out = await call('read_file', { path: 'a.ts' }, await ctxFor())
+    const out = await call('mingly_read_file', { path: 'a.ts' }, await ctxFor())
     expect(out).toMatch(/refused/i)
     expect(out).not.toContain('content-a')
   })
@@ -294,16 +310,16 @@ describe('read_file', () => {
   it('refuses when the context carries no workspace (fail closed)', async () => {
     write('a.ts', 'content-a')
     const ctx: ToolContext = { coding: { directoryId: 'dir-1', projectPath: project, mode: 'read-only' } }
-    const out = await call('read_file', { path: 'a.ts' }, ctx)
+    const out = await call('mingly_read_file', { path: 'a.ts' }, ctx)
     expect(out).toMatch(/refused/i)
     expect(out).not.toContain('content-a')
   })
 
   it('refuses non-string and empty paths', async () => {
     const ctx = await ctxFor()
-    expect(await call('read_file', { path: 42 }, ctx)).toMatch(/refused/i)
-    expect(await call('read_file', { path: '' }, ctx)).toMatch(/refused/i)
-    expect(await call('read_file', {}, ctx)).toMatch(/refused/i)
+    expect(await call('mingly_read_file', { path: 42 }, ctx)).toMatch(/refused/i)
+    expect(await call('mingly_read_file', { path: '' }, ctx)).toMatch(/refused/i)
+    expect(await call('mingly_read_file', {}, ctx)).toMatch(/refused/i)
   })
 
   it('opens an externalized result under .mingly/context through a SYMLINKED project path', async () => {
@@ -322,10 +338,10 @@ describe('read_file', () => {
       workspace
     }
     // The compaction text hands the model the ABSOLUTE path; use it verbatim.
-    const out = await call('read_file', { path: file }, ctx)
+    const out = await call('mingly_read_file', { path: file }, ctx)
     expect(out).toContain('externalized-body')
     // And the relative spelling.
-    const rel = await call('read_file', { path: path.relative(link, file) }, ctx)
+    const rel = await call('mingly_read_file', { path: path.relative(link, file) }, ctx)
     expect(rel).toContain('externalized-body')
   })
 
@@ -333,8 +349,8 @@ describe('read_file', () => {
     write('a.ts', 'content-a')
     const ctx = await ctxFor('read-only', 'only-run')
     const before = fs.readdirSync(path.join(project, '.mingly', 'context'))
-    await call('read_file', { path: 'a.ts' }, ctx)
-    await call('list_files', {}, ctx)
+    await call('mingly_read_file', { path: 'a.ts' }, ctx)
+    await call('mingly_list_files', {}, ctx)
     // A handler that made its own workspace would have needed a run id of its
     // own; nothing new may appear next to the caller's.
     expect(fs.readdirSync(path.join(project, '.mingly', 'context'))).toEqual(before)
@@ -342,7 +358,7 @@ describe('read_file', () => {
   })
 })
 
-describe('read_file result budget', () => {
+describe('mingly_read_file result budget', () => {
   const BUDGET = 400
   let small: ToolRegistry
 
@@ -352,7 +368,7 @@ describe('read_file result budget', () => {
   })
 
   async function readSmall(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
-    return (await small.executeTool({ id: 't', name: 'read_file', arguments: args }, ctx)).content
+    return (await small.executeTool({ id: 't', name: 'mingly_read_file', arguments: args }, ctx)).content
   }
 
   it('pages a file larger than the budget with no gap, no repetition, and a present, correct hint every time', async () => {
@@ -419,13 +435,55 @@ describe('read_file result budget', () => {
   })
 })
 
-describe('list_files', () => {
+describe('mingly_list_files result budget', () => {
+  /** The production default of ToolRegistry: what a real run gets. */
+  const PRODUCTION_BUDGET = 4000
+
+  it('sizes the list against the production budget, so the footer survives', async () => {
+    // 500 paths of ~20 characters are ~10 KB. Without a character budget the
+    // registry cuts the result at 4000 and appends its own marker — removing
+    // the footer that says the list is incomplete, which turns an incomplete
+    // list into a false statement.
+    for (let i = 0; i < LIST_FILES_MAX_ENTRIES + 5; i++) {
+      write(`many/file${String(i).padStart(4, '0')}.ts`, 'x')
+    }
+    const prod = new ToolRegistry()
+    expect(prod.getMaxResultChars()).toBe(PRODUCTION_BUDGET)
+    registerReadTools(prod, { findGrant: async (id) => grants.find((g) => g.id === id) })
+    const out = (
+      await prod.executeTool({ id: 't', name: 'mingly_list_files', arguments: {} }, await ctxFor())
+    ).content
+
+    expect(out.length).toBeLessThanOrEqual(PRODUCTION_BUDGET)
+    // The registry's own cut marker must not appear: the tool budgeted itself.
+    expect(out).not.toMatch(/\.\.\. \[truncated\]$/)
+    expect(out).toMatch(/INCOMPLETE/)
+    const entries = out.split('\n').filter((l) => l.startsWith('many/'))
+    expect(entries.length).toBeGreaterThan(0)
+    expect(entries.length).toBeLessThan(LIST_FILES_MAX_ENTRIES)
+    // No half-written path: every line listed is a whole file name.
+    for (const entry of entries) expect(entry).toMatch(/^many\/file\d{4}\.ts$/)
+  })
+
+  it('says nothing about truncation when the whole list fits the production budget', async () => {
+    write('src/a.ts', 'a')
+    write('b.md', 'b')
+    const prod = new ToolRegistry()
+    registerReadTools(prod, { findGrant: async (id) => grants.find((g) => g.id === id) })
+    const out = (
+      await prod.executeTool({ id: 't', name: 'mingly_list_files', arguments: {} }, await ctxFor())
+    ).content
+    expect(out.split('\n').sort()).toEqual(['b.md', 'src/a.ts'])
+  })
+})
+
+describe('mingly_list_files', () => {
   it('lists files and hides .mingly', async () => {
     write('src/a.ts', 'a')
     write('b.md', 'b')
     const ctx = await ctxFor()
     fs.writeFileSync(path.join(ctx.workspace!.contextDir, 'hidden.txt'), 'h')
-    const out = await call('list_files', {}, ctx)
+    const out = await call('mingly_list_files', {}, ctx)
     expect(out).toContain('src/a.ts')
     expect(out).toContain('b.md')
     expect(out).not.toContain('.mingly')
@@ -438,7 +496,7 @@ describe('list_files', () => {
     write('keys/server.pem', 'x')
     write('.git/config', 'x')
     write('ok.ts', 'x')
-    const out = await call('list_files', {}, await ctxFor())
+    const out = await call('mingly_list_files', {}, await ctxFor())
     expect(out).toContain('ok.ts')
     expect(out).not.toContain('.env')
     expect(out).not.toContain('server.pem')
@@ -452,7 +510,7 @@ describe('list_files', () => {
     fs.symlinkSync('.env', path.join(project, 'innocent.ts'))
     fs.symlinkSync(path.join(outside, 'o.ts'), path.join(project, 'escape.ts'))
     write('ok.ts', 'x')
-    const out = await call('list_files', {}, await ctxFor())
+    const out = await call('mingly_list_files', {}, await ctxFor())
     expect(out).toContain('ok.ts')
     expect(out).not.toContain('innocent.ts')
     expect(out).not.toContain('escape.ts')
@@ -461,13 +519,13 @@ describe('list_files', () => {
   it('declares truncation in a footer, and says nothing when the list is complete', async () => {
     for (let i = 0; i < LIST_FILES_MAX_ENTRIES + 5; i++) write(`many/f${String(i).padStart(4, '0')}.ts`, 'x')
     const ctx = await ctxFor()
-    const out = await call('list_files', {}, ctx)
+    const out = await call('mingly_list_files', {}, ctx)
     const lines = out.split('\n').filter((l) => l.startsWith('many/'))
     expect(lines).toHaveLength(LIST_FILES_MAX_ENTRIES)
     expect(out).toMatch(/truncated|incomplete/i)
     expect(out).toContain(String(LIST_FILES_MAX_ENTRIES))
 
-    const small = await call('list_files', { pattern: 'many/f0000.ts' }, ctx)
+    const small = await call('mingly_list_files', { pattern: 'many/f0000.ts' }, ctx)
     expect(small).toContain('many/f0000.ts')
     expect(small).not.toMatch(/truncated|incomplete/i)
   })
@@ -478,12 +536,12 @@ describe('list_files', () => {
     write('dist/out.ts', 'd')
     write('keep.log', 'k')
     const ctx = await ctxFor()
-    const without = await call('list_files', {}, ctx)
+    const without = await call('mingly_list_files', {}, ctx)
     expect(without).toContain('node_modules/pkg/index.ts')
     expect(without).toContain('dist/out.ts')
 
     write('.gitignore', 'node_modules/\n/dist\n*.log\n!keep.log\n')
-    const withIgnore = await call('list_files', {}, ctx)
+    const withIgnore = await call('mingly_list_files', {}, ctx)
     expect(withIgnore).toContain('src/a.ts')
     expect(withIgnore).toContain('keep.log')
     expect(withIgnore).not.toContain('node_modules')
@@ -494,7 +552,7 @@ describe('list_files', () => {
     write('src/a.ts', 'a')
     write('src/deep/b.ts', 'b')
     write('docs/c.md', 'c')
-    const out = await call('list_files', { pattern: '**/*.ts' }, await ctxFor())
+    const out = await call('mingly_list_files', { pattern: '**/*.ts' }, await ctxFor())
     expect(out).toContain('src/a.ts')
     expect(out).toContain('src/deep/b.ts')
     expect(out).not.toContain('c.md')
@@ -505,7 +563,7 @@ describe('list_files', () => {
     write('locked/inner.ts', 'x')
     fs.chmodSync(path.join(project, 'locked'), 0o000)
     try {
-      const out = await call('list_files', {}, await ctxFor())
+      const out = await call('mingly_list_files', {}, await ctxFor())
       expect(out).toMatch(/refused|cannot be listed/i)
       expect(out).not.toContain('ok.ts')
       expect(out).not.toMatch(/EACCES|locked/)
@@ -517,7 +575,7 @@ describe('list_files', () => {
   it('refuses without a grant', async () => {
     write('a.ts', 'x')
     grants = []
-    const out = await call('list_files', {}, await ctxFor())
+    const out = await call('mingly_list_files', {}, await ctxFor())
     expect(out).toMatch(/refused/i)
     expect(out).not.toContain('a.ts')
   })
@@ -526,27 +584,27 @@ describe('list_files', () => {
 describe('gate', () => {
   it('the tools are withheld in off mode, without context, and for an unknown mode', async () => {
     const off = registry.getAvailableTools(await ctxFor('off')).map((t) => t.name)
-    expect(off).not.toContain('read_file')
-    expect(off).not.toContain('list_files')
+    expect(off).not.toContain('mingly_read_file')
+    expect(off).not.toContain('mingly_list_files')
     const none = registry.getAvailableTools(undefined).map((t) => t.name)
-    expect(none).not.toContain('read_file')
+    expect(none).not.toContain('mingly_read_file')
     const bogus = registry
       .getAvailableTools({ coding: { directoryId: 'd', projectPath: project, mode: 'CRITICAL' as CodingMode } })
       .map((t) => t.name)
-    expect(bogus).not.toContain('read_file')
+    expect(bogus).not.toContain('mingly_read_file')
   })
 
   it('the tools are offered in read-only, propose and propose-run', async () => {
     for (const mode of ['read-only', 'propose', 'propose-run'] as CodingMode[]) {
       const names = registry.getAvailableTools(await ctxFor(mode)).map((t) => t.name)
-      expect(names).toContain('read_file')
-      expect(names).toContain('list_files')
+      expect(names).toContain('mingly_read_file')
+      expect(names).toContain('mingly_list_files')
     }
   })
 
   it('a call in off mode is refused as an unknown tool', async () => {
     write('a.ts', 'content-a')
-    const out = await call('read_file', { path: 'a.ts' }, await ctxFor('off'))
+    const out = await call('mingly_read_file', { path: 'a.ts' }, await ctxFor('off'))
     expect(out).toMatch(/Unknown tool/)
     expect(out).not.toContain('content-a')
   })
@@ -554,25 +612,51 @@ describe('gate', () => {
 
 describe('originForToolCall', () => {
   it('carries the RESOLVED path, never the model-written one', () => {
-    const call = { id: '1', name: 'read_file', arguments: { path: './x/../src/a.ts' } }
-    expect(originForToolCall(call, 'src/a.ts')).toEqual({ toolName: 'read_file', filePath: 'src/a.ts' })
+    const call = { id: '1', name: 'mingly_read_file', arguments: { path: './x/../src/a.ts' } }
+    expect(originForToolCall(call, 'src/a.ts')).toEqual({ toolName: 'mingly_read_file', filePath: 'src/a.ts' })
   })
 
   it('has no filePath without a resolved path, even when the call carries a path', () => {
-    const call = { id: '1', name: 'read_file', arguments: { path: 'src/a.ts' } }
-    expect(originForToolCall(call)).toEqual({ toolName: 'read_file' })
-    expect(originForToolCall({ id: '1', name: 'list_files', arguments: {} }, 'src/a.ts')).toEqual({
-      toolName: 'list_files'
+    const call = { id: '1', name: 'mingly_read_file', arguments: { path: 'src/a.ts' } }
+    expect(originForToolCall(call)).toEqual({ toolName: 'mingly_read_file' })
+    expect(originForToolCall({ id: '1', name: 'mingly_list_files', arguments: {} }, 'src/a.ts')).toEqual({
+      toolName: 'mingly_list_files'
     })
   })
 
   it('strips bidi overrides, isolates, zero-width and control characters, and caps the length', () => {
     const dirty = 'a\u202Eb\u2066c\u2069d\u200Be\u0000f\n\u001bg\u2028h' + 'x'.repeat(1000)
-    const o = originForToolCall({ id: '1', name: 'read_file', arguments: {} }, dirty)
+    const o = originForToolCall({ id: '1', name: 'mingly_read_file', arguments: {} }, dirty)
     expect(o.filePath).toBeDefined()
     expect(o.filePath!).toMatch(/^abcdefgh/)
     expect(o.filePath!).not.toMatch(/[\u0000-\u001f\u007f\u200B-\u200F\u2028-\u202E\u2066-\u2069]/)
     expect(o.filePath!.length).toBeLessThanOrEqual(300)
+  })
+
+  it('gives the TOOL NAME the same treatment: it comes from the model too', () => {
+    // The name travels into CodingConsentRequest.toolName, the approval
+    // dialog, the withheld notice and from there back into the conversation.
+    // An invented name produces an origin just as a real one does.
+    const dirty = 'a\u202Eb\u2066c\u200Bd\u0000e\n\u001bf\u2028g' + 'x'.repeat(10_000)
+    const o = originForToolCall({ id: '1', name: dirty, arguments: {} })
+    expect(o.toolName).toMatch(/^abcdefg/)
+    expect(o.toolName).not.toMatch(/[\u0000-\u001f\u007f\u200B-\u200F\u2028-\u202E\u2066-\u2069]/)
+    expect(o.toolName.length).toBeLessThanOrEqual(100)
+  })
+
+  it('caps and strips the name on the read_file branch as well', () => {
+    const dirty = 'mingly_read_file\u202E' + 'y'.repeat(10_000)
+    const o = originForToolCall({ id: '1', name: dirty, arguments: {} }, 'src/a.ts')
+    expect(o.toolName.length).toBeLessThanOrEqual(100)
+    expect(o.toolName).not.toContain('\u202E')
+  })
+
+  it('a name that strips to nothing is reported as unknown, never as an empty field', () => {
+    for (const name of ['\u202E\u200B', '\u0000', '', '   \u0007']) {
+      const o = originForToolCall({ id: '1', name, arguments: {} })
+      expect(o.toolName.trim()).not.toBe('')
+      expect(o.toolName).toBe('unknown')
+    }
   })
 })
 
@@ -587,22 +671,22 @@ describe('pattern matching cannot hang the main process', () => {
   // (2026-11-19); a regex-compiled glob took seconds on the same input. A
   // regression to unbounded matching still fails: the test would not finish.
 
-  it('list_files pattern: a pathological pattern is evaluated correctly and completely', async () => {
+  it('mingly_list_files pattern: a pathological pattern is evaluated correctly and completely', async () => {
     write(NAME, 'x')
     write('aaab', 'x')
     const ctx = await ctxFor()
-    const out = await call('list_files', { pattern: NASTY }, ctx)
+    const out = await call('mingly_list_files', { pattern: NASTY }, ctx)
     expect(out).not.toContain(NAME)
     expect(out).not.toMatch(/INCOMPLETE|truncated/)
     // positive control: the same shape of pattern still matches
-    expect(await call('list_files', { pattern: '*a*a*b' }, ctx)).toContain('aaab')
+    expect(await call('mingly_list_files', { pattern: '*a*a*b' }, ctx)).toContain('aaab')
   })
 
   it('.gitignore rule written by the project: a pathological rule is bounded and does not hide files wrongly', async () => {
     write(NAME, 'x')
     write('aaab', 'x')
     write('.gitignore', `${NASTY}\n`)
-    const out = await call('list_files', {}, await ctxFor())
+    const out = await call('mingly_list_files', {}, await ctxFor())
     // Complete (the budget was not spent) and correct (the rule does not match).
     expect(out).toContain(NAME)
     expect(out).toContain('aaab')
@@ -623,7 +707,7 @@ describe('pattern matching cannot hang the main process', () => {
     const rule = '*' + 'a'.repeat(150) + 'b'
     write('.gitignore', Array.from({ length: 300 }, () => rule).join('\n') + '\n')
     for (let i = 0; i < 400; i++) write(`files/${'a'.repeat(230)}${String(i).padStart(3, '0')}`, 'x')
-    const out = await call('list_files', {}, await ctxFor())
+    const out = await call('mingly_list_files', {}, await ctxFor())
     expect(out).toMatch(/matching work budget reached/)
     expect(out).toMatch(/INCOMPLETE/)
     // File-rule cost: narrowing with `pattern` genuinely helps, so the advice stays.
@@ -635,7 +719,7 @@ describe('pattern matching cannot hang the main process', () => {
     const rule = '*' + 'a'.repeat(150) + 'b/'
     write('.gitignore', Array.from({ length: 300 }, () => rule).join('\n') + '\n')
     for (let i = 0; i < 400; i++) write(`${'a'.repeat(230)}${String(i).padStart(3, '0')}/f.ts`, 'x')
-    const out = await call('list_files', {}, await ctxFor())
+    const out = await call('mingly_list_files', {}, await ctxFor())
     expect(out).toMatch(/INCOMPLETE/)
     expect(out).not.toMatch(/narrow|pattern/i)
     expect(out).toMatch(/ignore rules/i)
@@ -653,9 +737,9 @@ describe('pattern matching cannot hang the main process', () => {
     for (let i = 0; i < 400; i++) write(`files/${'a'.repeat(230)}${String(i).padStart(3, '0')}`, 'x')
     write('files/target.ts', 'x')
     const ctx = await ctxFor()
-    const wide = await call('list_files', {}, ctx)
+    const wide = await call('mingly_list_files', {}, ctx)
     expect(wide).toMatch(/matching work budget reached/)
-    const narrow = await call('list_files', { pattern: 'target.ts' }, ctx)
+    const narrow = await call('mingly_list_files', { pattern: 'target.ts' }, ctx)
     expect(narrow).toContain('files/target.ts')
     expect(narrow).not.toMatch(/INCOMPLETE|truncated/)
   })
@@ -665,7 +749,7 @@ describe('pattern matching cannot hang the main process', () => {
     for (let i = 0; i < 400; i++) write(`src/mod${String(i).padStart(3, '0')}.ts`, 'x')
     write('debug.log', 'x')
     write('node_modules/p/i.ts', 'x')
-    const out = await call('list_files', {}, await ctxFor())
+    const out = await call('mingly_list_files', {}, await ctxFor())
     expect(out).not.toMatch(/INCOMPLETE|truncated/)
     expect(out.split('\n').filter((l) => l.startsWith('src/'))).toHaveLength(400)
     expect(out).not.toContain('debug.log')
@@ -676,7 +760,7 @@ describe('pattern matching cannot hang the main process', () => {
     write('aaab', 'x')
     write('keep.ts', 'x')
     write('.gitignore', '*a*a*b\n')
-    const out = await call('list_files', {}, await ctxFor())
+    const out = await call('mingly_list_files', {}, await ctxFor())
     expect(out).not.toContain('aaab')
     expect(out).toContain('keep.ts')
   })

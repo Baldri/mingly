@@ -264,7 +264,7 @@ describe('planCommand: refusals that depend on the environment look alike', () =
   })
 })
 
-describe('run_command gate', () => {
+describe('mingly_run_command gate', () => {
   function ctxFor(mode: CodingMode | undefined): ToolContext | undefined {
     if (mode === undefined) return undefined
     return { coding: { directoryId: 'd', projectPath: p, mode } }
@@ -272,7 +272,7 @@ describe('run_command gate', () => {
   const registry = new ToolRegistry({ toolTimeoutMs: 5000, maxResultChars: 4000 })
   registerRunCommand(registry)
   const offered = (ctx?: ToolContext): boolean =>
-    registry.getAvailableTools(ctx).some((t) => t.name === 'run_command')
+    registry.getAvailableTools(ctx).some((t) => t.name === 'mingly_run_command')
 
   it('is offered only in propose-run', () => {
     expect(offered(ctxFor('propose-run'))).toBe(true)
@@ -286,7 +286,7 @@ describe('run_command gate', () => {
 
   it('is refused at call time below propose-run, independent of the offer', async () => {
     const result = await registry.executeTool(
-      { id: 't', name: 'run_command', arguments: { command: 'npm test' } },
+      { id: 't', name: 'mingly_run_command', arguments: { command: 'npm test' } },
       ctxFor('propose')
     )
     expect(result.content).toMatch(/Unknown tool/)

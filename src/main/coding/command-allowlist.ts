@@ -1,5 +1,5 @@
 /**
- * Command planning for `run_command` (pure and synchronous).
+ * Command planning for `mingly_run_command` (pure and synchronous).
  *
  * A command line is split on plain spaces into an argument vector and matched
  * against a short allowlist of prefixes WITH argument checking (not a regex

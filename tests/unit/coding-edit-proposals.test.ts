@@ -1,5 +1,5 @@
 /**
- * edit_file as a proposal (Task 10).
+ * mingly_edit_file as a proposal (Task 10).
  *
  * Two layers: the store is tested synchronously with the file content handed
  * in; the handler is tested through ToolRegistry.executeTool so the gate and
@@ -70,7 +70,7 @@ async function ctxFor(
 }
 
 async function edit(args: Record<string, unknown>, ctx?: ToolContext): Promise<string> {
-  const result = await registry.executeTool({ id: 't1', name: 'edit_file', arguments: args }, ctx)
+  const result = await registry.executeTool({ id: 't1', name: 'mingly_edit_file', arguments: args }, ctx)
   return result.content
 }
 
@@ -164,7 +164,7 @@ describe('EditProposalStore.propose', () => {
     const content = 'let a = 1\nlet b = 2\n'
     store.propose(RUN, 1, { path: 'a.ts', oldText: 'let a = 1', newText: 'let a = 9' }, content)
     const next = store.propose(RUN, 2, { path: 'a.ts', oldText: 'let b = 2', newText: 'let b = 9' }, content)
-    expect(next).toEqual({ kind: 'rejected', reason: expect.stringMatching(/single edit_file call|combine/i) })
+    expect(next).toEqual({ kind: 'rejected', reason: expect.stringMatching(/single mingly_edit_file call|combine/i) })
     expect(store.pending(RUN)).toHaveLength(1)
   })
 
@@ -368,6 +368,54 @@ describe('end of a run: abandoned versus finished', () => {
   })
 })
 
+describe('a proposal whose RESULT would exceed the file ceiling', () => {
+  // The apply and the undo both read the file through the same 2 MiB ceiling.
+  // A proposal that grows the file past it applies once and can then never be
+  // read back: restoreEntry reports 'unreadable', the rollback gets stuck and
+  // the undo refuses — the one promise this feature makes.
+  const CEILING = 2 * 1024 * 1024
+
+  it('is refused at proposal time, with the uniform content-dependent text', () => {
+    const content = 'head\n' + 'a'.repeat(CEILING - 200)
+    const insert = 'b'.repeat(400)
+    expect(Buffer.byteLength(content)).toBeLessThan(CEILING)
+    expect(Buffer.byteLength(content) + insert.length).toBeGreaterThan(CEILING)
+
+    const out = store.propose(RUN, 1, { path: 'a.ts', oldText: 'head', newText: 'head' + insert }, content)
+
+    expect(out.kind).toBe('rejected')
+    if (out.kind !== 'rejected') throw new Error('expected a rejection')
+    // The SAME text as every other content-dependent refusal, compared against
+    // one produced in this same run: "your result would be too big" would be a
+    // size oracle for a file the agent is not allowed to read.
+    const notFound = store.propose(RUN, 1, { path: 'b.ts', oldText: 'nowhere', newText: 'x' }, 'content')
+    if (notFound.kind !== 'rejected') throw new Error('expected a rejection')
+    expect(out.reason).toBe(notFound.reason)
+    expect(store.pending(RUN)).toEqual([])
+    // A failed attempt is counted, as for every other content-dependent miss.
+    const records = store.auditRecords(RUN).records
+    expect(records.some((r) => r.failedAttempts === 1)).toBe(true)
+  })
+
+  it('positive control: the same edit just under the ceiling is proposed', () => {
+    const content = 'head\n' + 'a'.repeat(CEILING - 2000)
+    const insert = 'b'.repeat(400)
+    expect(Buffer.byteLength(content) + insert.length).toBeLessThan(CEILING)
+    const out = store.propose(RUN, 1, { path: 'a.ts', oldText: 'head', newText: 'head' + insert }, content)
+    expect(out.kind).toBe('proposed')
+  })
+
+  it('counts BYTES, not characters: multi-byte text over the ceiling is refused', () => {
+    // 'ä' is two bytes in UTF-8. A character count would pass this.
+    const content = 'head\n' + 'a'.repeat(CEILING - 200)
+    const insert = 'ä'.repeat(150)
+    expect(content.length + insert.length).toBeLessThan(CEILING)
+    expect(Buffer.byteLength(content) + Buffer.byteLength(insert)).toBeGreaterThan(CEILING)
+    const out = store.propose(RUN, 1, { path: 'a.ts', oldText: 'head', newText: 'head' + insert }, content)
+    expect(out.kind).toBe('rejected')
+  })
+})
+
 describe('global byte budget over everything pending', () => {
   /** One proposal of a given size: a single long line, replaced by another. */
   const big = (n: number) => ({
@@ -495,7 +543,11 @@ describe('rendering: the diff must not lie to the reviewer', () => {
     expect(p.diff).not.toContain(BIDI)
     expect(p.diff).not.toContain(ZW)
     expect(p.introducesHiddenCharacters).toBe(true)
-    expect(p.diff).toMatch(/invisible|direction/i)
+    // The warning line is a user text in a German dialog (the diff is shown
+    // to the human and never returned to the model), and it keeps the `!!`
+    // prefix the renderer reads as a meta line.
+    expect(p.diff).toMatch(/^!! .*unsichtbare oder richtungsändernde Zeichen/m)
+    expect(p.diff).not.toMatch(/invisible|direction-changing/i)
   })
 
   it('stores the text byte-exact: what gets written is not what is displayed', () => {
@@ -1127,13 +1179,50 @@ describe('audit records (for the audit task to wire; not an audit itself)', () =
   it('unknown run: empty', () => {
     expect(store.auditRecords('nobody')).toEqual({ records: [], dropped: 0 })
   })
+
+  it('ordinary runs without proposals do not displace the records of a coding run', () => {
+    // endRun is called in the `finally` of EVERY agent run, coding or not. A
+    // run with nothing proposed used to take a slot in the retention of 50, so
+    // 50 ordinary chats deleted the audit records of a coding run.
+    store.propose(RUN, 1, { path: 'a.ts', oldText: 'a', newText: 'b' }, 'a')
+    store.resolve(RUN, false, 'not this one')
+    store.endRun(RUN, 'finished')
+    expect(store.auditRecords(RUN).records.length).toBeGreaterThan(0)
+
+    for (let i = 0; i < 60; i++) store.endRun(`plain-${i}`, 'finished')
+
+    const { records } = store.auditRecords(RUN)
+    expect(records.some((r) => r.outcome === 'proposed')).toBe(true)
+    expect(records.some((r) => r.outcome === 'package-rejected')).toBe(true)
+  })
+
+  it('still refuses a straggler proposal for a run that ended long ago', () => {
+    // The reason the empty entry existed: a late tool call must not start a
+    // package for a run that is over. Dropping the entry would reopen that.
+    store.endRun('ended-early', 'finished')
+    for (let i = 0; i < 60; i++) store.endRun(`plain-${i}`, 'finished')
+    const out = store.propose('ended-early', 1, { path: 'a.ts', oldText: 'a', newText: 'b' }, 'a')
+    expect(out.kind).toBe('rejected')
+    expect(store.pending('ended-early')).toEqual([])
+  })
+
+  it('a run WITH records is still bounded: the oldest of them is dropped', () => {
+    // The cap on runs whose records are kept still exists; it now counts only
+    // runs that have records.
+    for (let i = 0; i < 60; i++) {
+      store.propose(`r${i}`, 1, { path: 'a.ts', oldText: 'a', newText: 'b' }, 'a')
+      store.endRun(`r${i}`, 'abandoned')
+    }
+    expect(store.auditRecords('r0').records).toEqual([])
+    expect(store.auditRecords('r59').records.length).toBeGreaterThan(0)
+  })
 })
 
 // ---------------------------------------------------------------------------
 // The tool
 // ---------------------------------------------------------------------------
 
-describe('edit_file handler: proposes, never writes', () => {
+describe('mingly_edit_file handler: proposes, never writes', () => {
   it('proposes an edit without touching the file', async () => {
     const abs = write('a.ts', 'const a = 1\nconst b = 2\n')
     const before = fs.statSync(abs).mtimeMs
@@ -1207,8 +1296,8 @@ describe('edit_file handler: proposes, never writes', () => {
     const ctx = await ctxFor()
     const results = await registry.executeToolCalls(
       [
-        { id: 'p1', name: 'edit_file', arguments: { path: 'a.ts', old: 'let a = 1', new: 'let a = 9' } },
-        { id: 'p2', name: 'edit_file', arguments: { path: './a.ts', old: 'let b = 2', new: 'let b = 9' } }
+        { id: 'p1', name: 'mingly_edit_file', arguments: { path: 'a.ts', old: 'let a = 1', new: 'let a = 9' } },
+        { id: 'p2', name: 'mingly_edit_file', arguments: { path: './a.ts', old: 'let b = 2', new: 'let b = 9' } }
       ],
       ctx
     )
@@ -1218,7 +1307,7 @@ describe('edit_file handler: proposes, never writes', () => {
     expect(store.pending(RUN)).toHaveLength(1)
   })
 
-  it('accepts an absolute path inside the project, as read_file does', async () => {
+  it('accepts an absolute path inside the project, as mingly_read_file does', async () => {
     write('a.ts', 'let a = 1\n')
     const out = await edit(
       { path: path.join(project, 'a.ts'), old: 'let a = 1', new: 'let a = 2' },
@@ -1229,21 +1318,21 @@ describe('edit_file handler: proposes, never writes', () => {
   })
 })
 
-describe('edit_file handler: gate', () => {
+describe('mingly_edit_file handler: gate', () => {
   it('is not offered in read-only mode, and a direct call is refused as unknown', async () => {
     write('a.ts', 'x')
     const ctx = await ctxFor('read-only')
-    expect(registry.getAvailableTools(ctx).map((t) => t.name)).not.toContain('edit_file')
+    expect(registry.getAvailableTools(ctx).map((t) => t.name)).not.toContain('mingly_edit_file')
     const out = await edit({ path: 'a.ts', old: 'x', new: 'y' }, ctx)
     expect(out).toMatch(/unknown tool/i)
     expect(store.pending(RUN)).toHaveLength(0)
   })
 
   it('is offered in propose and propose-run mode, not without context', async () => {
-    expect(registry.getAvailableTools(await ctxFor('propose')).map((t) => t.name)).toContain('edit_file')
-    expect(registry.getAvailableTools(await ctxFor('propose-run')).map((t) => t.name)).toContain('edit_file')
-    expect(registry.getAvailableTools(undefined).map((t) => t.name)).not.toContain('edit_file')
-    expect(registry.getAvailableTools(await ctxFor('off')).map((t) => t.name)).not.toContain('edit_file')
+    expect(registry.getAvailableTools(await ctxFor('propose')).map((t) => t.name)).toContain('mingly_edit_file')
+    expect(registry.getAvailableTools(await ctxFor('propose-run')).map((t) => t.name)).toContain('mingly_edit_file')
+    expect(registry.getAvailableTools(undefined).map((t) => t.name)).not.toContain('mingly_edit_file')
+    expect(registry.getAvailableTools(await ctxFor('off')).map((t) => t.name)).not.toContain('mingly_edit_file')
   })
 
   it('refuses a mode string outside the vocabulary', async () => {
@@ -1277,7 +1366,7 @@ describe('edit_file handler: gate', () => {
   })
 })
 
-describe('edit_file handler: path discipline (same order as read_file)', () => {
+describe('mingly_edit_file handler: path discipline (same order as mingly_read_file)', () => {
   it('refuses a blocked name and leaves the file untouched', async () => {
     const abs = write('.env', 'KEY=1\n')
     const out = await edit({ path: '.env', old: 'KEY=1', new: 'KEY=2' }, await ctxFor())
@@ -1390,7 +1479,7 @@ describe('edit_file handler: path discipline (same order as read_file)', () => {
   })
 })
 
-describe('edit_file handler: the .mingly workspace is read yes, write no', () => {
+describe('mingly_edit_file handler: the .mingly workspace is read yes, write no', () => {
   const WS_FILE = '.mingly/context/run1/result.json'
 
   it('refuses a proposal inside .mingly/ and leaves the file untouched', async () => {
@@ -1477,17 +1566,17 @@ describe('edit_file handler: the .mingly workspace is read yes, write no', () =>
     expect(pre).not.toHaveBeenCalled()
   })
 
-  it('read_file STILL reads the workspace: compaction externalises results there and tells the model to read them back', async () => {
+  it('mingly_read_file STILL reads the workspace: compaction externalises results there and tells the model to read them back', async () => {
     write(WS_FILE, '{"externalized": true}\n')
     const result = await registry.executeTool(
-      { id: 'r1', name: 'read_file', arguments: { path: WS_FILE } },
+      { id: 'r1', name: 'mingly_read_file', arguments: { path: WS_FILE } },
       await ctxFor('read-only')
     )
     expect(result.content).toContain('externalized')
   })
 })
 
-describe('edit_file handler: arguments fail closed', () => {
+describe('mingly_edit_file handler: arguments fail closed', () => {
   it.each([
     ['missing path', { old: 'a', new: 'b' }],
     ['missing old', { path: 'a.ts', new: 'b' }],

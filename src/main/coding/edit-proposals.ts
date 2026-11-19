@@ -1,5 +1,5 @@
 /**
- * Coding edit tool: `edit_file`.
+ * Coding edit tool: `mingly_edit_file`.
  *
  * Its whole point is that it does NOT write. It verifies an exact replacement
  * against the file as it is now, records it as a proposal and produces a diff
@@ -11,7 +11,7 @@
  * What the model gets back is a confirmation or a reason, never file content:
  * the diff has context lines from the file and goes to the human only. A result
  * with neighbouring lines would be a second read path that skips the consent
- * guard `read_file` results pass through.
+ * guard `mingly_read_file` results pass through.
  *
  * What bounds what this tool can leak or mislead with:
  *   - every refusal that depends on the file content is ONE text (see
@@ -30,7 +30,7 @@
  *     the bound is enforced by REFUSING new proposals: a package waiting for
  *     review is never dropped to make room.
  *
- * The file is opened through the SAME path discipline as `read_file`
+ * The file is opened through the SAME path discipline as `mingly_read_file`
  * (`resolveReadableFile` in read-tools.ts); this module has no path logic of
  * its own. Every refusal that depends on the file system is one uniform text.
  */
@@ -53,7 +53,7 @@ import {
   type ReadToolDeps,
   type Scope
 } from './read-tools'
-import { resolvePathSegments } from './path-policy'
+import { CODING_FILE_MAX_BYTES, resolvePathSegments } from './path-policy'
 import {
   HIDDEN_CHAR,
   escapeHiddenCharacters,
@@ -81,6 +81,18 @@ export const EDIT_MAX_FAILED_ATTEMPTS_PER_PATH = 5
 const AUDIT_MAX_RECORDS_PER_RUN = 1000
 const AUDIT_MAX_FINISHED_RUNS = 50
 /**
+ * Ids of runs that have ended, with or without records.
+ *
+ * Separate from the record retention, and much larger, because the two answer
+ * different questions. `endRun` runs in the `finally` of EVERY agent run, a
+ * plain chat included; counting those against the 50 runs whose records are
+ * kept meant 50 ordinary chats deleted a coding run's audit records. An id
+ * costs a few bytes, so this bound can be generous — and it has to be, because
+ * it is what stops a straggler tool call from starting a package for a run
+ * that is over.
+ */
+const ENDED_RUN_IDS_MAX = 5000
+/**
  * Finished runs whose proposals are still awaiting review. A NEW run's first
  * proposal is refused while this many are waiting (resolve one to free a slot);
  * nothing already waiting is ever dropped. A cap on runs rather than a
@@ -107,10 +119,10 @@ const CONTEXT_LINES = 3
 
 const REFUSED = 'Refused: this file cannot be edited by the coding tools.'
 const BAD_ARGS =
-  'Refused: edit_file needs the string arguments "path", "old" (not empty) and "new".'
+  'Refused: mingly_edit_file needs the string arguments "path", "old" (not empty) and "new".'
 const BAD_TYPE = 'Refused: this file type is not on the coding edit list.'
 const WORKSPACE_READ_ONLY =
-  'Refused: the .mingly workspace is read-only for edit_file; propose changes to project files instead.'
+  'Refused: the .mingly workspace is read-only for mingly_edit_file; propose changes to project files instead.'
 const BINARY = 'Refused: the file looks binary and cannot be edited.'
 const NOT_UTF8 = 'Refused: the file is not valid UTF-8 and cannot be edited.'
 const TOO_LARGE = 'Refused: the file is too large to edit.'
@@ -348,10 +360,14 @@ function buildDiff(
   // A file name may carry anything; a line break in it would forge diff lines.
   const safePath = escapeHiddenCharacters(displayPath)
   const lines = [
+    // German: the diff is shown to the human and never returned to the model,
+    // so this line is a user text in a German dialog — the only one this
+    // module produces. The `!!` prefix is what the renderer reads as a meta
+    // line (coding-display.diffLines); do not drop it.
     ...(hiddenWarning
       ? [
-          '!! This proposal adds invisible or direction-changing characters. They are shown ' +
-            'as <U+XXXX> below and are written as they are.'
+          '!! Dieser Vorschlag fügt unsichtbare oder richtungsändernde Zeichen ein. Sie sind ' +
+            'unten als <U+XXXX> sichtbar gemacht und werden unverändert geschrieben.'
         ]
       : []),
     `--- a/${safePath}`,
@@ -434,7 +450,10 @@ export function createEditProposalStore(
   const byteBudget = options.byteBudget ?? EDIT_PENDING_BYTES_BUDGET
   let totalBytes = 0
   const runs = new Map<string, RunState>()
+  /** Runs whose audit records are kept. Only runs that HAVE records enter here. */
   const finished = new Map<string, { records: EditAuditRecord[]; dropped: number }>()
+  /** Every run that ended, ids only, oldest first (insertion order). */
+  const endedIds = new Set<string>()
   /** Ids of finished runs with a package still under review, oldest first. */
   const retained: string[] = []
   let counter = 0
@@ -445,11 +464,31 @@ export function createEditProposalStore(
     st.entries = []
   }
 
-  /** The run no longer holds a package: keep only its audit records. */
+  /**
+   * The run no longer holds a package: remember that it ended, and keep its
+   * audit records if it has any.
+   *
+   * A run WITHOUT records takes no slot in the record retention. It used to:
+   * endRun is called for every agent run, so 50 ordinary chats displaced the
+   * records of the coding run before them. The id is still remembered — that
+   * is what refuses a straggler proposal for a run that is over — but ids live
+   * in their own, much larger bound.
+   */
   const retire = (runId: string, st: RunState): void => {
     runs.delete(runId)
     const at = retained.indexOf(runId)
     if (at !== -1) retained.splice(at, 1)
+    endedIds.delete(runId)
+    endedIds.add(runId)
+    while (endedIds.size > ENDED_RUN_IDS_MAX) {
+      const oldest = endedIds.values().next().value
+      if (oldest === undefined) break
+      endedIds.delete(oldest)
+    }
+    if (st.records.length === 0 && st.dropped === 0) {
+      finished.delete(runId)
+      return
+    }
     finished.delete(runId)
     finished.set(runId, { records: st.records, dropped: st.dropped })
     while (finished.size > AUDIT_MAX_FINISHED_RUNS) {
@@ -535,7 +574,9 @@ export function createEditProposalStore(
 
     // A run that has ended adds nothing: a straggler tool call must not
     // grow a package a human is about to review (or revive an abandoned one).
-    if (finished.has(runId) || runs.get(runId)?.ended) {
+    // Asked on the ids, not on the record retention: a run whose records were
+    // displaced is still a run that is over.
+    if (endedIds.has(runId) || runs.get(runId)?.ended) {
       return reject('this run has already ended; no further proposals are accepted.')
     }
 
@@ -563,7 +604,7 @@ export function createEditProposalStore(
     if (st.entries.some((e) => e.key === key)) {
       return reject(
         'this file already has a pending proposal in this run. Combine all changes to the ' +
-          'file into a single edit_file call: old and new text may span the whole region ' +
+          'file into a single mingly_edit_file call: old and new text may span the whole region ' +
           'that changes. If the pending proposal was a mistake, wait for it to be resolved.'
       )
     }
@@ -643,6 +684,22 @@ export function createEditProposalStore(
 
         const after =
           fileContent.slice(0, first) + edit.newText + fileContent.slice(first + edit.oldText.length)
+        // The RESULT must stay within the ceiling every coding tool opens
+        // files through. Above it the apply succeeds once and the file can
+        // never be read back: the undo reports it unreadable and a rollback
+        // gets stuck, which breaks the one promise this feature makes. Decided
+        // in BYTES, because that is what the ceiling counts.
+        //
+        // Same branch shape as the byte-budget refusal below, and deliberately
+        // the SAME model-visible text: "your result would be too large" is a
+        // size oracle for a file the agent is not allowed to read.
+        if (Buffer.byteLength(after) > CODING_FILE_MAX_BYTES) {
+          failPath(st, key, runId, stepNumber, edit.path, {
+            outcome: 'rejected-capacity',
+            reason: 'result over the file ceiling'
+          })
+          return reject(NOT_EXACTLY_ONCE)
+        }
         const hidden = introducesHidden(edit.oldText, edit.newText)
         const built = buildDiff(edit.path, fileContent, after, hidden)
         const stored: ProposedEdit = {
@@ -771,10 +828,10 @@ export interface EditToolDeps extends ReadToolDeps {
  * resolved), so spellings of one directory agree.
  *
  * WHY THIS IS A WRITE-SIDE RULE IN THIS TOOL AND NOT A BLOCKLIST ENTRY: the
- * blocklist answers one question for every caller, and `read_file` must keep
+ * blocklist answers one question for every caller, and `mingly_read_file` must keep
  * reading `.mingly/`. Context compaction externalises large tool results into
  * `.mingly/context/<run>/` and then tells the model to read them back with
- * `read_file`; a blocklist entry would break that read-back. The workspace is
+ * `mingly_read_file`; a blocklist entry would break that read-back. The workspace is
  * read yes, write no, an asymmetry only a rule on the write side can express.
  * Do not "simplify" this onto the blocklist. (It matters here because the
  * workspace holds the undo path: snapshots and their manifests.)
@@ -820,7 +877,7 @@ async function editFile(
     const requested = toRequestedRelative(args.path, scope)
     if (requested !== null && isInsideWorkspace(requested, scope)) return WORKSPACE_READ_ONLY
 
-    // The same discipline as read_file, one implementation.
+    // The same discipline as mingly_read_file, one implementation.
     const resolved = await resolveReadableFile(args.path, scope)
     if (resolved.kind === 'bad-type') return BAD_TYPE
     if (resolved.kind !== 'ok') return REFUSED
@@ -882,7 +939,7 @@ export function registerEditTools(
 
   registry.registerBuiltIn(
     {
-      name: 'edit_file',
+      name: 'mingly_edit_file',
       description:
         'Propose a change to a text file inside the granted project directory. This does NOT ' +
         'write: it records a proposal that the user reviews as a diff and applies or discards. ' +

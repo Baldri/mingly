@@ -70,7 +70,7 @@ function request(offers: CodingConsentRequest['offers']): CodingConsentRequest {
     requestId: 'q1',
     runId: 'run_1',
     stepNumber: 2,
-    toolName: 'read_file',
+    toolName: 'mingly_read_file',
     filePath: 'config/.env',
     matches: [{ type: 'api_key', riskLevel: 'critical' }],
     offers
@@ -234,22 +234,26 @@ describe('coding store', () => {
       expect(useCodingStore.getState().consent).toBeNull()
     })
 
-    it('tells the user when the answer settled nothing (the question had expired)', async () => {
+    it('tells the user when the answer settled nothing, without naming a cause it cannot know', async () => {
       h.consentCallback?.(request(['send', 'drop-file']))
       h.api.codingConsent.respond.mockResolvedValue({ success: true, settled: false })
       await useCodingStore.getState().respondConsent('send')
       const state = useCodingStore.getState()
       // The question is gone, but the user is told what really happened.
       expect(state.consent).toBeNull()
-      expect(state.error).toMatch(/abgelaufen/)
+      expect(state.error).toMatch(/nicht mehr offen/)
       expect(state.error).toMatch(/ohne diese Datei/)
+      // `settled: false` covers four causes (expired, replaced by a newer
+      // question, cancelled run, stale requestId) and the broker does not say
+      // which. Naming the expiry was a guess that happened to be the common case.
+      expect(state.error).not.toMatch(/abgelaufen|Zeit|Frist/)
     })
 
     it('a reply without a settled flag is not read as settled', async () => {
       h.consentCallback?.(request(['send', 'drop-file']))
       h.api.codingConsent.respond.mockResolvedValue({ success: true })
       await useCodingStore.getState().respondConsent('send')
-      expect(useCodingStore.getState().error).toMatch(/abgelaufen/)
+      expect(useCodingStore.getState().error).toMatch(/nicht mehr offen/)
     })
 
     it('a refused call (success: false) keeps the question open and shows the reason', async () => {
@@ -315,6 +319,165 @@ describe('coding store', () => {
       expect(useCodingStore.getState().pending).not.toBeNull()
       expect(useCodingStore.getState().error).toContain('Nothing was written')
       expect(useCodingStore.getState().applied).toBeNull()
+    })
+
+    it('refuses to start a new run while a package is waiting for review', async () => {
+      // The start used to clear `pending`: the package vanished from the
+      // surface without a rejection and without an audit entry, while the
+      // main process still held it. Reachable with a keyboard, because the
+      // dialog traps no focus by itself.
+      await withPending()
+      expect(useCodingStore.getState().pending).not.toBeNull()
+      h.api.agent.execute.mockClear()
+
+      const out = await useCodingStore.getState().startRun(START)
+
+      expect(out.started).toBe(false)
+      // The refusal has to say what to do, not just that it refused.
+      expect(out.reason).toMatch(/vorgeschlagene Änderungen/)
+      expect(out.reason).toMatch(/Nehmen Sie sie an|lehnen Sie sie ab/)
+      expect(h.api.agent.execute).not.toHaveBeenCalled()
+      expect(useCodingStore.getState().pending).not.toBeNull()
+      // The caller in MessageInput reads only `started`, so the reason has to
+      // reach the surface through `error` as well, or nothing visible happens.
+      expect(useCodingStore.getState().error).toBe(out.reason)
+    })
+
+    it('refuses to start a new run while a consent question is open', async () => {
+      await ready('propose')
+      h.consentCallback?.(request(['send', 'drop-file']))
+      expect(useCodingStore.getState().consent).not.toBeNull()
+      h.api.agent.execute.mockClear()
+
+      const out = await useCodingStore.getState().startRun(START)
+
+      expect(out.started).toBe(false)
+      expect(h.api.agent.execute).not.toHaveBeenCalled()
+      expect(useCodingStore.getState().consent).not.toBeNull()
+      expect(useCodingStore.getState().error).toBe(out.reason)
+    })
+
+    it('keeps the undo target of an accepted package across a later run', async () => {
+      // The snapshot is still on disk and this is the only undo the surface
+      // offers; clearing it took the one way back away from the user.
+      await withPending()
+      h.api.codingEdits.accept.mockResolvedValue({
+        success: true,
+        outcome: { kind: 'applied', paths: ['src/a.ts'] }
+      })
+      await useCodingStore.getState().acceptPending()
+      expect(useCodingStore.getState().applied).toMatchObject({ runId: 'run_1' })
+
+      h.api.codingEdits.pending.mockResolvedValue({ success: true, edits: [] })
+      const out = await useCodingStore.getState().startRun(START)
+
+      expect(out.started).toBe(true)
+      expect(useCodingStore.getState().applied).toMatchObject({ runId: 'run_1', paths: ['src/a.ts'] })
+      // The user dismisses it themselves.
+      useCodingStore.getState().clearResult()
+      expect(useCodingStore.getState().applied).toBeNull()
+    })
+
+    it('a partially written accept offers an undo target instead of leaving the proposal open', async () => {
+      await withPending()
+      h.api.codingEdits.accept.mockResolvedValue({
+        success: false,
+        outcome: {
+          kind: 'refused',
+          code: 'partial',
+          reason: 'A write failed after other files were already written, and not every file could be restored.'
+        }
+      })
+
+      await useCodingStore.getState().acceptPending()
+
+      const state = useCodingStore.getState()
+      // The package is no longer the one that was approved: accepting again is
+      // not an option the surface may offer.
+      expect(state.pending).toBeNull()
+      expect(state.applied).toMatchObject({ runId: 'run_1', directoryId: 'd1', uncertain: true })
+      expect(state.applied?.paths).toEqual([])
+      // German, and not the English sentence from the main process.
+      expect(state.error).not.toMatch(/A write failed/)
+      expect(state.error).toMatch(/rückgängig/i)
+    })
+
+    it.each(['withdrawn', 'interrupted'])(
+      'the %s refusal also sets an undo target',
+      async (code) => {
+        await withPending()
+        h.api.codingEdits.accept.mockResolvedValue({
+          success: false,
+          outcome: { kind: 'refused', code, reason: 'english text' }
+        })
+        await useCodingStore.getState().acceptPending()
+        expect(useCodingStore.getState().applied).toMatchObject({ uncertain: true })
+        expect(useCodingStore.getState().pending).toBeNull()
+      }
+    )
+
+    it('a refusal that wrote nothing keeps the package and says so in German', async () => {
+      await withPending()
+      h.api.codingEdits.accept.mockResolvedValue({
+        success: false,
+        outcome: {
+          kind: 'refused',
+          code: 'fs',
+          reason: 'Nothing was written: a file could not be verified as unchanged since it was proposed.'
+        }
+      })
+      await useCodingStore.getState().acceptPending()
+      const state = useCodingStore.getState()
+      expect(state.pending).not.toBeNull()
+      expect(state.applied).toBeNull()
+      expect(state.error).not.toMatch(/Nothing was written/)
+      expect(state.error).toMatch(/Es wurde nichts geschrieben/)
+    })
+
+    it('a changed package is fetched again and the NEW list is shown', async () => {
+      await withPending()
+      h.api.codingEdits.accept.mockResolvedValue({
+        success: false,
+        outcome: { kind: 'refused', code: 'package-changed', reason: 'english text' }
+      })
+      const NEWER = { ...EDIT, path: 'src/b.ts' }
+      h.api.codingEdits.pending.mockResolvedValue({
+        success: true,
+        directoryId: 'd1',
+        digest: 'dig2',
+        edits: [EDIT, NEWER]
+      })
+
+      await useCodingStore.getState().acceptPending()
+
+      const state = useCodingStore.getState()
+      expect(h.api.codingEdits.pending).toHaveBeenLastCalledWith('run_1')
+      expect(state.pending).toMatchObject({ runId: 'run_1', digest: 'dig2' })
+      expect(state.pending?.edits.map((e) => e.path)).toEqual(['src/a.ts', 'src/b.ts'])
+      expect(state.error).toMatch(/geändert/)
+    })
+
+    it('a changed package that is now empty closes the dialog instead of showing a stale list', async () => {
+      await withPending()
+      h.api.codingEdits.accept.mockResolvedValue({
+        success: false,
+        outcome: { kind: 'refused', code: 'package-changed', reason: 'english text' }
+      })
+      h.api.codingEdits.pending.mockResolvedValue({ success: true, edits: [] })
+      await useCodingStore.getState().acceptPending()
+      expect(useCodingStore.getState().pending).toBeNull()
+      expect(useCodingStore.getState().error).toMatch(/geändert/)
+    })
+
+    it('a package reported without a digest is not offered for acceptance, and says why', async () => {
+      // Carried as `digest: ''` it produced a dialog whose accept the main
+      // process refuses every time, with no explanation.
+      await ready('propose')
+      h.api.codingEdits.pending.mockResolvedValue({ success: true, edits: [EDIT] })
+      const out = await useCodingStore.getState().startRun(START)
+      expect(out.started).toBe(true)
+      expect(useCodingStore.getState().pending).toBeNull()
+      expect(useCodingStore.getState().error).toMatch(/Prüfsumme/)
     })
 
     it('shows what undo did not restore, with the reason', async () => {

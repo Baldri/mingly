@@ -1,5 +1,5 @@
 /**
- * `run_command`: the one coding tool that executes something.
+ * `mingly_run_command`: the one coding tool that executes something.
  *
  * Offered only in mode `propose-run` (the registry re-checks the gate before
  * the handler runs). The command is planned by command-allowlist.ts into a
@@ -126,7 +126,7 @@ class RunBudget {
     let entry = this.runs.get(runId)
     if (!entry) {
       // DEBT: the oldest run's budget is forgotten once 200 other runs have used
-      // run_command -> upgrade when the app is observed with more than 200 coding
+      // mingly_run_command -> upgrade when the app is observed with more than 200 coding
       // runs in one session, or when a run id is ever reused.
       if (this.runs.size >= BUDGET_MAX_RUNS) {
         const oldest = this.runs.keys().next().value
@@ -558,7 +558,7 @@ async function runCommand(
     let started = false
     try {
       // 3. Environment: grant and workspace, package.json, binary, path args.
-      //    Running needs `edit` on the grant, like edit_file: a command can
+      //    Running needs `edit` on the grant, like mingly_edit_file: a command can
       //    write files, so it is the stronger tool and may not ask for less.
       const scope = await resolveScope(ctx, { findGrant: deps.findGrant }, true)
       if (!scope) return COMMAND_UNAVAILABLE
@@ -647,7 +647,7 @@ export function registerRunCommand(registry: ToolRegistry, deps: Partial<RunComm
 
   registry.registerBuiltIn(
     {
-      name: 'run_command',
+      name: 'mingly_run_command',
       description:
         'Run ONE allowlisted command in the project root, without a shell. Allowed: `npm test`, ' +
         '`npm run <script>` (script must exist in package.json), `vitest run [paths]`, `tsc --noEmit`, ' +

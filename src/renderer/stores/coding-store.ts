@@ -15,7 +15,9 @@ import {
   CODING_CONSENT_CHOICES,
   CODING_MODE_CHOICES,
   CODING_MODE_ORDER,
+  CODING_REFUSALS_MAY_HAVE_WRITTEN,
   parseCodingMode,
+  parseCodingRefusalCode,
   type CodingConsentChoice,
   type CodingConsentRequest,
   type CodingMode,
@@ -23,7 +25,7 @@ import {
   type PendingEditView
 } from '../../shared/coding-types'
 import type { AllowedDirectory } from '../../shared/file-access-types'
-import { describeUndo, type UndoView } from '../lib/coding-display'
+import { describeUndo, refusalText, type UndoView } from '../lib/coding-display'
 import { useAgentStore } from './agent-store'
 
 // ---------------------------------------------------------------------------
@@ -72,12 +74,12 @@ interface PendingReply {
 interface AcceptReply {
   success?: boolean
   error?: string
-  outcome?: { kind?: string; paths?: string[]; reason?: string }
+  outcome?: { kind?: string; paths?: string[]; reason?: string; code?: unknown }
 }
 interface RejectReply {
   success?: boolean
   error?: string
-  outcome?: { kind?: string; reason?: string }
+  outcome?: { kind?: string; reason?: string; code?: unknown }
 }
 interface UndoReply {
   success?: boolean
@@ -107,6 +109,23 @@ export interface PendingPackage {
   edits: PendingEditView[]
 }
 
+/**
+ * What an accept left behind.
+ *
+ * `uncertain` marks the three refusals after which files may ALREADY be on
+ * disk (`partial`, `withdrawn`, `interrupted`). Their texts all tell the user
+ * to run undo, so the surface has to offer an undo target — and must stop
+ * offering «Annehmen», because the package is no longer the one that was
+ * approved. `paths` is then empty: which files were written is not known
+ * here, and guessing would be worse than saying so.
+ */
+export interface AppliedPackage {
+  runId: string
+  directoryId: string
+  paths: string[]
+  uncertain?: true
+}
+
 export interface StartRunArgs {
   viewMode: string
   task: string
@@ -124,7 +143,7 @@ interface CodingState {
   consent: CodingConsentRequest | null
   pending: PendingPackage | null
   lastRun: { runId: string; directoryId: string } | null
-  applied: { runId: string; directoryId: string; paths: string[] } | null
+  applied: AppliedPackage | null
   undo: UndoView | null
   error: string | null
 
@@ -148,10 +167,20 @@ function api(): Window['electronAPI'] | null {
 
 const NO_API = 'Die Anwendungsschnittstelle ist nicht verfügbar.'
 const UNKNOWN_ERROR = 'Ein unbekannter Fehler ist aufgetreten.'
+/**
+ * `settled: false` says only that THIS answer settled nothing. The question
+ * may have run out of time, but it may also have been replaced by a newer one,
+ * belong to a run that was cancelled, or carry a stale requestId — the broker
+ * does not say which. "Die Frage war bereits abgelaufen" named one cause out
+ * of four; "nicht mehr offen" is what the flag actually means.
+ */
 const CONSENT_NOT_SETTLED =
-  'Ihre Antwort wurde nicht übernommen: Die Frage war bereits abgelaufen. ' +
+  'Ihre Antwort wurde nicht übernommen: Die Frage war nicht mehr offen. ' +
   'Der Lauf wurde ohne diese Datei fortgesetzt.'
 const CONSENT_REFUSED = 'Die Antwort wurde nicht angenommen. Die Frage bleibt offen.'
+const NO_DIGEST =
+  'Die vorgeschlagenen Änderungen wurden ohne Prüfsumme gemeldet und werden deshalb nicht zur ' +
+  'Annahme angeboten. Starten Sie den Lauf neu.'
 
 /**
  * A thrown value as text for the error box. The surface renders under
@@ -172,6 +201,58 @@ export const useCodingStore = create<CodingState>((set, get) => {
     consentApi.onRequest((request) => {
       set({ consent: request })
     })
+  }
+
+  /**
+   * The package a run holds NOW, in the one place that decides what counts as
+   * usable.
+   *
+   * The digest is what binds an accept to the list the human saw. A package
+   * that arrives without one used to be carried as `digest: ''`, which the
+   * main process refuses on every accept — a dialog whose only working button
+   * is «Ablehnen», with no explanation. It is not offered at all instead.
+   */
+  const loadPending = async (
+    runId: string,
+    directoryId: string
+  ): Promise<
+    | { kind: 'package'; pending: PendingPackage }
+    | { kind: 'empty' }
+    | { kind: 'error'; error: string }
+  > => {
+    const bridge = api()?.codingEdits
+    if (!bridge) return { kind: 'error', error: NO_API }
+    try {
+      const reply: PendingReply = await bridge.pending(runId)
+      if (reply.success !== true) {
+        return {
+          kind: 'error',
+          error: reply.error ?? 'Die vorgeschlagenen Änderungen konnten nicht geladen werden.'
+        }
+      }
+      const edits = Array.isArray(reply.edits) ? reply.edits : []
+      if (edits.length === 0) return { kind: 'empty' }
+      if (typeof reply.digest !== 'string' || reply.digest === '') {
+        return { kind: 'error', error: NO_DIGEST }
+      }
+      return { kind: 'package', pending: { runId, directoryId, digest: reply.digest, edits } }
+    } catch (error) {
+      return { kind: 'error', error: errorText(error) }
+    }
+  }
+
+  /** Replace the shown package by what the run holds now, keeping `message` visible. */
+  const refreshPending = async (previous: PendingPackage, message: string): Promise<void> => {
+    const loaded = await loadPending(previous.runId, previous.directoryId)
+    if (loaded.kind === 'package') {
+      set({ pending: loaded.pending, error: message })
+      return
+    }
+    if (loaded.kind === 'empty') {
+      set({ pending: null, error: message })
+      return
+    }
+    set({ pending: null, error: `${message} ${loaded.error}` })
   }
 
   const readMode = async (directoryId: string): Promise<CodingMode> => {
@@ -269,7 +350,7 @@ export const useCodingStore = create<CodingState>((set, get) => {
     },
 
     startRun: async ({ viewMode, task, provider, model, conversationId }) => {
-      const { selectedDirectoryId, modes, runInFlight } = get()
+      const { selectedDirectoryId, modes, runInFlight, pending, consent } = get()
       if (!selectedDirectoryId) {
         return { started: false, reason: 'Es ist kein Projekt gewählt.' }
       }
@@ -283,6 +364,29 @@ export const useCodingStore = create<CodingState>((set, get) => {
       if (runInFlight) {
         return { started: false, reason: 'Es läuft bereits ein Coding-Lauf.' }
       }
+      // A new run used to clear `pending` and `consent` on its way in. An
+      // unreviewed package then vanished from the surface without a rejection
+      // and without an audit entry, while the main process still held it —
+      // reachable with a keyboard, because the dialog traps no focus. A
+      // decision that is open has to be made first.
+      //
+      // The reason also goes into `error`: the caller in MessageInput drops it
+      // (it only reads `started`), so a refusal that lived in the return value
+      // alone would look like nothing happening at all. `error` is rendered by
+      // the diff dialog and the picker.
+      if (pending) {
+        const reason =
+          'Es liegen noch vorgeschlagene Änderungen vor. Nehmen Sie sie an oder lehnen Sie sie ab, ' +
+          'bevor Sie einen neuen Lauf starten.'
+        set({ error: reason })
+        return { started: false, reason }
+      }
+      if (consent) {
+        const reason =
+          'Eine Rückfrage des laufenden Vorgangs ist noch offen. Beantworten Sie sie zuerst.'
+        set({ error: reason })
+        return { started: false, reason }
+      }
 
       const directoryId = selectedDirectoryId
       set({
@@ -290,7 +394,14 @@ export const useCodingStore = create<CodingState>((set, get) => {
         error: null,
         consent: null,
         pending: null,
-        applied: null,
+        // `applied` SURVIVES a new run, decided rather than left to chance: it
+        // is the undo target of the run that was accepted, the snapshot for it
+        // is still on disk, and this is the only place the surface offers an
+        // undo. Clearing it took the one way back from the user as soon as
+        // they asked anything else. The box names it as the LAST applied
+        // package so it cannot be read as this run's result, and
+        // clearResult() dismisses it when the user chooses to.
+        // `undo` is cleared: it is the report of an undo already carried out.
         undo: null
       })
 
@@ -318,26 +429,9 @@ export const useCodingStore = create<CodingState>((set, get) => {
 
       // Only a mode that may propose can have a package to approve.
       if (CODING_MODE_ORDER[mode] >= CODING_MODE_ORDER.propose) {
-        const bridge = api()?.codingEdits
-        if (bridge) {
-          try {
-            const reply: PendingReply = await bridge.pending(run.id)
-            if (reply.success === true && Array.isArray(reply.edits) && reply.edits.length > 0) {
-              set({
-                pending: {
-                  runId: run.id,
-                  directoryId,
-                  digest: reply.digest ?? '',
-                  edits: reply.edits
-                }
-              })
-            } else if (reply.success !== true) {
-              set({ error: reply.error ?? 'Die vorgeschlagenen Änderungen konnten nicht geladen werden.' })
-            }
-          } catch (error) {
-            set({ error: errorText(error) })
-          }
-        }
+        const loaded = await loadPending(run.id, directoryId)
+        if (loaded.kind === 'package') set({ pending: loaded.pending })
+        else if (loaded.kind === 'error') set({ error: loaded.error })
       }
       return { started: true }
     },
@@ -396,10 +490,40 @@ export const useCodingStore = create<CodingState>((set, get) => {
           })
           return
         }
-        // A refusal is a normal answer: the package stays, the reason is shown.
-        set({
-          error: reply.outcome?.reason ?? reply.error ?? 'Die Änderungen wurden nicht geschrieben.'
-        })
+
+        // A refusal is a normal answer. Which refusal it is decides what the
+        // surface must do next, so the code is read, not the sentence.
+        const code = parseCodingRefusalCode(reply.outcome?.code)
+        const message = refusalText(code, reply.outcome?.reason ?? reply.error)
+
+        // The package changed after it was shown: showing the OLD list again
+        // would invite the same refusal forever, with «Ablehnen» as the only
+        // way out. Fetch what is pending NOW and let the human review that.
+        if (code === 'package-changed') {
+          await refreshPending(pending, message)
+          return
+        }
+
+        // Files may already be on disk. Every one of these texts tells the
+        // user to run undo, so the undo target has to exist — and «Annehmen»
+        // must stop being offered, because what is on disk is no longer the
+        // package that was approved.
+        if (code !== undefined && CODING_REFUSALS_MAY_HAVE_WRITTEN.includes(code)) {
+          set({
+            pending: null,
+            error: message,
+            applied: {
+              runId: pending.runId,
+              directoryId: pending.directoryId,
+              paths: [],
+              uncertain: true
+            }
+          })
+          return
+        }
+
+        // Everything else wrote nothing: the package stays and the reason is shown.
+        set({ error: message })
       } catch (error) {
         set({ error: errorText(error) })
       }
@@ -416,7 +540,12 @@ export const useCodingStore = create<CodingState>((set, get) => {
           set({ pending: null, error: null })
           return
         }
-        set({ error: reply.outcome?.reason ?? reply.error ?? 'Die Ablehnung wurde nicht übernommen.' })
+        set({
+          error: refusalText(
+            reply.outcome?.code,
+            reply.outcome?.reason ?? reply.error ?? 'Die Ablehnung wurde nicht übernommen.'
+          )
+        })
       } catch (error) {
         set({ error: errorText(error) })
       }

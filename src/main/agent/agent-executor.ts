@@ -655,7 +655,7 @@ export class AgentExecutor {
    * Format:
    *   [Progress: Step 2/5]
    *   ✅ Step 1: search_docs → found 3 results
-   *   ✅ Step 2: read_file → read 200 lines
+   *   ✅ Step 2: mingly_read_file → read 200 lines
    *   ⏳ Steps remaining: 3
    */
   private buildProgressRecitation(run: AgentRun, maxSteps: number): string {

@@ -5,6 +5,15 @@ import { parseCodingMode, type CodingMode } from "../../shared/coding-types";
 export interface CodingModeStore {
   getMode(directoryId: string): CodingMode;
   setMode(directoryId: string, mode: CodingMode): void;
+  /**
+   * Forget the stored mode of a directory, so the next reader sees `off`.
+   *
+   * Called when the grant goes away. The directory id is derived from the
+   * path, so granting the same directory again produces the same id: a mode
+   * that outlived its grant would come back with it, `propose-run` included,
+   * without the user choosing a level again.
+   */
+  forgetMode(directoryId: string): void;
 }
 
 /** The get/set shape of SimpleStore, so tests can supply a plain double. */
@@ -44,6 +53,16 @@ export function createCodingModeStore(
         ...readModes(),
         [directoryId]: parseCodingMode(mode),
       });
+    },
+
+    forgetMode(directoryId: string): void {
+      const modes = readModes();
+      // Own keys only, as in getMode: a directory id must not reach the
+      // prototype, and `delete` on an inherited name would do nothing anyway.
+      if (!Object.prototype.hasOwnProperty.call(modes, directoryId)) return;
+      const next = { ...modes };
+      delete next[directoryId];
+      backing.set(MODES_KEY, next);
     },
   };
 }

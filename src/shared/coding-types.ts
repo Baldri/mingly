@@ -52,6 +52,18 @@ export interface CodingRunOptions {
 // ── Consent mid-run ─────────────────────────────────────────
 
 /**
+ * How long a consent question may stay open before the broker settles it
+ * itself (to `drop-file`, letting the run carry on without that file).
+ *
+ * Here rather than in the broker because the dialog has to SAY it: a dialog
+ * that claims the run is paused until the user answers, while a deadline runs
+ * out behind it, is a false sentence on an approval surface. The renderer may
+ * not import from the main process, so the number lives in the shared
+ * vocabulary and both sides read it from here.
+ */
+export const CODING_CONSENT_ANSWER_TIMEOUT_MS = 300_000;
+
+/**
  * What the renderer sends to start a coding run: the directory id, nothing else.
  * There is no path and no mode here on purpose (R35): the main process derives
  * the path from the grant and reads the mode from its own store. The IPC
@@ -118,7 +130,7 @@ export function parseCodingConsentChoice(raw: unknown): CodingConsentChoice {
 // -- Edit proposals ----------------------------------------------
 
 /**
- * One proposed change to one file. `edit_file` records it; nothing is written
+ * One proposed change to one file. `mingly_edit_file` records it; nothing is written
  * until a human accepts the step's package.
  *
  * `path` is the REAL path relative to the project root, as the file system
@@ -177,6 +189,82 @@ export interface PendingPackageView {
   edits: PendingEditView[];
 }
 
+// -- Why an apply or an undo refused ----------------------------
+//
+// The main process answers a refusal with its English text AND one of these
+// codes. The codes exist so the renderer can say the same thing in German and
+// can tell the three cases in which files may ALREADY have been written from
+// the ones in which nothing was touched.
+//
+// One code per text, no splitting and no merging: everything that depends on
+// the file system keeps sharing the single text it shares today (`fs`), so a
+// refusal is still not an existence oracle. A new code may only be introduced
+// together with a new text.
+
+export type CodingRefusalCode =
+  /** Everything that depends on the file system. ONE code, ONE text. */
+  | "fs"
+  | "grant"
+  | "nothing-pending"
+  | "input"
+  | "run-directory"
+  | "workspace"
+  | "snapshot"
+  | "no-snapshot"
+  | "unrecorded"
+  | "withdrawn"
+  | "mixed"
+  | "batch-unusable"
+  | "interrupted"
+  | "package-changed"
+  | "busy"
+  | "partial";
+
+/** Every code there is. The source for parsing, so the two cannot drift. */
+export const CODING_REFUSAL_CODES: readonly CodingRefusalCode[] = [
+  "fs",
+  "grant",
+  "nothing-pending",
+  "input",
+  "run-directory",
+  "workspace",
+  "snapshot",
+  "no-snapshot",
+  "unrecorded",
+  "withdrawn",
+  "mixed",
+  "batch-unusable",
+  "interrupted",
+  "package-changed",
+  "busy",
+  "partial",
+];
+
+/**
+ * Parse an untrusted value into a CodingRefusalCode; anything unrecognised is
+ * `undefined`, never a guess. A caller that gets `undefined` falls back to the
+ * text the main process sent.
+ */
+export function parseCodingRefusalCode(
+  raw: unknown,
+): CodingRefusalCode | undefined {
+  return CODING_REFUSAL_CODES.find((code) => code === raw);
+}
+
+/**
+ * The refusals after which files may ALREADY be written.
+ *
+ * `partial` and `withdrawn` happen with files on disk; `interrupted` means an
+ * earlier apply of the same run left some files written. All three tell the
+ * user to run undo, so the surface has to offer it — and must stop offering
+ * "accept", because the package is no longer in the state that was approved.
+ */
+export const CODING_REFUSALS_MAY_HAVE_WRITTEN: readonly CodingRefusalCode[] = [
+  "partial",
+  "withdrawn",
+  "interrupted",
+];
+
 /** The undo answer as it crosses into the renderer (mirrors the main process's outcome). */
 export interface CodingSkippedFile {
   path: string;
@@ -190,7 +278,12 @@ export type CodingUndoOutcome =
       skipped: CodingSkippedFile[];
       interrupted?: true;
     }
-  | { kind: "refused"; reason: string; skipped?: CodingSkippedFile[] };
+  | {
+      kind: "refused";
+      reason: string;
+      code?: CodingRefusalCode;
+      skipped?: CodingSkippedFile[];
+    };
 
 /**
  * One level of the mode picker. `auto` is not here and cannot be added by
@@ -220,8 +313,11 @@ export const CODING_MODE_CHOICES: readonly CodingModeChoice[] = [
   },
   {
     mode: "read-only",
+    // Not "lesen und suchen": there is no search tool. A level must not
+    // promise a capability that does not exist.
     label: "Nur lesen",
-    description: "Minglys Coding-Werkzeuge dürfen im Projekt lesen und suchen, aber nichts ändern.",
+    description:
+      "Minglys Coding-Werkzeuge dürfen Dateien des Projekts auflisten und lesen, aber nichts ändern.",
     scopeNote: CODING_SCOPE_NOTE,
   },
   {
@@ -234,8 +330,15 @@ export const CODING_MODE_CHOICES: readonly CodingModeChoice[] = [
   {
     mode: "propose-run",
     label: "Vorschlagen und ausführen",
+    // This sentence is the ONLY thing the user reads at the moment of
+    // choosing, so it has to say what the level really does. It used to say
+    // "Jede Änderung braucht weiterhin Ihre Annahme", which the README of the
+    // same branch contradicts: a command runs project code, and that code
+    // writes without a diff. The strongest claim is the one that must be true.
     description:
-      "Wie «Vorschlagen», dazu wenige freigegebene Befehle. Jede Änderung braucht weiterhin Ihre Annahme.",
+      "Wie «Vorschlagen», dazu wenige freigegebene Befehle. Ein Befehl führt Projektcode mit Ihren " +
+      "Benutzerrechten aus; dieser Code kann Dateien anlegen, ändern und löschen — auch ausserhalb " +
+      "des Projekts und ohne Diff und ohne Ihre Zustimmung.",
     scopeNote: CODING_SCOPE_NOTE,
   },
 ];

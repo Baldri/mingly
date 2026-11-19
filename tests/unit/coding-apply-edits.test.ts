@@ -94,7 +94,7 @@ function sha(text: string): string {
   return createHash('sha256').update(Buffer.from(text, 'utf-8')).digest('hex')
 }
 
-/** Propose against the file as it is on disk right now, like edit_file does. */
+/** Propose against the file as it is on disk right now, like mingly_edit_file does. */
 function propose(rel: string, oldText: string, newText: string, runId = RUN): void {
   const content = fs.readFileSync(path.join(project, rel), 'utf8')
   const outcome = store.propose(runId, 1, { path: rel, oldText, newText }, content)
@@ -142,7 +142,7 @@ describe('applyPendingEdits: the happy path and the snapshot', () => {
     const b = write('b.ts', 'x = 1\n')
     propose('src/a.ts', 'const a = 1', 'const a = 2')
     propose('b.ts', 'x = 1', 'x = 2')
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out).toMatchObject({ kind: 'applied', paths: ['src/a.ts', 'b.ts'] })
     expect(read(a)).toBe('line one\nconst a = 2\nline three\nfooter text\n')
     expect(read(b)).toBe('x = 2\n')
@@ -164,7 +164,7 @@ describe('applyPendingEdits: the happy path and the snapshot', () => {
       }
       return realRename(from, to)
     })
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('applied')
     expect(seen).toEqual([ORIGINAL])
     expect(read(a)).not.toBe(ORIGINAL)
@@ -176,7 +176,7 @@ describe('applyPendingEdits: the happy path and the snapshot', () => {
     // The snapshot directory is replaced by a file: nothing can be put in it.
     fs.rmSync(ws.snapshotDir, { recursive: true, force: true })
     fs.writeFileSync(ws.snapshotDir, 'not a directory')
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
     expect(leftovers(project)).toEqual([])
@@ -186,14 +186,14 @@ describe('applyPendingEdits: the happy path and the snapshot', () => {
     const files = ['a.ts', 'b.ts', 'c.ts'].map((n) => write(n, 'x = 1\n' + 'y'.repeat(600) + '\n'))
     for (const n of ['a.ts', 'b.ts', 'c.ts']) propose(n, 'x = 1', 'x = 2')
     extraDeps = { maxSnapshotBytes: 1500 }
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('refused')
     for (const f of files) expect(read(f)).toMatch(/^x = 1\n/)
     expect(fs.readdirSync(ws.snapshotDir)).toEqual([])
   })
 
   it('refuses when nothing is pending', async () => {
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('refused')
   })
 })
@@ -203,7 +203,7 @@ describe('applyPendingEdits: grant and mode are checked again, right before the 
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
     grants = [grant({ permissions: ['read'] })]
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
   })
 
@@ -212,7 +212,7 @@ describe('applyPendingEdits: grant and mode are checked again, right before the 
     propose('a.ts', 'const a = 1', 'const a = 2')
     const stale = grants[0]
     grants = []
-    expect((await applyPendingEdits(RUN, ws, stale, deps())).kind).toBe('refused')
+    expect((await applyPendingEdits(RUN, ws, stale, deps(), { expectedDigest: pkg(RUN) })).kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
   })
 
@@ -220,7 +220,7 @@ describe('applyPendingEdits: grant and mode are checked again, right before the 
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
     modes.set('dir-1', mode)
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
   })
 })
@@ -229,7 +229,7 @@ describe('applyPendingEdits: R67, the proof that the file is the one the diff wa
   it('positive control: the unchanged file applies', async () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('applied')
     expect(read(a)).toContain('const a = 2')
   })
 
@@ -238,7 +238,7 @@ describe('applyPendingEdits: R67, the proof that the file is the one the diff wa
     propose('a.ts', 'const a = 1', 'const a = 2')
     const edited = ORIGINAL.replace('const a = 1', 'const a = 1 // mine')
     fs.writeFileSync(a, edited)
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('refused')
     expect(read(a)).toBe(edited)
   })
 
@@ -249,7 +249,7 @@ describe('applyPendingEdits: R67, the proof that the file is the one the diff wa
     fs.writeFileSync(a, edited)
     // Control: the old text is still there exactly once, so a re-count would pass.
     expect(edited.split('const a = 1').length - 1).toBe(1)
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('refused')
     expect(read(a)).toBe(edited)
   })
 
@@ -259,9 +259,9 @@ describe('applyPendingEdits: R67, the proof that the file is the one the diff wa
     propose('a.ts', 'line three', 'line 3', 'runB')
     const wsA = await ensureProjectWorkspace(project, 'runA')
     const wsB = await ensureProjectWorkspace(project, 'runB')
-    expect((await applyPendingEdits('runA', wsA, grants[0], deps())).kind).toBe('applied')
+    expect((await applyPendingEdits('runA', wsA, grants[0], deps(), { expectedDigest: pkg('runA') })).kind).toBe('applied')
     const afterA = read(a)
-    expect((await applyPendingEdits('runB', wsB, grants[0], deps())).kind).toBe('refused')
+    expect((await applyPendingEdits('runB', wsB, grants[0], deps(), { expectedDigest: pkg('runB') })).kind).toBe('refused')
     expect(read(a)).toBe(afterA)
   })
 })
@@ -281,7 +281,7 @@ describe('applyPendingEdits: atomic write', () => {
       }
       return realRename(from, to)
     })
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(attempts).toBe(1)
     expect(out.kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
@@ -303,7 +303,7 @@ describe('applyPendingEdits: atomic write', () => {
       }
       return realRename(from, to)
     })
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('refused')
     expect(writesToB).toBe(1)
     expect(read(a)).toBe(ORIGINAL)
@@ -331,7 +331,7 @@ describe('applyPendingEdits: atomic write', () => {
     const a = write('tool.ts', ORIGINAL)
     fs.chmodSync(a, 0o750)
     propose('tool.ts', 'const a = 1', 'const a = 2')
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('applied')
     expect(fs.statSync(a).mode & 0o777).toBe(0o750)
   })
 })
@@ -343,7 +343,7 @@ describe('applyPendingEdits: R69, how the identity check is called', () => {
     fs.linkSync(a, b)
     propose('a.ts', 'const a = 1', 'const a = 2')
     propose('b.ts', 'footer text', 'footer')
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
     expect(read(b)).toBe(ORIGINAL)
@@ -362,7 +362,7 @@ describe('applyPendingEdits: R69, how the identity check is called', () => {
         }
       }
     }
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
     expect(read(b)).toBe(userEdit)
@@ -375,7 +375,7 @@ describe('applyPendingEdits: R69, how the identity check is called', () => {
     propose('a.ts', 'const a = 1', 'const a = 2')
     fs.rmSync(a)
     fs.symlinkSync(outsideFile, a)
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('refused')
     expect(read(outsideFile)).toBe(ORIGINAL)
   })
@@ -386,7 +386,7 @@ describe('applyPendingEdits: R69, how the identity check is called', () => {
     propose('a.ts', 'const a = 1', 'const a = 2')
     fs.rmSync(a)
     fs.symlinkSync(env, a)
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('refused')
     expect(read(env)).toBe(ORIGINAL)
   })
@@ -403,7 +403,7 @@ describe('applyPendingEdits: R69, how the identity check is called', () => {
         }
       }
     }
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('refused')
     expect(read(a)).toBe(impostor)
     expect(leftovers(project)).toEqual([])
@@ -422,7 +422,7 @@ describe('applyPendingEdits: R69, how the identity check is called', () => {
         }
       }
     }
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('refused')
     expect(read(outsideFile)).toBe(ORIGINAL)
   })
@@ -431,11 +431,11 @@ describe('applyPendingEdits: R69, how the identity check is called', () => {
 describe('applyPendingEdits: the blocklist and the workspace hold on the write path too', () => {
   it('refuses a proposal whose path is blocked, as given', async () => {
     const env = write('.env', 'KEY=1\n')
-    // edit_file would never record this; the store accepts any string, so the
+    // mingly_edit_file would never record this; the store accepts any string, so the
     // write path must not rely on who filled it.
     const outcome = store.propose(RUN, 1, { path: '.env', oldText: 'KEY=1', newText: 'KEY=2' }, 'KEY=1\n')
     expect(outcome.kind).toBe('proposed')
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('refused')
     expect(read(env)).toBe('KEY=1\n')
   })
 
@@ -448,7 +448,7 @@ describe('applyPendingEdits: the blocklist and the workspace hold on the write p
       'old note\n'
     )
     expect(outcome.kind).toBe('proposed')
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('refused')
     expect(read(note)).toBe('old note\n')
   })
 
@@ -459,7 +459,7 @@ describe('applyPendingEdits: the blocklist and the workspace hold on the write p
       write('victim.ts', ORIGINAL)
       propose('victim.ts', 'const a = 1', 'const a = 2')
       setup()
-      const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+      const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
       expect(out.kind).toBe('refused')
       if (out.kind === 'refused') reasons.add(out.reason)
       fs.rmSync(path.join(project, 'victim.ts'), { force: true })
@@ -492,10 +492,10 @@ describe('applyPendingEdits: the blocklist and the workspace hold on the write p
         }
       }
     }
-    const first = applyPendingEdits(RUN, ws, grants[0], deps())
+    const first = applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     await reachedPause
     extraDeps = {}
-    const second = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const second = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(second.kind).toBe('refused')
     release()
     expect((await first).kind).toBe('applied')
@@ -506,8 +506,8 @@ describe('applyPendingEdits: the blocklist and the workspace hold on the write p
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
     const [one, two] = await Promise.all([
-      applyPendingEdits(RUN, ws, grants[0], deps()),
-      applyPendingEdits(RUN, ws, grants[0], deps())
+      applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) }),
+      applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     ])
     expect([one.kind, two.kind].sort()).toEqual(['applied', 'refused'])
     expect(read(a)).toBe('line one\nconst a = 2\nline three\nfooter text\n')
@@ -520,7 +520,7 @@ describe('undoRun', () => {
     const b = write('b.ts', 'x = 1\n')
     propose('src/a.ts', 'const a = 1', 'const a = 2')
     propose('b.ts', 'x = 1', 'x = 2')
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('applied')
     expect(read(a)).not.toBe(ORIGINAL)
     const restored = (await undoRun(RUN, ws, deps())).restored
     expect([...restored].sort()).toEqual(['b.ts', 'src/a.ts'])
@@ -533,7 +533,7 @@ describe('undoRun', () => {
     const b = write('b.ts', 'x = 1\n')
     propose('a.ts', 'const a = 1', 'const a = 2')
     propose('b.ts', 'x = 1', 'x = 2')
-    await applyPendingEdits(RUN, ws, grants[0], deps())
+    await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     const later = 'x = 2\n// later work of the user\n'
     fs.writeFileSync(b, later)
     const result = await undoRun(RUN, ws, deps())
@@ -546,7 +546,7 @@ describe('undoRun', () => {
   it('is idempotent: a second undo restores nothing and changes nothing', async () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
-    await applyPendingEdits(RUN, ws, grants[0], deps())
+    await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect((await undoRun(RUN, ws, deps())).restored).toEqual(['a.ts'])
     // Second time the file no longer holds what the apply wrote: reported, not hidden.
     expect(await undoRun(RUN, ws, deps())).toEqual({
@@ -559,7 +559,7 @@ describe('undoRun', () => {
   it('never writes snapshot content that does not match its recorded hash', async () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
-    await applyPendingEdits(RUN, ws, grants[0], deps())
+    await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     const applied = read(a)
     fs.writeFileSync(path.join(ws.snapshotDir, 'batch-1', '0.bak'), 'tampered\n')
     expect(await undoRun(RUN, ws, deps())).toEqual({
@@ -572,7 +572,7 @@ describe('undoRun', () => {
   it('does not follow a file swapped for a link to the outside', async () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
-    await applyPendingEdits(RUN, ws, grants[0], deps())
+    await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     const outsideFile = path.join(outside, 'a.ts')
     fs.writeFileSync(outsideFile, read(a))
     fs.rmSync(a)
@@ -587,7 +587,7 @@ describe('undoRun', () => {
     const a = write('a.ts', ORIGINAL)
     const b = write('b.ts', 'x = 1\n')
     propose('a.ts', 'const a = 1', 'const a = 2')
-    await applyPendingEdits(RUN, ws, grants[0], deps())
+    await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     const afterA = read(a)
     const malformed = '{"entries": "no"}'
     fs.writeFileSync(path.join(ws.snapshotDir, 'batch-1', 'manifest.json'), malformed)
@@ -603,10 +603,10 @@ describe('undoRun', () => {
   it('undoes two batches of one run newest first, back to the oldest content', async () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('applied')
     store.resolve(RUN, true)
     propose('a.ts', 'const a = 2', 'const a = 3')
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('applied')
     expect(read(a)).toContain('const a = 3')
     await undoRun(RUN, ws, deps())
     expect(read(a)).toBe(ORIGINAL)
@@ -617,7 +617,7 @@ describe('FIX C: undo trusts only batches this app recorded outside the project'
   async function appliedWithManifest(): Promise<{ a: string; manifest: string }> {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('applied')
     return { a, manifest: path.join(ws.snapshotDir, 'batch-1', 'manifest.json') }
   }
 
@@ -684,7 +684,7 @@ describe('FIX C: undo trusts only batches this app recorded outside the project'
         }
       }
     }
-    await applyPendingEdits(RUN, ws, grants[0], deps())
+    await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(recordedBeforeWrite).toBe(true)
   })
 
@@ -697,7 +697,7 @@ describe('FIX C: undo trusts only batches this app recorded outside the project'
       },
       lookup: async () => undefined
     }
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
     expect(fs.readdirSync(ws.snapshotDir)).toEqual([])
   })
@@ -809,7 +809,7 @@ describe('round 3, FIX 1: a save between the verification and the rename is not 
         }
       }
     }
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(fs.statSync(a).ino).toBe(inoBefore)
     expect(out.kind).toBe('refused')
     expect(read(a)).toBe(save)
@@ -830,7 +830,7 @@ describe('round 3, FIX 1: a save between the verification and the rename is not 
       }
       return realLstat(p, opts as never) as never
     })
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(saved).toBe(true)
     expect(out.kind).toBe('refused')
     expect(read(a)).toBe(save)
@@ -840,7 +840,7 @@ describe('round 3, FIX 1: a save between the verification and the rename is not 
   it('undo does not overwrite a save that lands just before its own rename', async () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('applied')
     const save = read(a) + '// saved during undo\n'
     const realLstat = fs.promises.lstat.bind(fs.promises)
     let saved = false
@@ -871,7 +871,7 @@ describe('round 3, FIX 3: grant and mode are checked before EACH write', () => {
   it('a grant revoked after file 1 stops file 2, and nothing is written without the grant (not even a rollback)', async () => {
     const { a, b } = await twoFiles()
     extraDeps = { hooks: { afterWrite: (i) => { if (i === 0) grants = [] } } }
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('refused')
     if (out.kind === 'refused') expect(out.reason).toMatch(/withdrawn/)
     expect(read(b)).toBe('x = 1\n')
@@ -887,15 +887,48 @@ describe('round 3, FIX 3: grant and mode are checked before EACH write', () => {
   it('edit permission dropped after file 1 behaves the same', async () => {
     const { b } = await twoFiles()
     extraDeps = { hooks: { afterWrite: (i) => { if (i === 0) grants = [grant({ permissions: ['read'] })] } } }
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('refused')
     expect(read(b)).toBe('x = 1\n')
   })
 
   it('the mode set to off after file 1 stops file 2 and rolls file 1 back (rollback needs only the grant)', async () => {
     const { a, b } = await twoFiles()
     extraDeps = { hooks: { afterWrite: (i) => { if (i === 0) modes.set('dir-1', 'off') } } }
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('refused')
     expect(read(b)).toBe('x = 1\n')
+    expect(read(a)).toBe(ORIGINAL)
+  })
+
+  it('a findGrant that THROWS after file 1 was written refuses as withdrawn, not as "nothing was written"', async () => {
+    // In production this lookup loads the persisted grants, and one malformed
+    // stored entry makes it throw. Thrown out of the catch it became
+    // REFUSE_FS, whose text starts with "Nothing was written" — while file 1
+    // was written, the marker stood and nothing was rolled back.
+    const { a, b } = await twoFiles()
+    let boom = false
+    extraDeps = {
+      findGrant: async (id) => {
+        if (boom) throw new Error('grant store is unreadable')
+        return grants.find((g) => g.id === id)
+      },
+      hooks: { afterWrite: (i) => { if (i === 0) boom = true } }
+    }
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
+    expect(out.kind).toBe('refused')
+    if (out.kind === 'refused') {
+      expect(out.reason).toMatch(/withdrawn/i)
+      expect(out.reason).not.toMatch(/^Nothing was written/)
+    }
+    expect(read(b)).toBe('x = 1\n')
+    // File 1 stays applied and the marker stays: no write happens while the
+    // grant cannot be verified, and the text says exactly that.
+    expect(read(a)).toContain('const a = 2')
+    expect(fs.existsSync(path.join(ws.snapshotDir, 'batch-1', 'IN-PROGRESS'))).toBe(true)
+    // The remedy the text names works: with a readable grant, undo restores.
+    boom = false
+    extraDeps = {}
+    const undo = await undoRunForDirectory(RUN, 'dir-1', deps())
+    expect(undo.kind).toBe('restored')
     expect(read(a)).toBe(ORIGINAL)
   })
 
@@ -903,7 +936,7 @@ describe('round 3, FIX 3: grant and mode are checked before EACH write', () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
     extraDeps = { hooks: { afterVerify: () => { grants = [] } } }
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
     // Nothing was written, so no marker is left claiming a partial state.
     expect(fs.existsSync(path.join(ws.snapshotDir, 'batch-1', 'IN-PROGRESS'))).toBe(false)
@@ -914,7 +947,7 @@ describe('round 3, FIX 5: debris cannot disable undo', () => {
   async function appliedA(): Promise<string> {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('applied')
     return a
   }
 
@@ -944,10 +977,10 @@ describe('round 3, FIX 5: debris cannot disable undo', () => {
     const a = write('a.ts', ORIGINAL)
     const b = write('b.ts', 'x = 1\n')
     propose('a.ts', 'const a = 1', 'const a = 2')
-    await applyPendingEdits(RUN, ws, grants[0], deps())
+    await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     store.resolve(RUN, true)
     propose('b.ts', 'x = 1', 'x = 2')
-    await applyPendingEdits(RUN, ws, grants[0], deps())
+    await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     fs.rmSync(path.join(ws.snapshotDir, 'batch-2', 'manifest.json'))
     const result = await undoRun(RUN, ws, deps())
     expect(result.restored).toEqual(['a.ts'])
@@ -1008,7 +1041,7 @@ describe('round 3, FIX 6: the ledger is written atomically and a failure stops t
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
     ledger = createFileSnapshotLedger(path.join(ledgerDir, 'no', 'such', 'dir', 'ledger.json'))
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
     expect(fs.readdirSync(ws.snapshotDir)).toEqual([])
   })
@@ -1054,7 +1087,7 @@ describe('round 3, FIX 7: an interrupted apply is detectable, swept and reported
     await twoFilesProposed()
     const seen: boolean[] = []
     extraDeps = { hooks: { afterVerify: (i) => { seen[i] = fs.existsSync(path.join(ws.snapshotDir, MARKER)) } } }
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('applied')
     expect(seen).toEqual([true, true])
     expect(fs.existsSync(path.join(ws.snapshotDir, MARKER))).toBe(false)
   })
@@ -1066,7 +1099,7 @@ describe('round 3, FIX 7: an interrupted apply is detectable, swept and reported
       if (String(to) === b) throw new Error('EIO simulated')
       return realRename(from, to)
     })
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('refused')
     expect(fs.existsSync(path.join(ws.snapshotDir, MARKER))).toBe(false)
   })
 
@@ -1079,7 +1112,7 @@ describe('round 3, FIX 7: an interrupted apply is detectable, swept and reported
       if (String(to) === a && ++toA > 1) throw new Error('EIO on the rollback')
       return realRename(from, to)
     })
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('refused')
     expect(read(a)).toContain('const a = 2')
     expect(fs.existsSync(path.join(ws.snapshotDir, MARKER))).toBe(true)
@@ -1088,14 +1121,14 @@ describe('round 3, FIX 7: an interrupted apply is detectable, swept and reported
   it('the marker STAYS when permission is withdrawn after file 1', async () => {
     await twoFilesProposed()
     extraDeps = { hooks: { afterWrite: (i) => { if (i === 0) grants = [] } } }
-    await applyPendingEdits(RUN, ws, grants[0], deps())
+    await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(fs.existsSync(path.join(ws.snapshotDir, MARKER))).toBe(true)
   })
 
   /** What a killed process leaves: a marker, a stale temp, one file written, one not. */
   async function crashedState(): Promise<{ a: string; b: string }> {
     const { a, b } = await twoFilesProposed()
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('applied')
     fs.writeFileSync(path.join(ws.snapshotDir, MARKER), '{}')
     fs.writeFileSync(b, 'x = 1\n') // as if this rename never happened
     fs.writeFileSync(path.join(project, STALE_TEMP), 'half a write')
@@ -1118,7 +1151,7 @@ describe('round 3, FIX 7: an interrupted apply is detectable, swept and reported
     await crashedState()
     const c = write('c.ts', 'y = 1\n')
     propose('c.ts', 'y = 1', 'y = 2')
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('refused')
     if (out.kind === 'refused') expect(out.reason).toMatch(/interrupted/)
     expect(leftovers(project)).toEqual([])
@@ -1127,7 +1160,7 @@ describe('round 3, FIX 7: an interrupted apply is detectable, swept and reported
 
   it('an undo of a clean run does not claim an interruption', async () => {
     await twoFilesProposed()
-    await applyPendingEdits(RUN, ws, grants[0], deps())
+    await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect('interrupted' in (await undoRun(RUN, ws, deps()))).toBe(false)
   })
 })
@@ -1160,6 +1193,26 @@ describe('round 3, FIX 2: accept is bound to the package the human saw', () => {
       expect((await acceptEditsForRun(RUN, 'dir-1', bad, deps())).kind).toBe('refused')
     }
     expect(read(a)).toBe(ORIGINAL)
+  })
+
+  it('applyPendingEdits itself refuses a missing digest, not only the accept handler', async () => {
+    // The parameter is required by the type, and applyPendingEdits is
+    // exported: a caller that defeats the type (plain JavaScript, a cast) must
+    // not get "apply whatever the run holds" either. The tests directory is
+    // not covered by either tsc run, so this has to be a runtime check.
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    const loose = applyPendingEdits as unknown as (
+      ...args: unknown[]
+    ) => Promise<{ kind: string; reason?: string }>
+    for (const bad of [undefined, {}, { expectedDigest: '' }, { expectedDigest: 42 }, { expectedDigest: null }]) {
+      const out = await loose(RUN, ws, grants[0], deps(), bad)
+      expect(out.kind, JSON.stringify(bad)).toBe('refused')
+    }
+    expect(read(a)).toBe(ORIGINAL)
+    expect(store.pending(RUN)).toHaveLength(1)
+    // Positive control: the digest of what is pending applies.
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('applied')
   })
 
   it('a proposal added DURING the apply is neither applied nor released; the applied one is released', async () => {
@@ -1199,7 +1252,7 @@ describe('round 3, FIX 2: accept is bound to the package the human saw', () => {
     write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
     const before = store.pending(RUN)
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('applied')
     if (out.kind === 'applied') expect(packageDigest(out.edits)).toBe(packageDigest(before))
   })
@@ -1237,7 +1290,7 @@ describe('round 4', () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
     extraDeps = { hooks: { afterVerify: () => { grants = [grant({ path: outside })] } } }
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
   })
 
@@ -1245,7 +1298,7 @@ describe('round 4', () => {
     const a = write('tool.ts', ORIGINAL)
     fs.chmodSync(a, 0o750)
     propose('tool.ts', 'const a = 1', 'const a = 2')
-    await applyPendingEdits(RUN, ws, grants[0], deps())
+    await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(fs.statSync(a).mode & 0o777).toBe(0o750)
     expect((await undoRun(RUN, ws, deps())).restored).toEqual(['tool.ts'])
     expect(read(a)).toBe(ORIGINAL)
@@ -1259,14 +1312,14 @@ describe('round 4', () => {
   it('FIX D: a stale marker next to a COMPLETE apply heals itself and the next apply proceeds', async () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('applied')
     store.resolve(RUN, true)
     // The marker could not be cleared (or the process died just before).
     fs.writeFileSync(path.join(ws.snapshotDir, MARKER), '{}')
     fs.writeFileSync(path.join(project, '.mingly-tmp-0123456789abcdef'), 'stale')
     const c = write('c.ts', 'y = 1\n')
     propose('c.ts', 'y = 1', 'y = 2')
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('applied')
     expect(read(c)).toBe('y = 2\n')
     expect(read(a)).toContain('const a = 2')
@@ -1281,13 +1334,13 @@ describe('round 4', () => {
     const b = write('b.ts', 'x = 1\n')
     propose('a.ts', 'const a = 1', 'const a = 2')
     propose('b.ts', 'x = 1', 'x = 2')
-    await applyPendingEdits(RUN, ws, grants[0], deps())
+    await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     store.resolve(RUN, true)
     fs.writeFileSync(path.join(ws.snapshotDir, MARKER), '{}')
     fs.writeFileSync(b, 'x = 1\n')
     const c = write('c.ts', 'y = 1\n')
     propose('c.ts', 'y = 1', 'y = 2')
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('refused')
     if (out.kind === 'refused') expect(out.reason).toMatch(/interrupted/)
     expect(read(c)).toBe('y = 1\n')
@@ -1298,7 +1351,7 @@ describe('round 4', () => {
   it('FIX E: a genuine batch whose files were all changed, next to an orphan, gets its own reason', async () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
-    await applyPendingEdits(RUN, ws, grants[0], deps())
+    await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     fs.writeFileSync(a, read(a) + '// user work\n')
     fs.mkdirSync(path.join(ws.snapshotDir, 'batch-2'))
     const out = await undoRunForDirectory(RUN, 'dir-1', deps())
@@ -1467,6 +1520,63 @@ describe('handlers: R56 (the workspace is rebuilt from the grant) and R63 (propo
     expect(store.pending(RUN)).toEqual([])
     expect(read(a)).toBe(ORIGINAL)
   })
+
+  it('reject writes one audit entry per refused proposal, carrying the reason', async () => {
+    // "I can prove what the agent was NOT allowed to do" is the interesting
+    // half of the compliance claim, and the dialog promises in so many words
+    // that the reason is kept in the audit log.
+    audit.rows.length = 0
+    write('a.ts', ORIGINAL)
+    write('b.ts', 'x = 1\n')
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    propose('b.ts', 'x = 1', 'x = 2')
+    recordRunAuditContext(RUN, { provider: 'anthropic', model: 'claude-opus-5' })
+
+    rejectEditsForRun(RUN, deps(), 'Falsche Datei angepasst')
+
+    const rows = audit.rows.filter((r) => r.action === 'coding.change_rejected')
+    expect(rows).toHaveLength(2)
+    expect(rows.map((r) => r.details?.filePath)).toEqual(['a.ts', 'b.ts'])
+    for (const row of rows) {
+      expect(row.entityId).toBe(RUN)
+      expect(row.details).toMatchObject({
+        note: 'Falsche Datei angepasst',
+        provider: 'anthropic',
+        model: 'claude-opus-5',
+        runContextKnown: true
+      })
+      // Never the file text, as for every other entry in this trail.
+      expect(JSON.stringify(row.details)).not.toContain('const a = 1')
+    }
+  })
+
+  it('reject without a reason still records the refused proposals', async () => {
+    audit.rows.length = 0
+    write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    rejectEditsForRun(RUN, deps())
+    const rows = audit.rows.filter((r) => r.action === 'coding.change_rejected')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].details?.note).toBe('')
+  })
+
+  it('a reject with nothing pending records nothing', async () => {
+    audit.rows.length = 0
+    rejectEditsForRun(RUN, deps(), 'nothing here')
+    expect(audit.rows.filter((r) => r.action === 'coding.change_rejected')).toEqual([])
+  })
+
+  it('a failing audit store does not turn a rejection into a failure', async () => {
+    write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    audit.fail = true
+    try {
+      expect(rejectEditsForRun(RUN, deps(), 'no')).toEqual({ kind: 'rejected', count: 1 })
+    } finally {
+      audit.fail = false
+    }
+    expect(store.pending(RUN)).toEqual([])
+  })
 })
 
 describe('writeFileAtomic as an exported helper', () => {
@@ -1492,7 +1602,7 @@ describe('audit: one entry per accepted change, none for anything that was not w
     propose('b.ts', 'x = 1', 'x = 2')
     recordRunAuditContext(RUN, { provider: 'anthropic', model: 'claude-opus-5' })
     markGuardRedirected(RUN)
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('applied')
     expect(audit.rows.map((r) => r.action)).toEqual(['coding.change_applied', 'coding.change_applied'])
     expect(audit.rows.every((r) => r.entityId === RUN)).toBe(true)
@@ -1514,7 +1624,7 @@ describe('audit: one entry per accepted change, none for anything that was not w
   it('records a run nobody described as unknown, with the guard assumed to have acted', async () => {
     write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2', 'runA')
-    const out = await applyPendingEdits('runA', await ensureProjectWorkspace(project, 'runA'), grants[0], deps())
+    const out = await applyPendingEdits('runA', await ensureProjectWorkspace(project, 'runA'), grants[0], deps(), { expectedDigest: pkg('runA') })
     expect(out.kind).toBe('applied')
     expect(audit.rows[0].details).toMatchObject({
       provider: 'unknown',
@@ -1527,7 +1637,7 @@ describe('audit: one entry per accepted change, none for anything that was not w
   it('never puts file content into an entry', async () => {
     write('a.ts', 'const key = "sk-live-4242424242424242"\n')
     propose('a.ts', 'sk-live-4242424242424242', 'sk-live-0000000000000000')
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('applied')
     const text = JSON.stringify(audit.rows)
     expect(text).not.toContain('sk-live')
     expect(text).not.toContain('const key')
@@ -1537,7 +1647,7 @@ describe('audit: one entry per accepted change, none for anything that was not w
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
     fs.writeFileSync(a, ORIGINAL.replace('line one', 'line ONE'))
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('refused')
     expect(audit.rows).toEqual([])
   })
@@ -1554,7 +1664,7 @@ describe('audit: one entry per accepted change, none for anything that was not w
         }
       }
     }
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     expect(out.kind).toBe('refused')
     expect(read(a)).toBe(ORIGINAL)
     expect(audit.rows).toEqual([])
@@ -1564,7 +1674,7 @@ describe('audit: one entry per accepted change, none for anything that was not w
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
     audit.fail = true
-    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })
     // The files ARE written: telling the user "nothing was written" would be false.
     expect(out.kind).toBe('applied')
     expect(read(a)).toContain('const a = 2')
@@ -1575,7 +1685,7 @@ describe('audit: one entry per accepted change, none for anything that was not w
     const b = write('b.ts', 'x = 1\n')
     propose('a.ts', 'const a = 1', 'const a = 2')
     propose('b.ts', 'x = 1', 'x = 2')
-    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps(), { expectedDigest: pkg(RUN) })).kind).toBe('applied')
     fs.writeFileSync(b, 'x = 2\nlater work\n')
     audit.rows.length = 0
     const result = await undoRun(RUN, ws, { ledger })

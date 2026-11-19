@@ -318,7 +318,7 @@ describe('Tool lookup', () => {
 
 describe('Context-gated built-in tools', () => {
   const gatedDef: ToolDefinition = {
-    name: 'edit_file',
+    name: 'mingly_edit_file',
     description: 'Gated test tool',
     inputSchema: { type: 'object', properties: {}, required: [] }
   }
@@ -330,26 +330,26 @@ describe('Context-gated built-in tools', () => {
 
   it('withholds a gated tool when no context is given', () => {
     registry.registerBuiltIn(gatedDef, async () => 'edited', proposeGate)
-    expect(registry.getAvailableTools().map((t) => t.name)).not.toContain('edit_file')
+    expect(registry.getAvailableTools().map((t) => t.name)).not.toContain('mingly_edit_file')
   })
 
   it('offers a gated tool when the mode reaches its threshold', () => {
     registry.registerBuiltIn(gatedDef, async () => 'edited', proposeGate)
-    expect(registry.getAvailableTools(codingCtx('propose')).map((t) => t.name)).toContain('edit_file')
-    expect(registry.getAvailableTools(codingCtx('propose-run')).map((t) => t.name)).toContain('edit_file')
+    expect(registry.getAvailableTools(codingCtx('propose')).map((t) => t.name)).toContain('mingly_edit_file')
+    expect(registry.getAvailableTools(codingCtx('propose-run')).map((t) => t.name)).toContain('mingly_edit_file')
   })
 
   it('withholds it again one step below the threshold', () => {
     registry.registerBuiltIn(gatedDef, async () => 'edited', proposeGate)
-    expect(registry.getAvailableTools(codingCtx('read-only')).map((t) => t.name)).not.toContain('edit_file')
-    expect(registry.getAvailableTools(codingCtx('off')).map((t) => t.name)).not.toContain('edit_file')
+    expect(registry.getAvailableTools(codingCtx('read-only')).map((t) => t.name)).not.toContain('mingly_edit_file')
+    expect(registry.getAvailableTools(codingCtx('off')).map((t) => t.name)).not.toContain('mingly_edit_file')
   })
 
   it('refuses execution of a gated tool even when it was never offered', async () => {
     const handler = vi.fn(async () => 'edited')
     registry.registerBuiltIn(gatedDef, handler, proposeGate)
     const [res] = await registry.executeToolCalls(
-      [{ id: '1', name: 'edit_file', arguments: {} }],
+      [{ id: '1', name: 'mingly_edit_file', arguments: {} }],
       undefined
     )
     expect(res.isError).toBe(true)
@@ -359,7 +359,7 @@ describe('Context-gated built-in tools', () => {
   it('refuses execution one step below the threshold, runs it at the threshold', async () => {
     const handler = vi.fn(async () => 'edited')
     registry.registerBuiltIn(gatedDef, handler, proposeGate)
-    const call = [{ id: '1', name: 'edit_file', arguments: {} }]
+    const call = [{ id: '1', name: 'mingly_edit_file', arguments: {} }]
     const [below] = await registry.executeToolCalls(call, codingCtx('read-only'))
     expect(below.isError).toBe(true)
     expect(handler).not.toHaveBeenCalled()
@@ -372,7 +372,7 @@ describe('Context-gated built-in tools', () => {
     const handler = vi.fn(async () => 'ok')
     registry.registerBuiltIn(gatedDef, handler, proposeGate)
     const ctx = codingCtx('propose')
-    await registry.executeToolCalls([{ id: '1', name: 'edit_file', arguments: { a: 1 } }], ctx)
+    await registry.executeToolCalls([{ id: '1', name: 'mingly_edit_file', arguments: { a: 1 } }], ctx)
     // The handler gets the run's context, narrowed to this call by the call id
     // (lets a handler report per-call results under a key the registry mints,
     // never one the provider supplied). Still two arguments.
@@ -384,9 +384,9 @@ describe('Context-gated built-in tools', () => {
     registry.registerBuiltIn(gatedDef, handler, () => {
       throw new Error('boom')
     })
-    expect(registry.getAvailableTools(codingCtx('propose')).map((t) => t.name)).not.toContain('edit_file')
+    expect(registry.getAvailableTools(codingCtx('propose')).map((t) => t.name)).not.toContain('mingly_edit_file')
     const [res] = await registry.executeToolCalls(
-      [{ id: '1', name: 'edit_file', arguments: {} }],
+      [{ id: '1', name: 'mingly_edit_file', arguments: {} }],
       codingCtx('propose')
     )
     expect(res.isError).toBe(true)
@@ -395,17 +395,17 @@ describe('Context-gated built-in tools', () => {
 
   it('treats a non-boolean gate result as closed', () => {
     registry.registerBuiltIn(gatedDef, async () => 'x', (() => 'yes') as unknown as ToolGate)
-    expect(registry.getAvailableTools(codingCtx('propose')).map((t) => t.name)).not.toContain('edit_file')
+    expect(registry.getAvailableTools(codingCtx('propose')).map((t) => t.name)).not.toContain('mingly_edit_file')
   })
 
   it('does not name a gated tool in the unknown-tool listing of an ungated caller', async () => {
     registry.registerBuiltIn(gatedDef, async () => 'x', proposeGate)
     const [res] = await registry.executeToolCalls(
-      [{ id: '1', name: 'edit_file', arguments: {} }],
+      [{ id: '1', name: 'mingly_edit_file', arguments: {} }],
       undefined
     )
     expect(res.isError).toBe(true)
-    expect(res.content).not.toMatch(/Available tools:.*edit_file/)
+    expect(res.content).not.toMatch(/Available tools:.*mingly_edit_file/)
   })
 
   describe('a closed built-in gate versus an MCP tool of the same name', () => {

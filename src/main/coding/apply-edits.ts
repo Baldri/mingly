@@ -46,18 +46,29 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { createHash } from 'crypto'
-import { CODING_MODE_ORDER, parseCodingMode, type CodingMode } from '../../shared/coding-types'
+import {
+  CODING_MODE_ORDER,
+  parseCodingMode,
+  type CodingMode,
+  type CodingRefusalCode
+} from '../../shared/coding-types'
 import { hasPermission, type AllowedDirectory } from '../../shared/file-access-types'
 import { atLeast } from '../policy/policy-types'
 import { resolveRealPath } from '../file-access/real-path-guard'
 import { editStillMatches, getEditProposalStore, packageDigest, type EditProposalStore } from './edit-proposals'
-import { isProbablyBinary } from './path-policy'
+import { CODING_FILE_MAX_BYTES, isProbablyBinary } from './path-policy'
 import { resolveReadableFile, defaultReadToolDeps, type Scope } from './read-tools'
 import { ensureProjectWorkspace, type ProjectWorkspace } from './project-workspace'
 import { writeFileAtomic, ContentChanged } from './atomic-write'
 import { getSnapshotLedger, type SnapshotLedger } from './snapshot-ledger'
 import { getRunDirectoryRegistry, type RunDirectoryRegistry } from './run-directories'
-import { currentPolicyVersion, logCodingChange, logCodingRunUndone, resolveRunAuditContext } from './coding-audit'
+import {
+  currentPolicyVersion,
+  logCodingChange,
+  logCodingChangeRejected,
+  logCodingRunUndone,
+  resolveRunAuditContext
+} from './coding-audit'
 import type { ProposedEdit } from '../../shared/coding-types'
 
 // ---------------------------------------------------------------------------
@@ -65,7 +76,7 @@ import type { ProposedEdit } from '../../shared/coding-types'
 // ---------------------------------------------------------------------------
 
 /** Same ceiling the read and edit tools use: a file above it was never proposed. */
-const APPLY_FILE_MAX_BYTES = 2 * 1024 * 1024
+const APPLY_FILE_MAX_BYTES = CODING_FILE_MAX_BYTES
 /**
  * Total bytes one apply may copy into the snapshot. Bounds the PRODUCT of
  * (files in the package x file size): the per-file cap alone would allow
@@ -102,7 +113,7 @@ export { writeFileAtomic, type AtomicWriteOptions } from './atomic-write'
 
 export type ApplyOutcome =
   | { kind: 'applied'; paths: string[]; edits: ProposedEdit[] }
-  | { kind: 'refused'; reason: string }
+  | { kind: 'refused'; reason: string; code: CodingRefusalCode }
 
 /** Why a file was left alone by undo. */
 export type SkipReason =
@@ -142,52 +153,65 @@ export interface UndoResult {
 
 export type UndoOutcome =
   | ({ kind: 'restored' } & UndoResult)
-  | { kind: 'refused'; reason: string; skipped?: SkippedFile[] }
+  | { kind: 'refused'; reason: string; code: CodingRefusalCode; skipped?: SkippedFile[] }
 
 export type RejectOutcome =
   | { kind: 'rejected'; count: number }
-  | { kind: 'refused'; reason: string }
+  | { kind: 'refused'; reason: string; code: CodingRefusalCode }
 
-/** The one text for everything that depends on the file system. */
-const REFUSE_FS =
-  'Nothing was written: a file could not be verified as unchanged since it was proposed. ' +
-  'Review the proposal again.'
-const REFUSE_GRANT =
-  'Nothing was written: the directory grant or the coding mode no longer allows edits.'
-const REFUSE_NOTHING = 'Nothing was written: there is nothing pending for this run.'
-const REFUSE_INPUT = 'Nothing was done: the request is not a valid run and directory.'
-const REFUSE_RUN_DIRECTORY =
-  'Nothing was done: this run is not known to belong to that directory. The request and the ' +
-  'main process disagree about which project the run worked on.'
-const REFUSE_WORKSPACE = 'Nothing was written: the project workspace does not belong to this grant.'
-const REFUSE_SNAPSHOT =
-  'Nothing was written: the snapshot could not be made, and no file is changed without one.'
-const REFUSE_NO_SNAPSHOT =
-  'Nothing was restored: there is no snapshot for this run in this directory.'
-const REFUSE_UNRECORDED =
-  'Nothing was restored: this snapshot has no record in this app (it was not created here, its ' +
-  'manifest was changed afterwards, or the record is gone). It will not be restored.'
-const REFUSE_WITHDRAWN =
-  'Permission was withdrawn while the package was being applied. Files already written cannot be ' +
-  'restored without permission and stay applied; restore the grant and run undo for this run.'
-const REFUSE_MIXED =
-  'Nothing was restored: the files of the recorded snapshot were changed after the apply, and other ' +
-  'batches of this run have no valid record. See the list for each.'
-const REFUSE_BATCH_UNUSABLE =
-  'Nothing was restored: the snapshot batches of this run are missing or unreadable.'
-const REFUSE_INTERRUPTED =
-  'Nothing was written: an earlier apply of this run was interrupted and may have left some files ' +
-  'written and others not. Stale temporary files were removed. Run undo for this run first; it ' +
-  'reports which files were written.'
-const REFUSE_PACKAGE_CHANGED =
-  'Nothing was written: the proposals changed after they were shown and must be reviewed again.'
-const REFUSE_BUSY = 'Nothing was written: another apply or undo is running for this project.'
-const REFUSE_PARTIAL =
-  'A write failed after other files were already written, and not every file could be restored. ' +
-  'Run undo for this run to restore what the snapshot still allows.'
+/**
+ * One text per refusal code, and one code per text.
+ *
+ * The codes travel to the renderer so it can say the same thing in German and
+ * can tell the refusals after which files may already be written. They do NOT
+ * split or merge any existing text: everything that depends on the file system
+ * still shares `fs`, so a refusal remains no existence oracle. A new code may
+ * only come with a new text.
+ */
+const REFUSAL_TEXT: Readonly<Record<CodingRefusalCode, string>> = {
+  // The one text for everything that depends on the file system.
+  fs:
+    'Nothing was written: a file could not be verified as unchanged since it was proposed. ' +
+    'Review the proposal again.',
+  grant: 'Nothing was written: the directory grant or the coding mode no longer allows edits.',
+  'nothing-pending': 'Nothing was written: there is nothing pending for this run.',
+  input: 'Nothing was done: the request is not a valid run and directory.',
+  'run-directory':
+    'Nothing was done: this run is not known to belong to that directory. The request and the ' +
+    'main process disagree about which project the run worked on.',
+  workspace: 'Nothing was written: the project workspace does not belong to this grant.',
+  snapshot:
+    'Nothing was written: the snapshot could not be made, and no file is changed without one.',
+  'no-snapshot': 'Nothing was restored: there is no snapshot for this run in this directory.',
+  unrecorded:
+    'Nothing was restored: this snapshot has no record in this app (it was not created here, its ' +
+    'manifest was changed afterwards, or the record is gone). It will not be restored.',
+  withdrawn:
+    'Permission was withdrawn while the package was being applied. Files already written cannot be ' +
+    'restored without permission and stay applied; restore the grant and run undo for this run.',
+  mixed:
+    'Nothing was restored: the files of the recorded snapshot were changed after the apply, and other ' +
+    'batches of this run have no valid record. See the list for each.',
+  'batch-unusable':
+    'Nothing was restored: the snapshot batches of this run are missing or unreadable.',
+  interrupted:
+    'Nothing was written: an earlier apply of this run was interrupted and may have left some files ' +
+    'written and others not. Stale temporary files were removed. Run undo for this run first; it ' +
+    'reports which files were written.',
+  'package-changed':
+    'Nothing was written: the proposals changed after they were shown and must be reviewed again.',
+  busy: 'Nothing was written: another apply or undo is running for this project.',
+  partial:
+    'A write failed after other files were already written, and not every file could be restored. ' +
+    'Run undo for this run to restore what the snapshot still allows.'
+}
 
-function refused(reason: string): { kind: 'refused'; reason: string } {
-  return { kind: 'refused', reason }
+function refused(code: CodingRefusalCode): {
+  kind: 'refused'
+  reason: string
+  code: CodingRefusalCode
+} {
+  return { kind: 'refused', reason: REFUSAL_TEXT[code], code }
 }
 
 /** The grant or the mode no longer allows the write that was about to happen. */
@@ -199,8 +223,12 @@ class AuthorityLost extends Error {
 
 /** Thrown inside the apply and mapped to one refusal at the boundary. */
 class Refusal extends Error {
-  constructor(readonly reason: string) {
-    super(reason)
+  constructor(readonly code: CodingRefusalCode) {
+    super(REFUSAL_TEXT[code])
+  }
+
+  get reason(): string {
+    return REFUSAL_TEXT[this.code]
   }
 }
 
@@ -293,9 +321,9 @@ async function openAndRead(
     const stat = await handle.stat()
     // nlink > 1: a rename would break the link and leave the other name on the
     // old content; two names for one file also defeat a per-name identity.
-    if (!stat.isFile() || stat.nlink !== 1) throw new Refusal(REFUSE_FS)
-    if (stat.size > APPLY_FILE_MAX_BYTES) throw new Refusal(REFUSE_FS)
-    if (budget && stat.size > budget.remaining) throw new Refusal(REFUSE_FS)
+    if (!stat.isFile() || stat.nlink !== 1) throw new Refusal('fs')
+    if (stat.size > APPLY_FILE_MAX_BYTES) throw new Refusal('fs')
+    if (budget && stat.size > budget.remaining) throw new Refusal('fs')
 
     const buffer = Buffer.alloc(stat.size)
     let position = 0
@@ -304,7 +332,7 @@ async function openAndRead(
       if (bytesRead === 0) break
       position += bytesRead
     }
-    if (position !== stat.size) throw new Refusal(REFUSE_FS)
+    if (position !== stat.size) throw new Refusal('fs')
     if (budget) budget.remaining -= stat.size
     return { handle, data: buffer, dev: stat.dev, ino: stat.ino }
   } catch {
@@ -336,12 +364,12 @@ async function openVerified(
   const opened = await openAndRead(resolved.realTarget, budget)
   if (!opened) return null
   try {
-    if (isProbablyBinary(opened.data.subarray(0, Math.min(opened.data.length, 8192)))) throw new Refusal(REFUSE_FS)
+    if (isProbablyBinary(opened.data.subarray(0, Math.min(opened.data.length, 8192)))) throw new Refusal('fs')
     const text = opened.data.toString('utf-8')
     // Bytes that are not valid UTF-8 would not survive a write of the text.
-    if (!Buffer.from(text, 'utf-8').equals(opened.data)) throw new Refusal(REFUSE_FS)
+    if (!Buffer.from(text, 'utf-8').equals(opened.data)) throw new Refusal('fs')
     // R67. The hash of the whole file and the position of the old text.
-    if (!editStillMatches(edit, text)) throw new Refusal(REFUSE_FS)
+    if (!editStillMatches(edit, text)) throw new Refusal('fs')
     return { ...opened, realTarget: resolved.realTarget, realRelPosix: resolved.realRelPosix, text }
   } catch {
     await opened.handle.close().catch(() => undefined)
@@ -536,18 +564,23 @@ async function restoreEntry(
 // applyPendingEdits
 // ---------------------------------------------------------------------------
 
+/**
+ * `expectedDigest` is REQUIRED, and not only by the type: an apply without it
+ * would mean "write whatever the run holds now", and this function is
+ * exported. What a human approved is a package, named by its digest.
+ */
 export async function applyPendingEdits(
   runId: string,
   ws: ProjectWorkspace,
   dir: AllowedDirectory,
   deps: ApplyDeps = defaultApplyDeps(),
-  options: { expectedDigest?: string } = {}
+  options: { expectedDigest: string }
 ): Promise<ApplyOutcome> {
   try {
     return await applyInner(runId, ws, dir, deps, options)
   } catch (error) {
     // Anything unexpected is a refusal, never a partial success.
-    return refused(error instanceof Refusal ? error.reason : REFUSE_FS)
+    return refused(error instanceof Refusal ? error.code : 'fs')
   }
 }
 
@@ -556,32 +589,37 @@ async function applyInner(
   ws: ProjectWorkspace,
   dir: AllowedDirectory,
   deps: ApplyDeps,
-  options: { expectedDigest?: string }
+  options: { expectedDigest: string }
 ): Promise<ApplyOutcome> {
-  if (typeof runId !== 'string' || !SAFE_RUN_ID.test(runId)) throw new Refusal(REFUSE_INPUT)
-  if (!dir || typeof dir.id !== 'string') throw new Refusal(REFUSE_INPUT)
+  if (typeof runId !== 'string' || !SAFE_RUN_ID.test(runId)) throw new Refusal('input')
+  if (!dir || typeof dir.id !== 'string') throw new Refusal('input')
+  // Checked at runtime too: a caller that defeats the type (JavaScript, a
+  // cast) must not get "apply whatever the run holds" either.
+  if (typeof options?.expectedDigest !== 'string' || options.expectedDigest === '') {
+    throw new Refusal('input')
+  }
 
   // 1. Grant and mode, looked up again now. The `dir` the caller passed is only
   // a name for the grant: what it allows is read afresh.
   const grant = await deps.findGrant(dir.id)
-  if (!permitsEdit(grant)) throw new Refusal(REFUSE_GRANT)
+  if (!permitsEdit(grant)) throw new Refusal('grant')
   const mode = parseCodingMode(await deps.getMode(dir.id))
-  if (!atLeast(CODING_MODE_ORDER, mode, 'propose')) throw new Refusal(REFUSE_GRANT)
+  if (!atLeast(CODING_MODE_ORDER, mode, 'propose')) throw new Refusal('grant')
 
   // 2. Everything that needs no file content.
   const edits = deps.store.pending(runId)
-  if (edits.length === 0) throw new Refusal(REFUSE_NOTHING)
-  // The human approved a set. When the caller says which set, this is the one
-  // snapshot of the run's package that is checked, applied and later released:
-  // nothing added afterwards rides along.
-  if (options.expectedDigest !== undefined && packageDigest(edits) !== options.expectedDigest) {
-    throw new Refusal(REFUSE_PACKAGE_CHANGED)
+  if (edits.length === 0) throw new Refusal('nothing-pending')
+  // The human approved a set. This is the one snapshot of the run's package
+  // that is checked, applied and later released: nothing added afterwards
+  // rides along.
+  if (packageDigest(edits) !== options.expectedDigest) {
+    throw new Refusal('package-changed')
   }
 
   const scope = await buildScope(grant.path, ws, runId)
-  if (!scope) throw new Refusal(REFUSE_WORKSPACE)
+  if (!scope) throw new Refusal('workspace')
 
-  if (busyProjects.has(scope.realRoot)) throw new Refusal(REFUSE_BUSY)
+  if (busyProjects.has(scope.realRoot)) throw new Refusal('busy')
   busyProjects.add(scope.realRoot)
   try {
     // An earlier apply of this run that never finished leaves a marker. Sweep
@@ -604,19 +642,19 @@ async function applyInner(
           if (manifest) await sweepStaleTemps(scope, manifest.entries)
           if (!manifest || !(await batchComplete(manifest, scope))) allComplete = false
         }
-        if (!allComplete) throw new Refusal(REFUSE_INTERRUPTED)
+        if (!allComplete) throw new Refusal('interrupted')
         for (const number of interrupted) await clearMarker(path.join(ws.snapshotDir, `batch-${number}`))
       }
     } catch (error) {
-      throw error instanceof Refusal ? error : new Refusal(REFUSE_SNAPSHOT)
+      throw error instanceof Refusal ? error : new Refusal('snapshot')
     }
 
     const seen = new Set<string>()
     for (const edit of edits) {
       const resolved = await resolveReadableFile(edit.path, scope)
-      if (resolved.kind !== 'ok' || isInsideWorkspace(resolved.realRelPosix)) throw new Refusal(REFUSE_FS)
+      if (resolved.kind !== 'ok' || isInsideWorkspace(resolved.realRelPosix)) throw new Refusal('fs')
       // Two proposals that now name one file (a link made after proposing).
-      if (seen.has(resolved.realTarget)) throw new Refusal(REFUSE_FS)
+      if (seen.has(resolved.realTarget)) throw new Refusal('fs')
       seen.add(resolved.realTarget)
     }
 
@@ -627,7 +665,7 @@ async function applyInner(
       const budget = { remaining: deps.maxSnapshotBytes ?? APPLY_MAX_SNAPSHOT_BYTES }
       for (let i = 0; i < edits.length; i++) {
         const verified = await openVerified(edits[i], scope, budget)
-        if (!verified) throw new Refusal(REFUSE_FS)
+        if (!verified) throw new Refusal('fs')
         try {
           const file = `${i}.bak`
           await writeNewFile(path.join(batchDir, file), verified.data)
@@ -653,7 +691,7 @@ async function applyInner(
     } catch (error) {
       await fs.promises.rm(batchDir, { recursive: true, force: true }).catch(() => undefined)
       // A failed verification keeps its reason; anything else here is the snapshot.
-      throw error instanceof Refusal ? error : new Refusal(REFUSE_SNAPSHOT)
+      throw error instanceof Refusal ? error : new Refusal('snapshot')
     }
 
     // 4. Pass 2: check and write, one file at a time.
@@ -670,7 +708,7 @@ async function applyInner(
     try {
       for (let i = 0; i < edits.length; i++) {
         const verified = await openVerified(edits[i], scope)
-        if (!verified) throw new Refusal(REFUSE_FS)
+        if (!verified) throw new Refusal('fs')
         try {
           // No separate `before`/`after` re-hash here, deliberately: openVerified
           // has just run editStillMatches, which compares the hash of the content
@@ -696,18 +734,28 @@ async function applyInner(
     } catch (error) {
       // A rollback is a write too: without the grant there is none. (The mode
       // is not needed for it, as for undo.)
-      const mayWrite = !(error instanceof AuthorityLost && error.grantGone) && (await grantAllows())
+      //
+      // The lookup must not throw OUT of this catch. In production grantAllows
+      // loads the persisted grants, and a single malformed stored entry makes
+      // that throw; the exception would leave the catch, reach the outer
+      // handler and become the `fs` refusal — whose text begins "Nothing was
+      // written" — with files written, the marker standing and no rollback. A
+      // throw is therefore "may not write", the strict side, which routes a
+      // partial state to `withdrawn`, whose text says what is true.
+      const mayWrite =
+        !(error instanceof AuthorityLost && error.grantGone) &&
+        (await grantAllows().catch(() => false))
       if (!mayWrite) {
         // Partial state keeps the marker; nothing written does not need it.
-        if (written.length > 0) throw new Refusal(REFUSE_WITHDRAWN)
+        if (written.length > 0) throw new Refusal('withdrawn')
         await clearMarker(batchDir)
-        throw new Refusal(REFUSE_GRANT)
+        throw new Refusal('grant')
       }
       const stuck = await rollBack(written, entries, batchDir, scope)
-      if (stuck > 0) throw new Refusal(REFUSE_PARTIAL)
+      if (stuck > 0) throw new Refusal('partial')
       await clearMarker(batchDir)
-      if (error instanceof AuthorityLost) throw new Refusal(REFUSE_GRANT)
-      throw error instanceof Refusal ? error : new Refusal(REFUSE_FS)
+      if (error instanceof AuthorityLost) throw new Refusal('grant')
+      throw error instanceof Refusal ? error : new Refusal('fs')
     }
 
     await clearMarker(batchDir)
@@ -864,7 +912,7 @@ async function makeBatchDir(ws: ProjectWorkspace, scope: Scope, runId: string): 
     await fs.promises.mkdir(batchDir, { mode: 0o700 })
     return batchDir
   } catch {
-    throw new Refusal(REFUSE_SNAPSHOT)
+    throw new Refusal('snapshot')
   }
 }
 
@@ -907,7 +955,7 @@ export async function undoRun(
   }
   const scope = await buildScope(path.dirname(ws.root), ws, runId)
   if (!scope) throw new Error('workspace does not match')
-  if (busyProjects.has(scope.realRoot)) throw new Error(REFUSE_BUSY)
+  if (busyProjects.has(scope.realRoot)) throw new Error(REFUSAL_TEXT.busy)
   busyProjects.add(scope.realRoot)
   try {
     await assertSnapshotDir(ws, scope, runId)
@@ -1028,20 +1076,20 @@ export async function acceptEditsForRun(
   deps: ApplyDeps = defaultApplyDeps()
 ): Promise<ApplyOutcome> {
   try {
-    if (!validIds(runId, directoryId)) return refused(REFUSE_INPUT)
+    if (!validIds(runId, directoryId)) return refused('input')
     // What the human approved is a package, named by its digest; "whatever the
     // run holds" is not an accept.
-    if (typeof expectedDigest !== 'string' || expectedDigest === '') return refused(REFUSE_INPUT)
-    if (!runBelongsTo(deps, runId, directoryId)) return refused(REFUSE_RUN_DIRECTORY)
+    if (typeof expectedDigest !== 'string' || expectedDigest === '') return refused('input')
+    if (!runBelongsTo(deps, runId, directoryId)) return refused('run-directory')
     const grant = await deps.findGrant(directoryId as string)
-    if (!permitsEdit(grant)) return refused(REFUSE_GRANT)
-    if (deps.store.pending(runId).length === 0) return refused(REFUSE_NOTHING)
+    if (!permitsEdit(grant)) return refused('grant')
+    if (deps.store.pending(runId).length === 0) return refused('nothing-pending')
 
     let ws: ProjectWorkspace
     try {
       ws = await ensureProjectWorkspace(path.resolve(grant.path), runId)
     } catch {
-      return refused(REFUSE_WORKSPACE)
+      return refused('workspace')
     }
 
     const outcome = await applyPendingEdits(runId, ws, grant, deps, { expectedDigest })
@@ -1051,7 +1099,7 @@ export async function acceptEditsForRun(
     if (outcome.kind === 'applied') deps.store.resolveApplied(runId, outcome.edits)
     return outcome
   } catch {
-    return refused(REFUSE_FS)
+    return refused('fs')
   }
 }
 
@@ -1061,12 +1109,54 @@ export function rejectEditsForRun(
   reason?: string
 ): RejectOutcome {
   try {
-    if (typeof runId !== 'string' || !SAFE_RUN_ID.test(runId)) return refused(REFUSE_INPUT)
-    const count = deps.store.pending(runId).length
+    if (typeof runId !== 'string' || !SAFE_RUN_ID.test(runId)) return refused('input')
+    // Read before resolving: resolve clears the package.
+    const rejected = deps.store.pending(runId)
     deps.store.resolve(runId, false, typeof reason === 'string' ? reason : undefined)
-    return { kind: 'rejected', count }
+    auditRejectedChanges(runId, rejected, reason)
+    return { kind: 'rejected', count: rejected.length }
   } catch {
-    return refused(REFUSE_INPUT)
+    return refused('input')
+  }
+}
+
+/**
+ * One audit entry per proposal the user refused, with the reason they typed.
+ *
+ * The proposal store keeps its own records, but nothing reads them, so the
+ * dialog's promise that the reason "is kept in the audit log" was not true.
+ * These rows go into the SAME exportable trail as the applied changes: the
+ * interesting lines of a compliance export are the ones showing what the agent
+ * was not allowed to do.
+ *
+ * As with auditAppliedChanges, a failing audit store must not turn the
+ * rejection into a failure: the package IS rejected either way.
+ */
+function auditRejectedChanges(
+  runId: string,
+  rejected: readonly ProposedEdit[],
+  reason?: string
+): void {
+  try {
+    if (rejected.length === 0) return
+    const run = resolveRunAuditContext(runId)
+    const policyVersion = currentPolicyVersion()
+    for (const edit of rejected) {
+      logCodingChangeRejected(runId, {
+        // No projectPath: this channel is given a run id and a reason, nothing
+        // else. The audit module records what it cannot vouch for as UNKNOWN.
+        filePath: edit.path,
+        addedLines: edit.addedLines,
+        removedLines: edit.removedLines,
+        provider: run.provider,
+        model: run.model,
+        policyVersion,
+        runContextKnown: run.known,
+        reason
+      })
+    }
+  } catch {
+    // See above: the rejection stands.
   }
 }
 
@@ -1083,7 +1173,7 @@ export async function undoRunForDirectory(
   deps: ApplyDeps = defaultApplyDeps()
 ): Promise<UndoOutcome> {
   try {
-    if (!validIds(runId, directoryId)) return refused(REFUSE_INPUT)
+    if (!validIds(runId, directoryId)) return refused('input')
     // Within a session the registry is the stronger test: a renderer that
     // disagrees with the main process is refused and surfaced. It is only an
     // ADDITIONAL check here. After a restart it has no record, and undo must
@@ -1091,16 +1181,16 @@ export async function undoRunForDirectory(
     // is the user's own grant plus the snapshot being physically present under
     // it (checked below). Nothing is trusted that was not already trusted.
     const known = deps.runDirectories?.get(runId)
-    if (known !== undefined && known !== directoryId) return refused(REFUSE_RUN_DIRECTORY)
+    if (known !== undefined && known !== directoryId) return refused('run-directory')
     const grant = await deps.findGrant(directoryId as string)
-    if (!permitsEdit(grant)) return refused(REFUSE_GRANT)
-    if (!(await snapshotPresent(grant.path, runId))) return refused(REFUSE_NO_SNAPSHOT)
+    if (!permitsEdit(grant)) return refused('grant')
+    if (!(await snapshotPresent(grant.path, runId))) return refused('no-snapshot')
 
     let ws: ProjectWorkspace
     try {
       ws = await ensureProjectWorkspace(path.resolve(grant.path), runId)
     } catch {
-      return refused(REFUSE_WORKSPACE)
+      return refused('workspace')
     }
     const result = await undoRun(runId, ws, deps)
     // Nothing restored and the reason is a batch this app cannot vouch for: a
@@ -1111,17 +1201,18 @@ export async function undoRunForDirectory(
       // unrecorded one: say which.
       const genuineButChanged = result.skipped.some((f) => !f.reason.startsWith('batch-'))
       return {
-        kind: 'refused',
-        reason: genuineButChanged
-          ? REFUSE_MIXED
-          : batchLevel.some((f) => f.reason === 'batch-not-recorded' || f.reason === 'batch-manifest-changed')
-          ? REFUSE_UNRECORDED
-          : REFUSE_BATCH_UNUSABLE,
+        ...refused(
+          genuineButChanged
+            ? 'mixed'
+            : batchLevel.some((f) => f.reason === 'batch-not-recorded' || f.reason === 'batch-manifest-changed')
+            ? 'unrecorded'
+            : 'batch-unusable'
+        ),
         skipped: result.skipped
       }
     }
     return { kind: 'restored', ...result }
   } catch {
-    return refused(REFUSE_FS)
+    return refused('fs')
   }
 }

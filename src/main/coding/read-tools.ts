@@ -1,8 +1,8 @@
 /**
- * Coding read tools: `list_files` and `read_file`.
+ * Coding read tools: `mingly_list_files` and `mingly_read_file`.
  *
  * The first place where a model can actually read a project file, so this is
- * where the earlier guards have to compose. Fixed check order in `read_file`:
+ * where the earlier guards have to compose. Fixed check order in `mingly_read_file`:
  *
  *   grant + read permission
  *   -> isBlockedPath on the path AS GIVEN (before any resolution, so a refusal
@@ -31,25 +31,42 @@ import { hasPermission, type AllowedDirectory } from '../../shared/file-access-t
 import { atLeast } from '../policy/policy-types'
 import { isRealPathWithin, resolveRealPath } from '../file-access/real-path-guard'
 import {
+  CODING_FILE_MAX_BYTES,
   isBlockedPath,
   isProbablyBinary,
   isReadableExtension,
   resolvePathSegments
 } from './path-policy'
 
-/** Entries `list_files` returns before it cuts the list and says so. */
+/** Entries `mingly_list_files` returns before it cuts the list and says so. */
 export const LIST_FILES_MAX_ENTRIES = 500
-/** Directory entries `list_files` inspects before it gives up and says so. */
+/**
+ * Room kept inside the result budget for the footer that declares the list
+ * incomplete. The longest footer this module can produce is the work-budget
+ * one (~217 characters including the entry count, and it carries no advice);
+ * 300 leaves headroom. Without this reserve the registry cut the result at
+ * `maxResultChars` and appended its own marker, which removed the footer and
+ * turned an incomplete list into a false statement.
+ */
+const LIST_FOOTER_RESERVE_CHARS = 300
+/** Directory entries `mingly_list_files` inspects before it gives up and says so. */
 const LIST_FILES_MAX_VISITED = 50_000
 const LIST_FILES_MAX_DEPTH = 40
 const MAX_PATTERN_LENGTH = 200
-/** Largest file `read_file` opens. Larger: refused, not partially returned. */
-const READ_FILE_MAX_BYTES = 2 * 1024 * 1024
+/** Largest file `mingly_read_file` opens. Larger: refused, not partially returned. */
+const READ_FILE_MAX_BYTES = CODING_FILE_MAX_BYTES
 const BINARY_HEAD_BYTES = 8000
 const READ_DEFAULT_LIMIT = 2000
 /** Room kept for the continuation hint (three numbers of up to 7 digits plus text). */
 const HINT_RESERVE_CHARS = 120
 const ORIGIN_PATH_MAX_CHARS = 300
+/**
+ * Cap for the tool name of an origin. Far above the longest name anything in
+ * this app declares (`mingly_list_files`, 17 characters) and above what an MCP
+ * server plausibly serves, while bounding what a model can push into the
+ * dialog, the withheld notice and the guard's own scan text.
+ */
+const ORIGIN_TOOL_NAME_MAX_CHARS = 100
 
 const REFUSED = 'Refused: this path cannot be read by the coding tools.'
 const LIST_REFUSED = 'Refused: the file list cannot be produced.'
@@ -287,7 +304,7 @@ function isIgnored(
 }
 
 // ---------------------------------------------------------------------------
-// list_files
+// mingly_list_files
 // ---------------------------------------------------------------------------
 
 class ListIncomplete extends Error {}
@@ -305,7 +322,8 @@ async function readGitignore(root: string): Promise<IgnoreRule[]> {
 async function listFiles(
   args: Record<string, unknown>,
   ctx: ToolContext | undefined,
-  deps: ReadToolDeps
+  deps: ReadToolDeps,
+  maxResultChars: () => number
 ): Promise<string> {
   try {
     const scope = await resolveScope(ctx, deps)
@@ -325,6 +343,11 @@ async function listFiles(
 
     const rules = await readGitignore(scope.root)
     const found: string[] = []
+    // The whole result, footer included, must fit the registry's budget: the
+    // registry cuts at that length, and the footer at the end is exactly the
+    // part that would be lost. Same discipline as mingly_read_file.
+    const bodyBudget = maxResultChars() - LIST_FOOTER_RESERVE_CHARS
+    let usedChars = 0
     let truncated = false
     let truncatedReason = ''
     let visited = 0
@@ -390,6 +413,15 @@ async function listFiles(
             truncatedReason = `more than ${LIST_FILES_MAX_ENTRIES} entries match`
             return
           }
+          // Second limit, on the SIZE of the result: 500 paths are far more
+          // than the registry's default budget of 4000 characters.
+          const cost = rel.length + (found.length > 0 ? 1 : 0)
+          if (usedChars + cost > bodyBudget) {
+            truncated = true
+            truncatedReason = 'the result character budget was reached'
+            return
+          }
+          usedChars += cost
           found.push(rel)
         }
       }
@@ -412,7 +444,9 @@ async function listFiles(
       }
     }
 
-    const lines = found.length > 0 ? found : ['(no files)']
+    // "(no files)" is only true when the walk finished. After a cut, "nothing
+    // could be shown" is a different statement and the footer makes it.
+    const lines = found.length > 0 ? found : truncated ? [] : ['(no files)']
     if (truncated) {
       lines.push(
         `[truncated: ${truncatedReason}; showing ${found.length} entries and the list is INCOMPLETE.${advice}]`
@@ -425,7 +459,7 @@ async function listFiles(
 }
 
 // ---------------------------------------------------------------------------
-// read_file
+// mingly_read_file
 // ---------------------------------------------------------------------------
 
 /**
@@ -530,14 +564,20 @@ export async function resolveReadableFile(input: unknown, scope: Scope): Promise
   if (realRel === '' || realRel.startsWith('..') || path.isAbsolute(realRel)) {
     return { kind: 'refused' }
   }
-  const realSegments = resolvePathSegments(realRel.split(path.sep).join('/'))
+  // The real path as the FILE SYSTEM spells it. The blocklist and the
+  // extension check both fold internally; they must be asked on this form and
+  // not on the folded one, because the secrets exemption is decided on the raw
+  // segment (path-policy.ts). Handed the folded spelling, this second pass
+  // reads `secrets.ts.` as `secrets.ts` and exempts it.
+  const realRelRaw = realRel.split(path.sep).join('/')
+  const realSegments = resolvePathSegments(realRelRaw)
   if (realSegments === null || realSegments.includes('..')) return { kind: 'refused' }
   const realRelPosix = realSegments.join('/')
-  if (isBlockedPath(realRelPosix)) return { kind: 'refused' }
+  if (isBlockedPath(realRelRaw)) return { kind: 'refused' }
 
   // Extension of the real target (the requested name was checked above).
   // Uniform refusal: what the target is called is not the model's business.
-  if (!isReadableExtension(realRelPosix)) return { kind: 'refused' }
+  if (!isReadableExtension(realRelRaw)) return { kind: 'refused' }
 
   return { kind: 'ok', realTarget, realRel, realRelPosix }
 }
@@ -618,7 +658,7 @@ async function readFile(
 export function registerReadTools(registry: ToolRegistry, deps: ReadToolDeps = defaultReadToolDeps): void {
   registry.registerBuiltIn(
     {
-      name: 'list_files',
+      name: 'mingly_list_files',
       description:
         'List files of the granted project directory, relative to its root. ' +
         'Optional glob `pattern` (`*`, `**`, `?`). Honours .gitignore, hides .mingly, ' +
@@ -630,13 +670,13 @@ export function registerReadTools(registry: ToolRegistry, deps: ReadToolDeps = d
         }
       }
     },
-    (args, ctx) => listFiles(args, ctx, deps),
+    (args, ctx) => listFiles(args, ctx, deps, () => registry.getMaxResultChars()),
     readOnlyGate
   )
 
   registry.registerBuiltIn(
     {
-      name: 'read_file',
+      name: 'mingly_read_file',
       description:
         'Read a text file inside the granted project directory. `path` is relative to the ' +
         'project root. `offset` (1-based line) and `limit` (lines, max 2000) page through long files; ' +
@@ -656,18 +696,42 @@ export function registerReadTools(registry: ToolRegistry, deps: ReadToolDeps = d
   )
 }
 
+/** Control, format and line/paragraph separators: never part of a displayed name. */
+const ORIGIN_STRIP = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu
+
+/** What a name that carries nothing displayable is called; the loop guard's own word. */
+const ORIGIN_UNKNOWN_TOOL = 'unknown'
+
 /**
  * Origin of a tool result for the loop guard. `resolvedPath` is the path the
  * handler actually read (project-relative, symlinks resolved); the model's own
  * spelling is never used, because the dialog that shows it is the one place a
  * human decides. No resolved path means no `filePath`. Stripping of format and
  * control characters is defence in depth for a real file name that carries them.
+ *
+ * `call.name` gets the SAME treatment, because it comes from the same place:
+ * the model writes it, an invented name produces an origin just like a real
+ * one, and from here it travels into CodingConsentRequest.toolName, the
+ * approval dialog, the withheld notice and so back into the conversation.
  */
 export function originForToolCall(call: AgentToolCall, resolvedPath?: string): ToolResultOrigin {
-  if (call.name === 'read_file' && typeof resolvedPath === 'string') {
-    const clean = resolvedPath.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '')
+  const toolName = displayToolName(call.name)
+  if (call.name === 'mingly_read_file' && typeof resolvedPath === 'string') {
+    const clean = resolvedPath.replace(ORIGIN_STRIP, '')
     const filePath = clean.slice(0, ORIGIN_PATH_MAX_CHARS)
-    if (filePath !== '') return { toolName: call.name, filePath }
+    if (filePath !== '') return { toolName, filePath }
   }
-  return { toolName: call.name }
+  return { toolName }
+}
+
+/**
+ * A tool name safe to put in front of a human and back into the conversation:
+ * stripped and capped. A name that strips to nothing becomes `unknown`, the
+ * word the loop guard already uses for an origin it does not know — an empty
+ * field in the dialog would be worse than naming the gap.
+ */
+function displayToolName(name: unknown): string {
+  if (typeof name !== 'string') return ORIGIN_UNKNOWN_TOOL
+  const clean = name.replace(ORIGIN_STRIP, '').trim().slice(0, ORIGIN_TOOL_NAME_MAX_CHARS)
+  return clean === '' ? ORIGIN_UNKNOWN_TOOL : clean
 }

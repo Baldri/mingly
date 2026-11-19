@@ -475,6 +475,41 @@ describe("coding path policy: fix round 3 (secrets is a data file, not a code fi
   });
 });
 
+describe("coding path policy: the secrets exemption is decided on the RAW segment", () => {
+  // Measured on APFS: these are THREE different files, and only the middle one
+  // is the source module the exemption exists for. The folding (NFKC, format
+  // characters removed, lower case, trailing dots and spaces stripped) is there
+  // so the MATCH cannot be dodged; using the folded segment for the EXEMPTION
+  // turned it into a way of dodging the match instead.
+  it("a trailing dot does not buy the code exemption", () => {
+    expect(isBlockedPath("secrets.ts.")).toBe(true);
+    expect(isBlockedPath("src/secrets.ts.")).toBe(true);
+    expect(isBlockedPath("secrets.md.")).toBe(true);
+    expect(isBlockedPath("secrets.ts ")).toBe(true);
+  });
+
+  it("a zero-width character inside the name does not buy it either", () => {
+    expect(isBlockedPath("secrets.t​s")).toBe(true);
+    expect(isBlockedPath("secrets​.ts")).toBe(true);
+    expect(isBlockedPath("src/secrets.t⁠s")).toBe(true);
+  });
+
+  it("positive control: the real source module stays readable, in any case", () => {
+    expect(isBlockedPath("secrets.ts")).toBe(false);
+    expect(isBlockedPath("src/secrets.ts")).toBe(false);
+    expect(isBlockedPath("secrets.test.ts")).toBe(false);
+    expect(isBlockedPath("SECRETS.TS")).toBe(false);
+    expect(isBlockedPath("src/Secrets.Md")).toBe(false);
+    expect(isReadableExtension("secrets.ts")).toBe(true);
+  });
+
+  it("leaves names outside the secrets family alone", () => {
+    // The fix touches the secrets exemption only: nothing else grew stricter.
+    expect(isBlockedPath("a.ts.")).toBe(false);
+    expect(isBlockedPath("src/index.t​s")).toBe(false);
+  });
+});
+
 describe("coding path policy: read extensions", () => {
   it("allows common source, config and doc files", () => {
     for (const p of ["a.ts", "a.tsx", "x/y.py", "m.md", "c.json", "s.yml", "q.sql", "s.sh", "Dockerfile", "Makefile", ".gitignore"]) {

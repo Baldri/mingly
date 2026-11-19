@@ -22,6 +22,7 @@ import {
   hasPermission
 } from '../../shared/file-access-types'
 import { isMissingPathError, isRealPathWithin } from './real-path-guard'
+import { getCodingModeStore } from '../coding/coding-mode-store'
 
 /**
  * Why a proposed network-share mount point was refused.
@@ -86,9 +87,35 @@ export class FileAccessManager {
    * same reason. Only `edit` needs the marker locally (survivingPermissions).
    */
   private loadAllowedDirectories(): void {
-    const saved = this.store.get('allowedDirectories', []) as AllowedDirectory[]
+    // Shape check before anything is read off it. This runs in the
+    // CONSTRUCTOR: a throw here makes getFileAccessManager() fail at start-up,
+    // with no recovery but deleting file-access.json by hand — and this is the
+    // file whose trustworthiness this class stopped assuming. A stored value
+    // that is not an array of objects is an empty allowlist, the strict side.
+    const stored: unknown = this.store.get('allowedDirectories', [])
+    const storedList: unknown[] = Array.isArray(stored) ? stored : []
+    // An entry with no usable id can never be matched by a lookup; keeping it
+    // under a non-string key would only be a hazard.
+    const saved: AllowedDirectory[] = storedList.filter(
+      (entry): entry is AllowedDirectory =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        !Array.isArray(entry) &&
+        typeof (entry as { id?: unknown }).id === 'string' &&
+        (entry as { id: string }).id !== ''
+    )
+    if (!Array.isArray(stored)) {
+      console.warn('📁 ⚠️ Stored allowed directories were not a list; starting with none')
+    }
     const dropped: AllowedDirectory[] = []
-    let reduced = false
+    // Unusable entries are pruned on the way in; the list is written back so
+    // that happens once instead of on every start.
+    let reduced = saved.length < storedList.length
+    if (reduced) {
+      console.warn(
+        `📁 ⚠️ Skipped ${storedList.length - saved.length} unusable stored grant entries`
+      )
+    }
 
     saved.forEach(raw => {
       // Normalise once at the boundary: the store value is an unchecked cast,
@@ -446,6 +473,21 @@ export class FileAccessManager {
     const removed = this.allowedDirs.delete(directoryId)
     if (removed) {
       this.saveAllowedDirectories()
+      // A revoked grant must not leave a coding mode behind. The directory id
+      // is derived from the path, so granting the same directory again
+      // produces the same id, and a surviving mode would come back with it —
+      // `propose-run` included — without the user choosing a level again.
+      // Done here rather than in getMode: by the time the directory has been
+      // granted again there IS a grant, so a read-time check cannot tell the
+      // revived mode from a chosen one.
+      try {
+        getCodingModeStore().forgetMode(directoryId)
+      } catch (error) {
+        // The grant is gone either way; losing the revoke over a store error
+        // would be worse than a stale mode, which the next grant's own mode
+        // choice overwrites.
+        console.warn(`📁 ⚠️ Could not clear the coding mode of ${directoryId}:`, error)
+      }
       console.log(`📁 Revoked access to directory: ${directoryId}`)
     }
     return removed

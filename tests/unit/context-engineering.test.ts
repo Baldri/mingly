@@ -67,7 +67,7 @@ vi.mock('../../src/main/agent/tool-registry', () => ({
         }
       },
       {
-        name: 'read_file',
+        name: 'mingly_read_file',
         description: 'Read a file',
         inputSchema: {
           type: 'object',
@@ -136,7 +136,7 @@ describe('Task 1: Progress Recitation', () => {
       // Step 2: another tool call
       {
         text: 'Reading file...',
-        toolCalls: [{ id: 'tc-2', name: 'read_file', arguments: { path: '/tmp/data.txt' } }],
+        toolCalls: [{ id: 'tc-2', name: 'mingly_read_file', arguments: { path: '/tmp/data.txt' } }],
         done: false,
         stopReason: 'tool_use',
         tokens: { input: 200, output: 40 }
@@ -163,7 +163,7 @@ describe('Task 1: Progress Recitation', () => {
     expect(progressMsg).toBeDefined()
     expect(progressMsg!.content).toContain('Step 2/5')
     expect(progressMsg!.content).toContain('search_docs')
-    expect(progressMsg!.content).toContain('read_file')
+    expect(progressMsg!.content).toContain('mingly_read_file')
     expect(progressMsg!.content).toContain('Steps remaining:')
     expect(progressMsg!.content).toContain('Do not repeat completed steps')
   })
@@ -532,7 +532,7 @@ describe('Task 4: AgentContextManager', () => {
     const compacted = manager.compactToolResult('run-1', result)
     expect(compacted.content).toContain('[Large result externalized to file:')
     expect(compacted.content).toContain('200 chars')
-    expect(compacted.content).toContain('read_file')
+    expect(compacted.content).toContain('mingly_read_file')
   })
 
   it('should NOT externalize error results even if large', () => {

@@ -1,5 +1,5 @@
 /**
- * run_command handler (Task 12), against REAL child processes.
+ * mingly_run_command handler (Task 12), against REAL child processes.
  *
  * The "interpreters" are small /bin/sh scripts in a directory outside the
  * project; nothing here needs npm, git, node or pytest to be installed.
@@ -71,7 +71,7 @@ async function ctxFor(runId: string | null = 'run1'): Promise<ToolContext> {
 
 async function run(registry: ToolRegistry, command: string, ctx?: ToolContext): Promise<string> {
   const result = await registry.executeTool(
-    { id: 't', name: 'run_command', arguments: { command } },
+    { id: 't', name: 'mingly_run_command', arguments: { command } },
     ctx ?? (await ctxFor())
   )
   return result.content
@@ -111,7 +111,7 @@ afterEach(() => {
   for (const d of [project, bins, outside]) fs.rmSync(d, { recursive: true, force: true })
 })
 
-describe('run_command execution', () => {
+describe('mingly_run_command execution', () => {
   it('starts the planned file with the exact argument vector and reports the exit code', async () => {
     fake('npm', 'echo "n=$# [$1] [$2]"; exit 3')
     fs.writeFileSync(path.join(project, 'package.json'), JSON.stringify({ scripts: { build: 'x' } }))
@@ -164,7 +164,7 @@ describe('run_command execution', () => {
   })
 })
 
-describe('run_command bounds', () => {
+describe('mingly_run_command bounds', () => {
   it('kills the whole process group on timeout, including a background child', async () => {
     const pidFile = path.join(outside, 'sleep.pid')
     fake('git', `sleep 60 &\necho $! > "${pidFile}"\nwait`)
@@ -253,7 +253,7 @@ describe('run_command bounds', () => {
   })
 })
 
-describe('run_command refuses alike when the environment says no', () => {
+describe('mingly_run_command refuses alike when the environment says no', () => {
   it('uses ONE text for unconfigured, missing, not executable, unknown script and no grant', async () => {
     fs.writeFileSync(path.join(project, 'package.json'), JSON.stringify({ scripts: { build: 'x' } }))
     const registry = makeRegistry()
@@ -315,7 +315,7 @@ describe('run_command refuses alike when the environment says no', () => {
   })
 })
 
-describe('run_command path arguments are re-checked on disk', () => {
+describe('mingly_run_command path arguments are re-checked on disk', () => {
   it('runs pytest on a plain project file (positive control)', async () => {
     fake('pytest', 'echo "pytest-ran $*"')
     fs.mkdirSync(path.join(project, 'tests'))
@@ -340,7 +340,7 @@ describe('run_command path arguments are re-checked on disk', () => {
   })
 })
 
-describe('run_command stays inside the grant (fix round 1)', () => {
+describe('mingly_run_command stays inside the grant (fix round 1)', () => {
   it('I-1: npm test does not start when the granted root has no package.json of its own', async () => {
     // npm would walk UP from the granted root and run the parent's script.
     const marker = path.join(outside, 'npm-started.marker')
@@ -403,7 +403,7 @@ describe('run_command stays inside the grant (fix round 1)', () => {
     expect(await run(registry, 'git status', ctx)).toContain('exit code 0')
   })
 
-  it('I-4: a read-only grant does not run commands (edit_file needs edit, running is stronger)', async () => {
+  it('I-4: a read-only grant does not run commands (mingly_edit_file needs edit, running is stronger)', async () => {
     fake('git', 'echo ok')
     grants = [{ ...grant(), permissions: ['read'] }]
     expect(await run(makeRegistry(), 'git status')).toBe(COMMAND_UNAVAILABLE)
@@ -416,7 +416,7 @@ describe('run_command stays inside the grant (fix round 1)', () => {
   })
 })
 
-describe('run_command: the granted root must be the tool\'s own root (class fix for I-1)', () => {
+describe('mingly_run_command: the granted root must be the tool\'s own root (class fix for I-1)', () => {
   // Measured on this machine: npm, tsc, git and vitest (its CONFIG) all look
   // UPWARD from the working directory. pytest is UNMEASURED (not installed);
   // its marks are a fail-closed precondition, not a claim that they suffice.

@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useCodingStore } from '../stores/coding-store'
-import { diffLines, displayText } from '../lib/coding-display'
+import { CODING_ACCEPT_SCOPE_NOTICE, diffLines, displayText } from '../lib/coding-display'
+import { trapTab } from '../lib/focus-trap'
 
 const LINE_CLASS = {
   add: 'bg-green-50 text-green-900 dark:bg-green-900/20 dark:text-green-200',
@@ -17,6 +18,13 @@ const LINE_CLASS = {
  * which renders hidden characters visibly. Accept writes the WHOLE package the
  * human was shown (the digest travels with it); a package that changed in the
  * meantime is refused by the main process.
+ *
+ * Containment, not convenience: the dialog takes the initial focus on the
+ * SAFER button («Ablehnen»), traps Tab inside itself and marks the rest of the
+ * app `inert`. There is no Escape and no "later" state, so leaving the dialog
+ * by keyboard would mean reaching the message input behind it and starting a
+ * new run — which used to drop this package without a rejection and without
+ * an audit entry. The store refuses that start as well; this is the other half.
  */
 export function CodingDiffDialog() {
   const pending = useCodingStore((s) => s.pending)
@@ -26,8 +34,17 @@ export function CodingDiffDialog() {
   const [selected, setSelected] = useState(0)
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const rejectRef = useRef<HTMLButtonElement>(null)
+  const open = pending !== null && pending.edits.length > 0
 
-  if (!pending || pending.edits.length === 0) return null
+  // The initial focus goes to the SAFER button: whatever a reflex keypress
+  // does, it must not be "write these files".
+  useEffect(() => {
+    if (open) rejectRef.current?.focus()
+  }, [open])
+
+  if (!open) return null
 
   const edit = pending.edits[Math.min(selected, pending.edits.length - 1)]
   const added = pending.edits.reduce((n, e) => n + e.addedLines, 0)
@@ -46,17 +63,20 @@ export function CodingDiffDialog() {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div
-        role="dialog"
+        ref={dialogRef}
+        // alertdialog, not dialog: this interrupts to ask for a decision.
+        role="alertdialog"
         aria-modal="true"
         aria-labelledby="coding-diff-title"
+        onKeyDown={(event) => trapTab(event, dialogRef.current)}
         className="flex max-h-[90vh] w-full max-w-4xl flex-col rounded-lg bg-white p-6 shadow-2xl dark:bg-gray-800"
       >
         <h2 id="coding-diff-title" className="text-xl font-semibold text-gray-900 dark:text-white">
           Vorgeschlagene Änderungen prüfen
         </h2>
         <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
-          {pending.edits.length} {pending.edits.length === 1 ? 'Datei' : 'Dateien'}, +{added} −{removed} Zeilen.
-          «Annehmen» schreibt alle Dateien dieser Liste; es wird nichts geschrieben, was hier nicht steht.
+          {pending.edits.length} {pending.edits.length === 1 ? 'Datei' : 'Dateien'}, +{added} −{removed} Zeilen.{' '}
+          {CODING_ACCEPT_SCOPE_NOTICE}
         </p>
 
         {hidden.length > 0 && (
@@ -123,6 +143,7 @@ export function CodingDiffDialog() {
 
         <div className="mt-4 flex justify-end gap-3">
           <button
+            ref={rejectRef}
             disabled={busy}
             onClick={() =>
               void run(async () => {

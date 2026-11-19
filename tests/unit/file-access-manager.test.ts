@@ -57,6 +57,7 @@ const fsMock = vi.hoisted(() => ({
 vi.mock('fs/promises', () => ({ default: fsMock, ...fsMock }))
 
 import { FileAccessManager, MOUNT_POINT_REFUSED_MESSAGE } from '../../src/main/file-access/file-access-manager'
+import { getCodingModeStore } from '../../src/main/coding/coding-mode-store'
 import type { FileAccessPermission } from '../../src/shared/file-access-types'
 import fsPromises from 'fs/promises'
 import path from 'path'
@@ -189,6 +190,43 @@ describe('FileAccessManager', () => {
       const result = manager.revokeDirectoryAccess(dir!.id)
       expect(result).toBe(true)
       expect(manager.getAllowedDirectories().length).toBe(0)
+    })
+
+    it('forgets the stored coding mode, so re-granting does not revive propose-run', async () => {
+      // The directory id is derived from the path (base64 of it), so granting
+      // the same directory again produces the SAME id. A coding mode that
+      // outlives the grant therefore comes back with it — propose-run
+      // included — without the user ever choosing a level again.
+      mockShowOpenDialog.mockResolvedValue({
+        canceled: false,
+        filePaths: ['/home/user/project']
+      })
+      const dir = await manager.requestDirectoryAccess(['read', 'edit'])
+      const modes = getCodingModeStore()
+      modes.setMode(dir!.id, 'propose-run')
+      expect(modes.getMode(dir!.id)).toBe('propose-run')
+
+      expect(manager.revokeDirectoryAccess(dir!.id)).toBe(true)
+      expect(modes.getMode(dir!.id)).toBe('off')
+
+      const again = await manager.requestDirectoryAccess(['read', 'edit'])
+      expect(again!.id).toBe(dir!.id)
+      expect(modes.getMode(again!.id)).toBe('off')
+    })
+
+    it('leaves the modes of other projects alone', async () => {
+      mockShowOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ['/home/user/one'] })
+      const one = await manager.requestDirectoryAccess(['read', 'edit'])
+      mockShowOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ['/home/user/two'] })
+      const two = await manager.requestDirectoryAccess(['read', 'edit'])
+      const modes = getCodingModeStore()
+      modes.setMode(one!.id, 'propose')
+      modes.setMode(two!.id, 'read-only')
+
+      manager.revokeDirectoryAccess(one!.id)
+
+      expect(modes.getMode(one!.id)).toBe('off')
+      expect(modes.getMode(two!.id)).toBe('read-only')
     })
   })
 
@@ -577,6 +615,28 @@ describe('FileAccessManager', () => {
       mockStoreData.set('allowedDirectories', dirs)
       return new FileAccessManager()
     }
+
+    it('survives a persisted value that is not an array of objects', () => {
+      // `saved` is an unchecked cast straight from file-access.json — the very
+      // file this PR stops assuming is trustworthy. A throw here happens in
+      // the constructor, so getFileAccessManager() fails at START-UP, with no
+      // way out but deleting the file by hand.
+      for (const bad of ['garbage', 42, null, { id: 'x' }, true]) {
+        mockStoreData.set('allowedDirectories', bad)
+        const reloaded = new FileAccessManager()
+        expect(reloaded.getAllowedDirectories()).toEqual([])
+      }
+    })
+
+    it('skips a null or non-object entry and keeps the usable ones', () => {
+      const reloaded = restartWith(
+        null,
+        'nonsense',
+        42,
+        { ...LOCAL_GRANT, confirmedAt: 1_700_000_000_001 }
+      )
+      expect(reloaded.getAllowedDirectories().map((d) => d.id)).toEqual(['local-docs'])
+    })
 
     it('does not trust a network grant persisted without a confirmation marker', async () => {
       // Resolves rather than throws, so a read that gets through is visible as

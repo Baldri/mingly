@@ -16,6 +16,18 @@
  */
 
 /**
+ * The largest file the coding tools open, and therefore also the largest
+ * RESULT a proposal may produce.
+ *
+ * One definition on purpose: read, edit, apply and undo all open files through
+ * this ceiling, and an edit whose result crosses it applies once and can then
+ * never be read back — the undo reports the file as unreadable and the
+ * rollback gets stuck. Two copies of the number would be two chances to drift
+ * apart and lose that property.
+ */
+export const CODING_FILE_MAX_BYTES = 2 * 1024 * 1024;
+
+/**
  * Absolute. No mode, dialog or consent lifts it. Documentation of the rule
  * set; the matcher below is compiled from exactly these strings.
  */
@@ -179,13 +191,21 @@ function foldSegment(segment: string): string {
 }
 
 type Fold =
-  | { kind: "ok"; segments: string[]; resolved: string[]; endsWithName: boolean }
+  | {
+      kind: "ok";
+      segments: string[];
+      raw: string[];
+      resolved: string[];
+      endsWithName: boolean;
+    }
   | { kind: "unclassifiable" };
 
 /**
  * Split on both separators and fold every segment. `segments` is every named
- * segment as written; `resolved` has `.` removed and `..` applied lexically
- * (a `..` that cannot pop is kept, so it stays visible).
+ * segment folded; `raw` is the same segments exactly as written (same length
+ * and order, so `raw[i]` belongs to `segments[i]`); `resolved` has `.` removed
+ * and `..` applied lexically (a `..` that cannot pop is kept, so it stays
+ * visible).
  */
 function foldPath(input: unknown): Fold {
   if (typeof input !== "string" || input.length === 0) {
@@ -198,16 +218,17 @@ function foldPath(input: unknown): Fold {
   if (input.includes(":")) return { kind: "unclassifiable" };
 
   const segments: string[] = [];
+  const raw: string[] = [];
   const resolved: string[] = [];
   const tokens = input.split(/[\\/]/);
   // The last token names a FILE only when it is a real name: a trailing
   // separator, `.` or `..` means the path ends in a directory.
   const last = tokens[tokens.length - 1];
   const endsWithName = last !== "" && last !== "." && last !== "..";
-  for (const raw of tokens) {
-    if (raw === "") continue; // "a//b", leading or trailing slash
-    if (raw === ".") continue;
-    if (raw === "..") {
+  for (const token of tokens) {
+    if (token === "") continue; // "a//b", leading or trailing slash
+    if (token === ".") continue;
+    if (token === "..") {
       if (resolved.length > 0 && resolved[resolved.length - 1] !== "..") {
         resolved.pop();
       } else {
@@ -215,13 +236,14 @@ function foldPath(input: unknown): Fold {
       }
       continue;
     }
-    const folded = foldSegment(raw);
+    const folded = foldSegment(token);
     // "...", ". " and the like fold to nothing: a name we cannot classify.
     if (folded === "") return { kind: "unclassifiable" };
     segments.push(folded);
+    raw.push(token);
     resolved.push(folded);
   }
-  return { kind: "ok", segments, resolved, endsWithName };
+  return { kind: "ok", segments, raw, resolved, endsWithName };
 }
 
 // ---------------------------------------------------------------------------
@@ -273,26 +295,54 @@ const MULTI_SEGMENT_PATTERNS = COMPILED_PATTERNS.filter((p) => p.length > 1);
  * renamed, a secret that was read cannot be un-read.
  */
 /**
+ * True when the segment AS WRITTEN carries one of the exempt extensions.
+ *
+ * The MATCH is decided on the folded segment, so no spelling dodges it; the
+ * EXEMPTION is decided here, on the raw segment, so no spelling buys it.
+ * Measured on APFS, where these are three different files: `secrets.ts.` and
+ * `secrets.t<ZWSP>s` both fold to `secrets.ts`, and taking the extension from
+ * the folded form handed them the code exemption the module `secrets.ts` is
+ * there for. Case is the one difference that may be folded (APFS is
+ * case-insensitive, so `SECRETS.TS` IS the module); anything else the folding
+ * changes — NFKC, format characters, trailing dots and spaces — means the raw
+ * name is not the exempt name, and over-blocking is the accepted error.
+ */
+function hasExemptExtension(rawSegment: string): boolean {
+  const lower = rawSegment.toLowerCase();
+  if (lower !== foldSegment(rawSegment)) return false;
+  const dot = lower.lastIndexOf(".");
+  if (dot <= 0 || dot === lower.length - 1) return false;
+  return SECRETS_EXEMPT_EXTENSIONS.has(lower.slice(dot + 1));
+}
+
+/**
  * `isFileName` is true only for the LAST segment of a path that ends in a
  * name. The code/prose exemption is correct for a file (`src/secrets.ts` is a
  * module) and wrong for a directory (`secrets.ts/api.json`, `secrets.d/`,
  * `secrets.prod/`): an exemption that is right in one case must not leak into
  * another case that reaches the same state. A directory gets no exemption.
  */
-function isBlockedDataName(segment: string, isFileName: boolean): boolean {
+function isBlockedDataName(
+  segment: string,
+  rawSegment: string,
+  isFileName: boolean,
+): boolean {
   for (const base of CODING_BLOCKED_DATA_BASENAMES) {
     if (segment === base) return true;
     if (segment.startsWith(`${base}.`)) {
-      const ext = segment.slice(segment.lastIndexOf(".") + 1);
-      if (!isFileName || !SECRETS_EXEMPT_EXTENSIONS.has(ext)) return true;
+      if (!isFileName || !hasExemptExtension(rawSegment)) return true;
     }
   }
   return false;
 }
 
-function segmentIsBlocked(segment: string, isFileName: boolean): boolean {
+function segmentIsBlocked(
+  segment: string,
+  rawSegment: string,
+  isFileName: boolean,
+): boolean {
   return (
-    isBlockedDataName(segment, isFileName) ||
+    isBlockedDataName(segment, rawSegment, isFileName) ||
     isBlockedCredentialName(segment) ||
     COMPILED_PATTERNS.some(
       (pattern) => pattern.length === 1 && pattern[0].test(segment),
@@ -337,7 +387,11 @@ export function isBlockedPath(relativePath: string): boolean {
   const lastIndex = folded.segments.length - 1;
   if (
     folded.segments.some((seg, i) =>
-      segmentIsBlocked(seg, folded.endsWithName && i === lastIndex),
+      segmentIsBlocked(
+        seg,
+        folded.raw[i],
+        folded.endsWithName && i === lastIndex,
+      ),
     )
   ) {
     return true;

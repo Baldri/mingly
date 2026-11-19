@@ -47,7 +47,7 @@ const MIXED_SCAN: SensitiveScan = {
   overallRiskLevel: 'critical',
 }
 
-const ORIGIN = { toolName: 'read_file', filePath: 'src/config.ts' }
+const ORIGIN = { toolName: 'mingly_read_file', filePath: 'src/config.ts' }
 
 function requestFor(scan: SensitiveScan): CodingConsentRequest {
   return buildConsentRequest({ runId: 'run-1', stepNumber: 2, origin: ORIGIN, scan })
@@ -99,7 +99,7 @@ describe('buildConsentRequest', () => {
     ])
     expect(req.runId).toBe('run-1')
     expect(req.stepNumber).toBe(2)
-    expect(req.toolName).toBe('read_file')
+    expect(req.toolName).toBe('mingly_read_file')
     expect(req.filePath).toBe('src/config.ts')
   })
 })
@@ -119,7 +119,7 @@ describe('resolveConsentChoice', () => {
     const res = await resolveConsentChoice({ ...base, choice: 'drop-file' }, makeResolutionDeps())
     expect(res.effect).toBe('withheld')
     expect(res.content).toContain('Content withheld by user')
-    expect(res.content).toContain('read_file')
+    expect(res.content).toContain('mingly_read_file')
     expect(res.content).toContain('src/config.ts')
     expect(res.content).not.toContain(SECRET)
   })
@@ -135,7 +135,7 @@ describe('resolveConsentChoice', () => {
     expect(res.effect).toBe('withheld')
     expect(res.content).not.toContain('by user')
     expect(res.content).toContain('by the system')
-    expect(res.content).toContain('read_file')
+    expect(res.content).toContain('mingly_read_file')
     expect(res.content).toContain('src/config.ts')
     expect(res.content).not.toContain(SECRET)
   })

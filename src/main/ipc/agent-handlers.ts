@@ -147,10 +147,26 @@ export function registerAgentHandlers(): void {
     }
   )
 
+  // Undo is the one coding channel WITHOUT requireFeature, like the audit
+  // export above and for a stronger reason.
+  //
+  // apply-edits.ts says in so many words that undo must not depend on the
+  // coding mode: someone switches coding off BECAUSE something went wrong, and
+  // making undo depend on the mode locks them out of restoring their own files
+  // exactly then. A gate on the SUBSCRIPTION is the same lock-out one level up
+  // — a lapsed plan, a failed licence check or an offline entitlement lookup
+  // would leave a user with files an agent changed and no way to put them
+  // back. Restoring one's own files belongs in the category of
+  // TRANSCRIPTION_DELETE, which is ungated on purpose so that the subscription
+  // status never decides whether data can be removed; it is not an export.
+  //
+  // The gate this channel DOES have is the one that matters: undoRunForDirectory
+  // requires the directory grant with read AND edit, the run's snapshot to be
+  // physically present under that grant, and the manifest hash this app
+  // recorded outside the project. Nothing is restored that was not recorded.
   wrapHandler(
     IPC_CHANNELS.CODING_UNDO_RUN,
     async (runId: unknown, directoryId: unknown) => {
-      requireFeature('agentic_mode')
       const outcome = await undoRunForDirectory(runId, directoryId)
       return { success: outcome.kind === 'restored', outcome }
     }

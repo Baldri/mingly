@@ -85,7 +85,7 @@ vi.mock('../../src/main/agent/tool-registry', () => ({
     getAvailableTools: vi.fn((ctx?: ToolContext) => {
       toolListCtx.push(ctx)
       return [
-        { name: 'read_file', description: 'r', inputSchema: { type: 'object', properties: {} } },
+        { name: 'mingly_read_file', description: 'r', inputSchema: { type: 'object', properties: {} } },
       ] as ToolDefinition[]
     }),
     executeToolCalls: vi.fn(async (calls: AgentToolCall[], ctx?: ToolContext) => {
@@ -119,7 +119,7 @@ vi.mock('../../src/main/coding/project-workspace', async (importOriginal) => {
 function toolCallStep(id: string): ToolUseResponse {
   return {
     text: 'reading',
-    toolCalls: [{ id, name: 'read_file', arguments: { path: 'a.ts' } }],
+    toolCalls: [{ id, name: 'mingly_read_file', arguments: { path: 'a.ts' } }],
     done: false,
     stopReason: 'tool_use',
     tokens: { input: 10, output: 10 },

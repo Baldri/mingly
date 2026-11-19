@@ -3,7 +3,7 @@
  *
  * When tool results exceed a size threshold, they are written to temp files
  * and replaced with a compact reference in the conversation context.
- * The agent can read the file later via the read_file built-in tool.
+ * The agent can read the file later via the mingly_read_file built-in tool.
  *
  * This keeps the LLM context window small while allowing unlimited working memory.
  * Inspired by Manus AI's file-system-as-memory architecture.
@@ -83,7 +83,7 @@ export class AgentContextManager {
           `[Large result externalized to file: ${filepath}]\n` +
           `Size: ${result.content.length} chars, ${lineCount} lines\n` +
           `Preview: ${preview}...\n` +
-          `Use the read_file tool to access the full content if needed.`
+          `Use the mingly_read_file tool to access the full content if needed.`
       }
     } catch {
       // If file write fails, return original result
@@ -128,7 +128,7 @@ export class AgentContextManager {
             `[Result externalized to: ${filepath}]\n` +
             `Size: ${msg.content.length} chars, ${lineCount} lines\n` +
             `Preview: ${preview}...\n` +
-            `Use read_file to access full content.`
+            `Use mingly_read_file to access full content.`
         }
       } catch {
         return msg

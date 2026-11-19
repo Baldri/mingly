@@ -11,7 +11,15 @@
  *     hold (a bounded path, a number, a flag, or a name that matches a strict
  *     pattern). An object that carries more (`content`, `diff`, `oldText`) loses
  *     the extra fields; a name field that holds text is replaced by a marker.
- *     The audit entry types have no free-text field at all.
+ *
+ *     There is exactly ONE free-text field: the reason a human typed when
+ *     refusing a proposal (`note` on a `coding.change_rejected` entry). It is
+ *     the user's own words about their own decision — not file content, not
+ *     model output — and the dialog that collects it says it is kept here, so
+ *     the field has to exist for that sentence to be true. It is stripped of
+ *     hidden characters and bounded like every other cell. Nothing else may
+ *     become free text: a reason that could quote what the guard found would
+ *     put the finding into the trail.
  *
  *  2. The export is safe to open in a spreadsheet and bounded as a whole. Paths
  *     come from a model and a file system: they are untrusted input crossing
@@ -61,6 +69,29 @@ export interface CodingAuditDetails {
   runContextKnown?: boolean
 }
 
+/**
+ * What a REFUSED proposal records: the same shape as an applied change, plus
+ * the reason the user typed.
+ *
+ * The rows a compliance officer actually asks about are these: what the agent
+ * proposed and the human did not allow. `projectPath` is optional because the
+ * reject channel is given a run id and a reason and nothing else — a project
+ * it cannot vouch for is recorded as UNKNOWN, never guessed.
+ */
+export interface CodingRejectedDetails {
+  projectPath?: string
+  filePath: string
+  addedLines: number
+  removedLines: number
+  provider: string
+  model: string
+  policyVersion: string
+  /** Whether provider and model come from the run's own record. Absent means no. */
+  runContextKnown?: boolean
+  /** The user's own words. The ONE free-text field in this trail (see the header). */
+  reason?: string
+}
+
 /** What a blocked guard records: where and under whom, never why (a reason can quote the content). */
 export interface CodingGuardBlockedDetails {
   projectPath: string
@@ -78,6 +109,11 @@ export interface CodingUndoDetails {
 
 /** A path is kept up to this length; beyond it the entry says it was cut. */
 const MAX_PATH_CHARS = 1024
+/**
+ * The user's refusal reason, in characters. The same bound the proposal store
+ * and the dialog's input field use, so the three agree on what is kept.
+ */
+const MAX_REASON_CHARS = 500
 const TRUNCATED = '…[truncated]'
 /** Provider id, model id, policy version: a name, not text. */
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/
@@ -104,6 +140,16 @@ function projectFile(value: unknown): string {
   if (posix.isAbsolute(value) || nodePath.isAbsolute(value)) return UNKNOWN
   if (posix.normalize(value) !== value || value === '..' || value.startsWith('../')) return UNKNOWN
   return clip(value)
+}
+
+/**
+ * The one free-text field: hidden and direction-changing characters out,
+ * bounded. Anything that is not a string is no reason at all (empty), never a
+ * stringified object.
+ */
+function reasonText(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  return stripHiddenCharacters(value).slice(0, MAX_REASON_CHARS)
 }
 
 function count(value: unknown): number {
@@ -149,6 +195,34 @@ export function logCodingChange(runId: string, details: CodingAuditDetails): voi
     entityType: ENTITY_TYPE,
     entityId: runId,
     details: { ...changeDetails(details) }
+  })
+}
+
+/**
+ * One entry per proposal a human refused, carrying the reason they typed.
+ *
+ * Written for the whole package at once (one entry per file), so the export
+ * shows which changes were proposed and not allowed — the half of the
+ * compliance claim that is hard to make any other way. The run id links these
+ * rows to the applied rows of the same run.
+ */
+export function logCodingChangeRejected(runId: string, details: CodingRejectedDetails): void {
+  getActivityLogger().log({
+    ...ACTOR_USER,
+    action: 'coding.change_rejected',
+    entityType: ENTITY_TYPE,
+    entityId: runId,
+    details: {
+      projectPath: projectRoot(details?.projectPath),
+      filePath: projectFile(details?.filePath),
+      addedLines: count(details?.addedLines),
+      removedLines: count(details?.removedLines),
+      provider: name(details?.provider),
+      model: name(details?.model),
+      policyVersion: name(details?.policyVersion),
+      runContextKnown: details?.runContextKnown === true,
+      note: reasonText(details?.reason)
+    }
   })
 }
 
@@ -269,7 +343,13 @@ export function resolveRunAuditContext(runId: string): RunAuditContext & { known
 // Export
 // ---------------------------------------------------------------------------
 
-/** Stable: a compliance officer's spreadsheet and scripts depend on this order. */
+/**
+ * Stable: a compliance officer's spreadsheet and scripts depend on this order.
+ *
+ * `note` carries the user's refusal reason on a `coding.change_rejected` row
+ * and the explanation on an `export.truncated` row; the `action` column says
+ * which. Every other column is a path, a number, a flag or a name.
+ */
 export const CODING_AUDIT_COLUMNS = [
   'id',
   'createdAt',
@@ -359,7 +439,9 @@ function rowFor(entry: {
     d.skippedCount,
     d.interrupted,
     reasonsCell(d.skippedReasons),
-    ''
+    // The only free-text cell: a refusal reason the user typed, or the note of
+    // an export.truncated row. `cell` neutralises and bounds it like any other.
+    d.note
   ])
 }
 

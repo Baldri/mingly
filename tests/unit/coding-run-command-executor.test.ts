@@ -1,7 +1,7 @@
 /**
- * run_command through the REAL AgentExecutor and the REAL registry (Task 12).
+ * mingly_run_command through the REAL AgentExecutor and the REAL registry (Task 12).
  *
- * run_command is an ordinary tool, so its output reaches the loop guard like
+ * mingly_run_command is an ordinary tool, so its output reaches the loop guard like
  * any tool result. That is shown here rather than assumed. The detector behind
  * the guard is a stand-in that recognises the literal `API_KEY`: what this
  * file proves is the ROUTING (command output -> guard -> run ends), not the
@@ -119,7 +119,7 @@ vi.mock('../../src/main/agent/loop-guard', async (importOriginal) => {
 function commandStep(command: string): ToolUseResponse {
   return {
     text: 'go',
-    toolCalls: [{ id: 'tc-1', name: 'run_command', arguments: { command } }],
+    toolCalls: [{ id: 'tc-1', name: 'mingly_run_command', arguments: { command } }],
     done: false,
     stopReason: 'tool_use',
     tokens: { input: 10, output: 10 }
@@ -164,7 +164,7 @@ function runIn(mode: CodingMode) {
   })
 }
 
-describe('run_command through the real executor', () => {
+describe('mingly_run_command through the real executor', () => {
   it('positive control: harmless output lets the run continue to the next model call', async () => {
     fakeNpm('echo all green')
     llmResponses = [commandStep('npm test')]
@@ -173,12 +173,12 @@ describe('run_command through the real executor', () => {
     expect(llmCallCount).toBe(2)
   })
 
-  it('hands the guard the RAW command output, attributed to run_command and without a file path', async () => {
+  it('hands the guard the RAW command output, attributed to mingly_run_command and without a file path', async () => {
     fakeNpm('echo all green')
     llmResponses = [commandStep('npm test')]
     await runIn('propose-run')
     expect(guardOrigins).toHaveLength(1)
-    expect(guardOrigins[0][0]).toEqual({ toolName: 'run_command' })
+    expect(guardOrigins[0][0]).toEqual({ toolName: 'mingly_run_command' })
     expect(guardContents[0][0]).toContain('exit code 0')
     expect(guardContents[0][0]).toContain('all green')
   })
@@ -189,11 +189,11 @@ describe('run_command through the real executor', () => {
     const run = await runIn('propose-run')
     expect(run.status).toBe('failed')
     expect(run.error).toContain('Credential upload to a cloud provider denied.')
-    expect(run.error).toContain('run_command')
+    expect(run.error).toContain('mingly_run_command')
     expect(llmCallCount).toBe(1)
   })
 
-  it('a model that names run_command below propose-run gets no execution', async () => {
+  it('a model that names mingly_run_command below propose-run gets no execution', async () => {
     const marker = path.join(binDir, 'ran.marker')
     fakeNpm(`touch "${marker}"\necho ok`)
     storedModes['dir-1'] = 'propose'

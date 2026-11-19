@@ -1,5 +1,5 @@
 /**
- * Wiring of read_file through the REAL AgentExecutor and the REAL registry
+ * Wiring of mingly_read_file through the REAL AgentExecutor and the REAL registry
  * (Task 9): the handler receives the workspace instance the executor created,
  * and the loop guard receives the file path, not just the tool name. A test
  * against originForToolCall alone would stay green while the executor ignores it.
@@ -33,7 +33,7 @@ vi.mock('../../src/main/security/request-guard-deps', () => ({
 
 let projectPath: string
 
-// The default grant lookup of read_file loads the FileAccessManager (electron).
+// The default grant lookup of mingly_read_file loads the FileAccessManager (electron).
 vi.mock('../../src/main/file-access/file-access-manager', () => ({
   getFileAccessManager: () => ({
     getAllowedDirectories: () => [
@@ -144,14 +144,14 @@ async function run(): Promise<void> {
   })
 }
 
-describe('read_file through the real executor', () => {
-  it('hands the guard the FILE PATH of a read_file result', async () => {
+describe('mingly_read_file through the real executor', () => {
+  it('hands the guard the FILE PATH of a mingly_read_file result', async () => {
     fs.mkdirSync(path.join(projectPath, 'src'))
     fs.writeFileSync(path.join(projectPath, 'src', 'a.ts'), 'export const a = 1\n')
-    llmResponses = [step('read_file', { path: 'src/a.ts' })]
+    llmResponses = [step('mingly_read_file', { path: 'src/a.ts' })]
     await run()
     expect(guardOrigins).toHaveLength(1)
-    expect(guardOrigins[0][0]).toEqual({ toolName: 'read_file', filePath: 'src/a.ts' })
+    expect(guardOrigins[0][0]).toEqual({ toolName: 'mingly_read_file', filePath: 'src/a.ts' })
     // The guard saw the RAW file content, not a compacted reference.
     expect(guardContents[0][0]).toContain('export const a = 1')
   })
@@ -184,22 +184,22 @@ describe('read_file through the real executor', () => {
     fs.mkdirSync(path.join(projectPath, 'src'))
     fs.writeFileSync(path.join(projectPath, 'src', 'a.ts'), 'export const a = 1\n')
     fs.symlinkSync('src/a.ts', path.join(projectPath, 'link.ts'))
-    llmResponses = [step('read_file', { path: './link.ts' })]
+    llmResponses = [step('mingly_read_file', { path: './link.ts' })]
     await run()
-    expect(guardOrigins[0][0]).toEqual({ toolName: 'read_file', filePath: 'src/a.ts' })
+    expect(guardOrigins[0][0]).toEqual({ toolName: 'mingly_read_file', filePath: 'src/a.ts' })
   })
 
   it('shows NO path for a refused read, never the model text', async () => {
-    llmResponses = [step('read_file', { path: 'src/a.ts\u202Etxt.exe' })]
+    llmResponses = [step('mingly_read_file', { path: 'src/a.ts\u202Etxt.exe' })]
     await run()
-    expect(guardOrigins[0][0]).toEqual({ toolName: 'read_file' })
+    expect(guardOrigins[0][0]).toEqual({ toolName: 'mingly_read_file' })
   })
 
   it('a real file name with bidi and zero-width characters reaches the guard without them, in its real case', async () => {
     // Upper case on purpose: the blocklist folds case for MATCHING, the dialog
     // must show the name as the filesystem spells it.
     fs.writeFileSync(path.join(projectPath, 'A\u202EB\u200Bc.TS'), 'export const z = 1\n')
-    llmResponses = [step('read_file', { path: 'A\u202EB\u200Bc.TS' })]
+    llmResponses = [step('mingly_read_file', { path: 'A\u202EB\u200Bc.TS' })]
     await run()
     expect(guardOrigins[0][0].filePath).toBe('ABc.TS')
   })
@@ -207,19 +207,19 @@ describe('read_file through the real executor', () => {
   it('shows the real resolved name, not the case-folded matching form', async () => {
     fs.mkdirSync(path.join(projectPath, 'Src'))
     fs.writeFileSync(path.join(projectPath, 'Src', 'Readme.MD'), '# hi\n')
-    llmResponses = [step('read_file', { path: 'Src/Readme.MD' })]
+    llmResponses = [step('mingly_read_file', { path: 'Src/Readme.MD' })]
     await run()
     expect(guardOrigins[0][0].filePath).toBe('Src/Readme.MD')
   })
 
-  it('two read_file calls with the SAME spelling in one step both report their path', async () => {
+  it('two mingly_read_file calls with the SAME spelling in one step both report their path', async () => {
     fs.writeFileSync(path.join(projectPath, 'a.ts'), 'export const a = 1\n')
     llmResponses = [
       {
         text: 'go',
         toolCalls: [
-          { id: 'tc-1', name: 'read_file', arguments: { path: 'a.ts', limit: 1 } },
-          { id: 'tc-2', name: 'read_file', arguments: { path: 'a.ts', offset: 1 } }
+          { id: 'tc-1', name: 'mingly_read_file', arguments: { path: 'a.ts', limit: 1 } },
+          { id: 'tc-2', name: 'mingly_read_file', arguments: { path: 'a.ts', offset: 1 } }
         ],
         done: false,
         stopReason: 'tool_use',
@@ -228,12 +228,12 @@ describe('read_file through the real executor', () => {
     ]
     await run()
     expect(guardOrigins[0]).toEqual([
-      { toolName: 'read_file', filePath: 'a.ts' },
-      { toolName: 'read_file', filePath: 'a.ts' }
+      { toolName: 'mingly_read_file', filePath: 'a.ts' },
+      { toolName: 'mingly_read_file', filePath: 'a.ts' }
     ])
   })
 
-  it('another tool carrying a path argument does not consume a read_file entry', async () => {
+  it('another tool carrying a path argument does not consume a mingly_read_file entry', async () => {
     fs.writeFileSync(path.join(projectPath, 'a.ts'), 'export const a = 1\n')
     getToolRegistry().registerBuiltIn(
       { name: 'probe_path', description: 'probe', inputSchema: { type: 'object', properties: {} } },
@@ -245,7 +245,7 @@ describe('read_file through the real executor', () => {
         text: 'go',
         toolCalls: [
           { id: 'tc-1', name: 'probe_path', arguments: { path: 'a.ts' } },
-          { id: 'tc-2', name: 'read_file', arguments: { path: 'a.ts' } }
+          { id: 'tc-2', name: 'mingly_read_file', arguments: { path: 'a.ts' } }
         ],
         done: false,
         stopReason: 'tool_use',
@@ -255,7 +255,7 @@ describe('read_file through the real executor', () => {
     await run()
     expect(guardOrigins[0]).toEqual([
       { toolName: 'probe_path' },
-      { toolName: 'read_file', filePath: 'a.ts' }
+      { toolName: 'mingly_read_file', filePath: 'a.ts' }
     ])
   })
 
@@ -266,8 +266,8 @@ describe('read_file through the real executor', () => {
       {
         text: 'go',
         toolCalls: [
-          { id: 'dup', name: 'read_file', arguments: { path: 'a.ts' } },
-          { id: 'dup', name: 'read_file', arguments: { path: 'b.ts' } }
+          { id: 'dup', name: 'mingly_read_file', arguments: { path: 'a.ts' } },
+          { id: 'dup', name: 'mingly_read_file', arguments: { path: 'b.ts' } }
         ],
         done: false,
         stopReason: 'tool_use',
@@ -276,8 +276,8 @@ describe('read_file through the real executor', () => {
     ]
     await run()
     expect(guardOrigins[0]).toEqual([
-      { toolName: 'read_file', filePath: 'a.ts' },
-      { toolName: 'read_file', filePath: 'b.ts' }
+      { toolName: 'mingly_read_file', filePath: 'a.ts' },
+      { toolName: 'mingly_read_file', filePath: 'b.ts' }
     ])
   })
 
@@ -288,8 +288,8 @@ describe('read_file through the real executor', () => {
       {
         text: 'go',
         toolCalls: [
-          { id: '', name: 'read_file', arguments: { path: 'a.ts' } },
-          { id: '', name: 'read_file', arguments: { path: 'b.ts' } }
+          { id: '', name: 'mingly_read_file', arguments: { path: 'a.ts' } },
+          { id: '', name: 'mingly_read_file', arguments: { path: 'b.ts' } }
         ],
         done: false,
         stopReason: 'tool_use',
@@ -298,8 +298,8 @@ describe('read_file through the real executor', () => {
     ]
     await run()
     expect(guardOrigins[0]).toEqual([
-      { toolName: 'read_file', filePath: 'a.ts' },
-      { toolName: 'read_file', filePath: 'b.ts' }
+      { toolName: 'mingly_read_file', filePath: 'a.ts' },
+      { toolName: 'mingly_read_file', filePath: 'b.ts' }
     ])
   })
 
@@ -318,9 +318,9 @@ describe('read_file through the real executor', () => {
     )
     // Step 2, index 0: a REFUSED read. It must report no path at all; if step
     // 1's entry were still reachable, its origin would show STEP1.ts.
-    llmResponses = [step('probe_late', {}), step('read_file', { path: '../outside.ts' })]
+    llmResponses = [step('probe_late', {}), step('mingly_read_file', { path: '../outside.ts' })]
     await run()
-    expect(guardOrigins[1][0]).toEqual({ toolName: 'read_file' })
+    expect(guardOrigins[1][0]).toEqual({ toolName: 'mingly_read_file' })
     // The straggler: step 1 is over; its sink is closed and emptied.
     expect(captured!.resolvedPaths!.get('0')).toBeUndefined()
     captured!.resolvedPaths!.set('0', 'LATE.ts')

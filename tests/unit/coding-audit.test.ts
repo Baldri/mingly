@@ -38,6 +38,7 @@ vi.mock('../../src/main/audit/activity-logger', () => ({
 
 import {
   logCodingChange,
+  logCodingChangeRejected,
   logCodingGuardBlocked,
   logCodingRunUndone,
   exportCodingAudit,
@@ -356,6 +357,62 @@ describe('exportCodingAudit', () => {
     expect(a[col('addedLines')]).toBe('3')
     expect(a[col('policyVersion')]).toBe('2026-08-26.1')
     expect(a[col('runContextKnown')]).toBe('false')
+  })
+
+  it('exports a refused proposal with the user-typed reason in the note column', () => {
+    logCodingChangeRejected('run1', {
+      filePath: 'src/a.ts',
+      addedLines: 3,
+      removedLines: 1,
+      provider: 'anthropic',
+      model: 'claude-opus-5',
+      policyVersion: '2026-08-26.1',
+      runContextKnown: true,
+      reason: 'Falsche Datei angepasst'
+    })
+    const rows = parseCsv(exportCodingAudit({}))
+    expect(rows).toHaveLength(2)
+    const row = rows[1]
+    expect(row[col('action')]).toBe('coding.change_rejected')
+    expect(row[col('runId')]).toBe('run1')
+    expect(row[col('filePath')]).toBe('src/a.ts')
+    expect(row[col('addedLines')]).toBe('3')
+    expect(row[col('note')]).toBe('Falsche Datei angepasst')
+  })
+
+  it('neutralises the reason like every other cell: formula, newline, quote, length', () => {
+    const payload = '=HYPERLINK("http://evil.example","x")\nand a "quote"' + 'y'.repeat(2000)
+    logCodingChangeRejected('run1', {
+      filePath: 'src/a.ts',
+      addedLines: 0,
+      removedLines: 0,
+      provider: 'anthropic',
+      model: 'm',
+      policyVersion: '1',
+      reason: payload
+    })
+    const csv = exportCodingAudit({})
+    const rows = parseCsv(csv)
+    // One row, one line: the newline in the reason did not forge a record.
+    expect(rows).toHaveLength(2)
+    const note = rows[1][col('note')]
+    expect(note.startsWith("'=")).toBe(true)
+    expect(note).not.toContain('\n')
+    expect(note.length).toBeLessThanOrEqual(600)
+  })
+
+  it('a rejected entry never carries file text, whatever the caller passes', () => {
+    logCodingChangeRejected('run1', {
+      filePath: 'src/a.ts',
+      addedLines: 0,
+      removedLines: 0,
+      provider: 'anthropic',
+      model: 'm',
+      policyVersion: '1',
+      ...({ oldText: SECRET_LINE, newText: SECRET_LINE, diff: SECRET_LINE } as never)
+    })
+    expect(JSON.stringify(logged())).not.toContain('sk-live')
+    expect(exportCodingAudit({})).not.toContain('sk-live')
   })
 
   it('has only the header when nothing was logged, and only coding entries are exported', () => {

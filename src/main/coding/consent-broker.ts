@@ -18,6 +18,7 @@
  */
 import { randomUUID } from "node:crypto";
 import {
+  CODING_CONSENT_ANSWER_TIMEOUT_MS,
   parseCodingConsentChoice,
   type CodingConsentChoice,
   type CodingConsentRequest,
@@ -307,7 +308,7 @@ export interface ConsentBroker {
  * asking is for; withholding the one unanswered file is the conservative
  * option and lets the run carry on.
  */
-export const DEFAULT_CONSENT_ANSWER_TIMEOUT_MS = 300_000;
+export const DEFAULT_CONSENT_ANSWER_TIMEOUT_MS = CODING_CONSENT_ANSWER_TIMEOUT_MS;
 
 export interface ConsentBrokerDeps {
   /**

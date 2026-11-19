@@ -4,7 +4,7 @@
  * Snapshots and externalized tool results live INSIDE the project, not in
  * os.tmpdir(): project source must not leave the project boundary, and that
  * holds for backup copies as much as for the files the agent reads. As a side
- * effect `.mingly/context/` sits inside the granted directory, so `read_file`
+ * effect `.mingly/context/` sits inside the granted directory, so `mingly_read_file`
  * can open an externalized result without widening the grant.
  *
  * Every decision here fails closed: anything unexpected throws a

@@ -10,9 +10,17 @@ import {
   diffLines,
   isCodingFeatureAllowed,
   describeUndo,
-  getPermissionLabel
+  getPermissionLabel,
+  refusalText,
+  CODING_ACCEPT_SCOPE_NOTICE,
+  CODING_CONSENT_WAIT_NOTICE
 } from '../../src/renderer/lib/coding-display'
-import { CODING_MODE_CHOICES } from '../../src/shared/coding-types'
+import {
+  CODING_CONSENT_ANSWER_TIMEOUT_MS,
+  CODING_MODE_CHOICES,
+  CODING_REFUSALS_MAY_HAVE_WRITTEN,
+  CODING_REFUSAL_CODES
+} from '../../src/shared/coding-types'
 
 describe('approval surface text', () => {
   it('shows a right-to-left override in a path visibly instead of reordering it', () => {
@@ -101,6 +109,84 @@ describe('mode choices (R36 and fail-closed vocabulary)', () => {
       expect(`${c.label}${c.description}${c.scopeNote}`).not.toContain('ß')
     }
   })
+
+  it('propose-run says that commands run project code which writes without a diff', () => {
+    // This sentence is the only thing the user reads at the moment of
+    // choosing, and it used to promise the opposite of the README of the same
+    // branch: "Jede Änderung braucht weiterhin Ihre Annahme".
+    const choice = CODING_MODE_CHOICES.find((c) => c.mode === 'propose-run')
+    const text = `${choice?.label} ${choice?.description}`
+    expect(text).not.toContain('Jede Änderung braucht')
+    expect(text).not.toMatch(/braucht (weiterhin )?Ihre (Annahme|Zustimmung)/)
+    expect(choice?.description).toMatch(/ohne Diff/)
+    expect(choice?.description).toMatch(/Projektcode/)
+    expect(choice?.description).toMatch(/Benutzerrechten/)
+    expect(choice?.description).toMatch(/löschen|ändern/)
+  })
+
+  it('read-only promises only what exists: there is no search tool', () => {
+    const choice = CODING_MODE_CHOICES.find((c) => c.mode === 'read-only')
+    expect(choice?.description).not.toMatch(/such/i)
+    expect(choice?.description).toMatch(/lesen/)
+  })
+
+  it('the accept notice says what «Annehmen» covers and what it does not', () => {
+    expect(CODING_ACCEPT_SCOPE_NOTICE).toContain('Annehmen')
+    // The old sentence ("es wird nichts geschrieben, was hier nicht steht")
+    // was true of the accept and of nothing else.
+    expect(CODING_ACCEPT_SCOPE_NOTICE).toMatch(/ohne Diff/)
+    expect(CODING_ACCEPT_SCOPE_NOTICE).toMatch(/Vorschlagen und ausführen/)
+    expect(CODING_ACCEPT_SCOPE_NOTICE).not.toContain('ß')
+  })
+
+  it('the consent notice names the deadline instead of claiming the run is paused', () => {
+    // 300_000 ms is five minutes; the literal is the requirement, not a value
+    // read back from the module under test.
+    expect(CODING_CONSENT_ANSWER_TIMEOUT_MS).toBe(300_000)
+    expect(CODING_CONSENT_WAIT_NOTICE).toContain('5 Minuten')
+    expect(CODING_CONSENT_WAIT_NOTICE).toMatch(/ohne diese Datei weiter/)
+    expect(CODING_CONSENT_WAIT_NOTICE).not.toMatch(/angehalten|pausiert/)
+    expect(CODING_CONSENT_WAIT_NOTICE).not.toContain('ß')
+  })
+})
+
+describe('refusalText: a German surface does not show English refusals', () => {
+  it('maps every known code to a German sentence, with no Eszett', () => {
+    for (const code of CODING_REFUSAL_CODES) {
+      const text = refusalText(code)
+      expect(text, code).toMatch(/[a-zäöü]/)
+      expect(text, code).not.toContain('ß')
+      // The English originals all contain one of these.
+      expect(text, code).not.toMatch(/Nothing was|was withdrawn|A write failed/)
+    }
+  })
+
+  it('every environment-dependent refusal keeps ONE shared text', () => {
+    // The main process answers every file-system-dependent cause with `fs`.
+    // Splitting it here would rebuild the oracle the single text removes.
+    const distinct = new Set(CODING_REFUSAL_CODES.map((code) => refusalText(code)))
+    expect(distinct.size).toBe(CODING_REFUSAL_CODES.length)
+    expect(refusalText('fs')).toBe(refusalText('fs'))
+  })
+
+  it('an unknown code falls back to the text that came with it, never to a guess', () => {
+    expect(refusalText('something-new', 'Nothing was written: new cause.')).toContain('new cause')
+    expect(refusalText(undefined, 'plain error')).toBe('plain error')
+    expect(refusalText(42, '')).toMatch(/abgelehnt/)
+    expect(refusalText(undefined, undefined)).toMatch(/abgelehnt/)
+  })
+
+  it('escapes hidden characters in a fallback text from outside', () => {
+    expect(refusalText(undefined, 'a‮b')).not.toContain('‮')
+  })
+
+  it('the three refusals after which files may be written are exactly these', () => {
+    expect([...CODING_REFUSALS_MAY_HAVE_WRITTEN].sort()).toEqual([
+      'interrupted',
+      'partial',
+      'withdrawn'
+    ])
+  })
 })
 
 describe('undo result', () => {
@@ -140,6 +226,20 @@ describe('undo result', () => {
     expect(view.restored).toEqual([])
     expect(view.headline).toContain('no snapshot')
     expect(view.skipped).toHaveLength(1)
+  })
+
+  it('a refusal with a code reads as ONE German sentence, not two stacked ones', () => {
+    // The old headline prefixed the English text and produced "Nichts wurde
+    // rückgängig gemacht: Nothing was restored: …".
+    const view = describeUndo({
+      kind: 'refused',
+      code: 'no-snapshot',
+      reason: 'Nothing was restored: there is no snapshot for this run in this directory.',
+      skipped: []
+    })
+    expect(view.headline).not.toMatch(/Nothing was restored/)
+    expect(view.headline).not.toMatch(/rückgängig gemacht:.*:/)
+    expect(view.headline).toMatch(/wiederhergestellt/)
   })
 
   it('escapes hidden characters in the paths it lists', () => {

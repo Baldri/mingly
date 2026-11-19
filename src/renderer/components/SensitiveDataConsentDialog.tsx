@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { CodingConsentChoice, CodingConsentRequest } from '../../shared/coding-types'
 import { consentOptions } from '../stores/coding-store'
-import { displayText } from '../lib/coding-display'
+import { CODING_CONSENT_WAIT_NOTICE, displayText } from '../lib/coding-display'
+import { trapTab } from '../lib/focus-trap'
 import type { RiskLevel } from '../../shared/privacy-types'
 import type { UploadPermissionRequest } from '../../shared/privacy-types'
 
@@ -272,24 +273,45 @@ interface CodingConsentDialogProps {
  * The question a coding run asks about one flagged tool result. It shows type
  * and risk level of each finding, never the value (the request carries none),
  * and offers exactly the answers the request offers: `anonymize` appears only
- * when it holds. The run is paused until one is chosen; there is no "cancel"
- * that would leave it hanging, and the third option lets it go on without the file.
+ * when it holds. There is no "cancel" that would leave the question hanging,
+ * and the third option lets the run go on without the file.
+ *
+ * It does NOT claim that the run is paused until the user answers: the broker
+ * settles the question itself after CODING_CONSENT_ANSWER_TIMEOUT_MS and the
+ * run carries on without that file. The deadline is named instead
+ * (CODING_CONSENT_WAIT_NOTICE), derived from the same constant.
+ *
+ * As in the diff dialog, the initial focus goes to the most conservative
+ * answer and Tab is trapped inside: there is no Escape, so a keyboard user
+ * must not be able to wander off behind an overlay while the clock runs.
  */
 export function CodingConsentDialog({ request, onChoose }: CodingConsentDialogProps) {
   const options = consentOptions(request)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const safestRef = useRef<HTMLButtonElement>(null)
+  // The last option is `drop-file` in the canonical order: the run goes on
+  // without the file, which is what an expiry would do anyway.
+  const safest = options.length > 0 ? options[options.length - 1] : undefined
+
+  useEffect(() => {
+    safestRef.current?.focus()
+  }, [request.requestId])
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div
-        role="dialog"
+        ref={dialogRef}
+        role="alertdialog"
         aria-modal="true"
         aria-labelledby="coding-consent-title"
+        onKeyDown={(event) => trapTab(event, dialogRef.current)}
         className="w-full max-w-xl rounded-lg bg-white p-6 shadow-2xl dark:bg-gray-800"
       >
         <h2 id="coding-consent-title" className="text-xl font-semibold text-gray-900 dark:text-white">
           Sensible Daten in einem Werkzeugergebnis
         </h2>
         <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
-          Der Coding-Lauf ist angehalten, bis Sie antworten.
+          {CODING_CONSENT_WAIT_NOTICE}
         </p>
 
         <div className="mt-4 rounded-lg bg-gray-50 p-3 text-sm dark:bg-gray-900/50">
@@ -321,6 +343,7 @@ export function CodingConsentDialog({ request, onChoose }: CodingConsentDialogPr
           {options.map((choice) => (
             <button
               key={choice}
+              ref={choice === safest ? safestRef : undefined}
               onClick={() => onChoose(choice)}
               className={`block w-full rounded-lg px-4 py-2 text-left text-sm font-medium ${CODING_CHOICE_LABEL[choice].className}`}
             >

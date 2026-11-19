@@ -451,6 +451,16 @@ export function getToolRegistry(): ToolRegistry {
 /**
  * Register default built-in tools.
  * These are always available regardless of MCP server state.
+ *
+ * The four coding tools are registered under namespaced names
+ * (`mingly_list_files`, `mingly_read_file`, `mingly_edit_file`,
+ * `mingly_run_command`). A built-in OWNS its name here, open gate or closed
+ * (see getAvailableTools), and these registrations run unconditionally on the
+ * singleton every run uses — so an unprefixed `read_file` or `edit_file` would
+ * remove a user's filesystem MCP server from every run, coding mode `off`
+ * included. The namespace is what makes that collision impossible; do not drop
+ * it in favour of "fall through to the MCP tool when the gate is closed", which
+ * would be a guard hanging on a name being spelled the same way.
  */
 function registerDefaultBuiltIns(registry: ToolRegistry): void {
   // Coding read tools (gated: offered only in a coding run of mode read-only or above)
