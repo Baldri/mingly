@@ -1352,6 +1352,22 @@ gesenkt, die Datei hat sich seit dem Vorschlag geaendert, oder ein Ziel liegt in
 `.mingly/`. Wer den Grund nicht liest, sieht nur «ging nicht» und hat keine Chance, es zu
 beheben.
 
+**Pflicht, nicht optional (Entscheid R82): «nichts zu tun» ist keine Verweigerung.**
+Der Schreibpfad liefert drei verschiedene Gruende, und die Oberflaeche darf sie **nicht**
+gleich aussehen lassen:
+
+- *«kein Snapshot fuer diesen Run in diesem Verzeichnis»* heisst **es gibt nichts
+  rueckgaengig zu machen**. Ruhig darstellen; am besten den Knopf gar nicht anbieten.
+- *«keine Aufzeichnung»* heisst, dass dieser Snapshot **nicht von uns stammt** — er kann
+  mit dem Repository mitgeliefert worden sein. Das ist eine echte Verweigerung und
+  gehoert deutlich gezeigt.
+- *«das Manifest hat sich geaendert»* heisst dasselbe eine Stufe schaerfer: die
+  Aufzeichnung existiert, passt aber nicht.
+
+Ein Nutzer, dem «nichts zu tun» als Fehlschlag praesentiert wird, sucht, wo nichts ist;
+einer, dem eine echte Verweigerung als Achselzucken praesentiert wird, uebersieht sie.
+Im Code sind die Gruende bereits getrennt — diese Pflicht betrifft die Darstellung.
+
 **Pflicht, nicht optional (Entscheid R76):** `undoRun` liefert **zwei** Gruppen —
 wiederhergestellt und **uebersprungen, mit Grund**. Uebersprungen wird eine Datei, die
 sich nach dem Anwenden geaendert hat; ihr Inhalt wird bewusst **nicht** ueberschrieben,
