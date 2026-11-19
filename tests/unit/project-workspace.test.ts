@@ -202,6 +202,48 @@ describe('ensureProjectWorkspace', () => {
     expect(fs.readFileSync(path.join(p, '.gitignore'), 'utf-8')).toBe(content)
   })
 
+  it.each(['!.min*', '!.mingly/**', '!*'])(
+    'appends the entry once when .mingly/ is followed by the unrecognised negation %s',
+    async (negation) => {
+      const gi = path.join(p, '.gitignore')
+      const content = `.mingly/\n${negation}\n`
+      fs.writeFileSync(gi, content)
+      await ensureProjectWorkspace(p, 'r1')
+      const afterFirst = fs.readFileSync(gi, 'utf-8')
+      expect(afterFirst).toBe(`${content}.mingly/\n`)
+      // boundedness: the appended re-ignore is the last matching rule, so a
+      // second call must not append again
+      await ensureProjectWorkspace(p, 'r2')
+      expect(fs.readFileSync(gi, 'utf-8')).toBe(afterFirst)
+    }
+  )
+
+  it.skipIf(isRoot)('treats .mingly/ with a trailing space as protected, even read-only', async () => {
+    const gi = path.join(p, '.gitignore')
+    fs.writeFileSync(gi, '.mingly/ \n')
+    fs.chmodSync(gi, 0o400)
+    await ensureProjectWorkspace(p, 'r1')
+    expect(fs.readFileSync(gi, 'utf-8')).toBe('.mingly/ \n')
+  })
+
+  it('still treats .mingly/ with a leading space as absent', async () => {
+    const gi = path.join(p, '.gitignore')
+    fs.writeFileSync(gi, ' .mingly/\n')
+    await ensureProjectWorkspace(p, 'r1')
+    expect(fs.readFileSync(gi, 'utf-8')).toBe(' .mingly/\n.mingly/\n')
+  })
+
+  it.skipIf(isRoot)('names the file and the line to add when the .gitignore cannot be fixed', async () => {
+    const gi = path.join(p, '.gitignore')
+    fs.writeFileSync(gi, 'dist\n')
+    fs.chmodSync(gi, 0o400)
+    const err = await ensureProjectWorkspace(p, 'r1').catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ProjectWorkspaceError)
+    const message = (err as Error).message
+    expect(message).toContain(gi)
+    expect(message).toContain('add the line ".mingly/"')
+  })
+
   it('tightens permissions of an already existing .mingly to 0700', async () => {
     // existing directory: mkdir({ recursive, mode }) would be a no-op here
     fs.mkdirSync(path.join(p, '.mingly'), { mode: 0o755 })

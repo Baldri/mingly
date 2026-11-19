@@ -83,10 +83,15 @@ async function createDirectory(dir: string): Promise<void> {
 function ignoresWorkspace(content: string): boolean {
   let ignored = false
   for (const raw of content.split('\n')) {
-    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
+    // git strips unescaped TRAILING spaces but keeps LEADING whitespace as part
+    // of the pattern, so only the trailing side is normalised.
+    const line = (raw.endsWith('\r') ? raw.slice(0, -1) : raw).replace(/(?<!\\) +$/, '')
     if (line === '' || line.startsWith('#') || /^\s/.test(line)) continue
-    if (GITIGNORE_EQUIVALENTS.has(line)) ignored = true
-    else if (line.startsWith('!') && GITIGNORE_EQUIVALENTS.has(line.slice(1))) ignored = false
+    // Any negation may re-include the workspace (`!.min*`, `!*`, ...); without
+    // a glob engine it is assumed to. Bounded: a later `.mingly/` is the last
+    // matching rule again, so the appended entry is not re-appended next run.
+    if (line.startsWith('!')) ignored = false
+    else if (GITIGNORE_EQUIVALENTS.has(line)) ignored = true
   }
   return ignored
 }
@@ -167,7 +172,10 @@ export async function ensureProjectWorkspace(
       try {
         await fs.promises.access(gitignorePath, fs.constants.W_OK)
       } catch {
-        throw new ProjectWorkspaceError('.gitignore lacks the .mingly/ entry and is not writable')
+        throw new ProjectWorkspaceError(
+          `${gitignorePath} does not ignore ${GITIGNORE_ENTRY} and is not writable: ` +
+            `add the line "${GITIGNORE_ENTRY}" to it (or make it writable) and retry`
+        )
       }
     }
   }
