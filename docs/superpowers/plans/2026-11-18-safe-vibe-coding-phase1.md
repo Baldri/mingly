@@ -1047,6 +1047,21 @@ git commit -m "feat(coding): edit_file proposes a diff instead of writing"
   Kanäle: `CODING_ACCEPT_EDITS: 'coding:accept-edits'`, `CODING_REJECT_EDITS: 'coding:reject-edits'`, `CODING_UNDO_RUN: 'coding:undo-run'`.
 - Produces für Task 14: die drei Kanäle.
 
+**Wann ein Vorschlag noch da ist (Entscheid R63).** Der Vorschlagsspeicher raeumt am
+Runende **nur** auf, wenn der Run `cancelled` oder `failed` war — bei `completed` und
+`max_steps_reached` bleiben die Vorschlaege liegen, denn **genau sie sind die Lieferung,
+die auf die Pruefung wartet**. (Erste Fassung raeumte bei jedem Runende und haette damit
+den Normalfall dieses Features zerstoert: vorschlagen, Run endet, Mensch prueft, Mensch
+nimmt ab.)
+
+Fuer diesen Task folgt daraus zweierlei. Erstens: `CODING_ACCEPT_EDITS` darf einen
+Vorschlag auch **nach** dem Runende annehmen — das ist der Normalfall, nicht die Ausnahme.
+Zweitens: die erneute Pruefung des `oldText` gegen den **aktuellen** Inhalt (Schritt 2
+unten) ist dadurch nicht optional, sondern die einzige Absicherung gegen alles, was
+zwischen Vorschlag und Abnahme passiert ist — auch gegen eine Aenderung durch den Nutzer
+selbst. Pro Datei und Run liegt hoechstens **ein** offener Vorschlag (Entscheid R60), die
+Reihenfolge mehrerer Vorschlaege derselben Datei ist also kein Fall mehr.
+
 **Woher der Handler den `ProjectWorkspace` nimmt (Entscheid R56).** Die Interfaces oben
 sagen, dass dieser Task einen `ProjectWorkspace` **verbraucht**, aber nicht, wer ihn
 **traegt** — zum vierten Mal dieselbe Luecke in diesem Plan (R27, R30, R33, jetzt hier).
@@ -1298,6 +1313,14 @@ zeigen lassen — am Grant-System vorbei. Gleiche Klasse wie die Memory-Notiz
 `renderer-kann-verzeichnis-allowlist-selbst-erweitern`. Ein Test muss belegen, dass ein
 Run mit einem `projectPath`, der nicht zum Grant des `directoryId` passt, **abgelehnt**
 wird — nicht korrigiert, abgelehnt. Befund I-3 des Task-7-Reviews.
+
+**Pflicht, nicht optional (Entscheid R64):** der Abnahme-Dialog zeigt das Merkmal
+`introducesHiddenCharacters` **auffaellig**, nicht als Fussnote. Ein Vorschlag darf
+Bidi-Overrides oder Nullbreiten-Zeichen enthalten, sodass der abgenommene Code anders
+**liest** als er **ist** — ein Trojan-Source-Angriff, der genau auf dieses Abnahmefenster
+zielt. Der gespeicherte Text bleibt byte-exakt, die **Anzeige** escapt solche Zeichen
+sichtbar als `<U+XXXX>`; die Oberflaeche muss zusaetzlich sagen, **dass** der Vorschlag
+sie einfuehrt. Ein Hinweis, den man uebersehen kann, ist hier kein Hinweis.
 
 **Pflicht, nicht optional (Entscheid R36):** die Modus-Beschriftung in der Oberflaeche
 sagt, dass die Stufe **Minglys eigene** Werkzeuge betrifft und nicht die MCP-Server des
