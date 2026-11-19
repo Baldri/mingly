@@ -432,6 +432,35 @@ Entscheidung ist eine bewusste Handlung des Nutzers statt ein Klick in einem Dia
 der Agent ausgeloest hat. Eine ueberschreibbare Blockliste waere ausserdem genau die
 Klickstrecke, die unter Anti-Ziele steht.
 
+**Ein Korrelationsschluessel fuer eine sicherheitsrelevante Anzeige wird LOKAL
+erzeugt.** Der Zustimmungs-Dialog nennt die Datei, ueber die ein Mensch entscheidet, und
+dieser Pfad muss dem Ergebnis zugeordnet werden, zu dem er gehoert. Der Schluessel dafuer
+darf nicht von aussen kommen.
+
+Diese Regel steht hier, weil derselbe Mechanismus sie dreimal gebrochen hat: zuerst war
+der Schluessel die vom Modell geschriebene **Pfad-Schreibweise**, dann wurde der Eintrag
+**beim ersten Nachschlagen geloescht** (womit jedes Paging seinen Pfad verlor), dann war
+der Schluessel die **Aufruf-Id des Providers** — die bei Anthropic direkt aus der Antwort
+stammt und bei einem OpenAI-kompatiblen oder lokalen Anbieter auch **leer** sein kann,
+womit alle Aufrufe eines Schritts auf einen Schluessel kollidieren. Jedes Mal kam der
+Schluessel von aussen, und jedes Mal sah der naechste Schluessel wie die Loesung aus.
+
+Also: der Executor vergibt je Aufruf eine eigene, lokal erzeugte Kennung und verwendet
+sie fuer beide Seiten der Zuordnung. Eine Provider-Id darf mitlaufen, zum Protokollieren,
+aber nichts Sicherheitsrelevantes haengt an ihr. Spaete Schreibzugriffe aus einem
+abgeschlossenen Schritt werden verworfen.
+
+**Was nur vom Modelltext abhaengt, darf unterschiedlich antworten; was vom Dateisystem
+abhaengt, muss identisch antworten.** Die feste Pruefreihenfolge dient dem Satz, dass
+eine Ablehnung nichts ueber das Dateisystem verraet — nicht der Reihenfolge an sich. Eine
+Pruefung, die allein auf der Zeichenkette des Modells arbeitet (etwa die Endung des
+**angefragten** Namens), darf deshalb frueher laufen und darf eine eigene Begruendung
+nennen. Alles, was einen Zustand auf der Platte beruehrt — existiert der Pfad, zeigt der
+Link nach draussen, ist die Datei lesbar —, muss **dieselbe** Antwort geben, sonst wird
+die Ablehnung zum Orakel. Gefunden, weil ein toter Link und ein Link auf eine existierende
+Datei ausserhalb des Grants unterschiedlich antworteten: ein Bit pro Host-Pfad, erfragbar
+mit gepflanzten Links.
+
 **Welche Endungen lesbar sind — ein Entscheid, nicht ein Nebeneffekt (2026-11-19).** Die
 Leseliste enthaelt auch `conf`, `cfg`, `ini` und `properties`. Solche Dateien enthalten
 gelegentlich ein Passwort, und sie sind trotzdem lesbar. Der Unterschied zur `.env` ist
