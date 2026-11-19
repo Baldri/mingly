@@ -432,6 +432,34 @@ Entscheidung ist eine bewusste Handlung des Nutzers statt ein Klick in einem Dia
 der Agent ausgeloest hat. Eine ueberschreibbare Blockliste waere ausserdem genau die
 Klickstrecke, die unter Anti-Ziele steht.
 
+**Was der Inhalts-Guard NICHT faengt (gemessen, 2026-11-19).** Dieses Dokument sagt an
+mehreren Stellen, dass der Guard nachfragt, wenn etwas Sensitives im Inhalt steht. Das
+gilt nur fuer Muster, die der Detektor **kennt**, und seine Liste ist schmaler als der
+Satz vermuten laesst. Gemessen an `sensitive-data-detector.ts` (vollstaendige
+Musterliste, Positivkontrolle im selben Lauf) faengt er **nicht**:
+
+- einen base64-`auth`-Block, wie `.docker/config.json` ihn traegt,
+- ein `private_key`-Feld, wie in einem GCP-Service-Account,
+- einen npm- oder yarn-Token,
+- einen **PEM-Header**,
+- ein **JWT**,
+- einen Stripe-**`sk_live_`**-Key: das Muster `\b(sk|pk|api)[-_]?[a-zA-Z0-9]{20,}\b`
+  scheitert, weil der Unterstrich in `sk_live_...` die Zeichenklasse bricht.
+
+Er faengt dagegen `password =`-Zuweisungen, E-Mails, Telefonnummern, Kreditkarten,
+AWS-Keys, `sk-`/`sk-ant-`-Keys, private IP-Adressen und `/Users`-Pfade.
+
+Zwei Folgerungen, die im ganzen Dokument mitzulesen sind. Erstens: **die Blockliste
+traegt mehr Gewicht als der Guard**, weil sie nach dem **Namen** entscheidet und damit
+auch Inhalt erfasst, den kein Muster kennt — darum ist sie absolut und darum wurde sie
+nach Familien statt nach Instanzen erweitert. Zweitens, und unangenehmer: **ein Ergebnis,
+dessen einzige ERKANNTE Fundstelle anonymisierbar ist, kann ein unerkanntes Geheimnis
+durch «anonymisiert senden» tragen** — eine Service-Account-Datei wird ueber ihre
+`client_email` gefunden, der Dialog bietet Anonymisieren an, die Adresse wird ersetzt,
+die Nachpruefung findet nichts mehr, und der `private_key` reist mit. Solange das so ist,
+darf kein Satz in diesem Dokument den Guard als zweite vollwertige Schicht hinter der
+Blockliste darstellen.
+
 **Ein Korrelationsschluessel fuer eine sicherheitsrelevante Anzeige wird LOKAL
 erzeugt.** Der Zustimmungs-Dialog nennt die Datei, ueber die ein Mensch entscheidet, und
 dieser Pfad muss dem Ergebnis zugeordnet werden, zu dem er gehoert. Der Schluessel dafuer
