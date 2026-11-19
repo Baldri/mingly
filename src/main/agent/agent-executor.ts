@@ -32,6 +32,7 @@ import type { CodingRunOptions } from '../../shared/coding-types'
 import { getToolRegistry, type ToolContext, type ToolRegistry } from './tool-registry'
 import { StepPaths } from './step-paths'
 import { getEditProposalStore } from '../coding/edit-proposals'
+import { getRunDirectoryRegistry } from '../coding/run-directories'
 import { getCodingModeStore } from '../coding/coding-mode-store'
 import { ensureProjectWorkspace } from '../coding/project-workspace'
 import { getAgentContextManager } from './agent-context-manager'
@@ -253,6 +254,9 @@ export class AgentExecutor {
             `Coding mode mismatch: run claims "${String(coding.mode)}" but the stored mode is "${storedMode}"`
           )
         }
+        // The main process remembers which directory this run belongs to; the
+        // accept and undo handlers validate the renderer's claim against it.
+        getRunDirectoryRegistry().record(runId, coding.directoryId)
         // Mode `off` is a plain run: no workspace (creating one could even
         // throw in a project where a plain run works), no tool context. The
         // mismatch check above still applies to it.

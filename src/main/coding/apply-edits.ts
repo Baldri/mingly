@@ -54,6 +54,8 @@ import { editStillMatches, getEditProposalStore, type EditProposalStore } from '
 import { isProbablyBinary } from './path-policy'
 import { resolveReadableFile, defaultReadToolDeps, type Scope } from './read-tools'
 import { ensureProjectWorkspace, type ProjectWorkspace } from './project-workspace'
+import { getSnapshotLedger, type SnapshotLedger } from './snapshot-ledger'
+import { getRunDirectoryRegistry, type RunDirectoryRegistry } from './run-directories'
 import type { ProposedEdit } from '../../shared/coding-types'
 
 // ---------------------------------------------------------------------------
@@ -90,8 +92,31 @@ export type ApplyOutcome =
   | { kind: 'applied'; paths: string[] }
   | { kind: 'refused'; reason: string }
 
+/** Why a file was left alone by undo. */
+export type SkipReason =
+  | 'changed-since-apply'
+  | 'snapshot-damaged'
+  | 'path-not-allowed'
+  | 'unreadable'
+
+export interface SkippedFile {
+  path: string
+  reason: SkipReason
+}
+
+/**
+ * Undo reports BOTH groups. A file that was changed after the apply is left
+ * alone (later work is never overwritten), and it must not vanish from the
+ * answer: a partial undo that looks complete is the one impression a safety
+ * net must never give.
+ */
+export interface UndoResult {
+  restored: string[]
+  skipped: SkippedFile[]
+}
+
 export type UndoOutcome =
-  | { kind: 'restored'; paths: string[] }
+  | ({ kind: 'restored' } & UndoResult)
   | { kind: 'refused'; reason: string }
 
 export type RejectOutcome =
@@ -106,9 +131,15 @@ const REFUSE_GRANT =
   'Nothing was written: the directory grant or the coding mode no longer allows edits.'
 const REFUSE_NOTHING = 'Nothing was written: there is nothing pending for this run.'
 const REFUSE_INPUT = 'Nothing was done: the request is not a valid run and directory.'
+const REFUSE_RUN_DIRECTORY =
+  'Nothing was done: this run is not known to belong to that directory. The request and the ' +
+  'main process disagree about which project the run worked on.'
 const REFUSE_WORKSPACE = 'Nothing was written: the project workspace does not belong to this grant.'
 const REFUSE_SNAPSHOT =
   'Nothing was written: the snapshot could not be made, and no file is changed without one.'
+const REFUSE_UNRECORDED =
+  'Nothing was restored: this snapshot has no record in this app (it was not created here, its ' +
+  'manifest was changed afterwards, or the record is gone). It will not be restored.'
 const REFUSE_BUSY = 'Nothing was written: another apply or undo is running for this project.'
 const REFUSE_PARTIAL =
   'A write failed after other files were already written, and not every file could be restored. ' +
@@ -116,6 +147,13 @@ const REFUSE_PARTIAL =
 
 function refused(reason: string): { kind: 'refused'; reason: string } {
   return { kind: 'refused', reason }
+}
+
+/** Thrown by undo when it must say why it restored nothing. */
+class UndoRefusal extends Error {
+  constructor(readonly reason: string) {
+    super(reason)
+  }
 }
 
 /** Thrown inside the apply and mapped to one refusal at the boundary. */
@@ -140,6 +178,10 @@ export interface ApplyDeps {
   store: Pick<EditProposalStore, 'pending' | 'resolve'>
   findGrant(directoryId: string): Promise<AllowedDirectory | undefined>
   getMode(directoryId: string): CodingMode | Promise<CodingMode>
+  /** Which directory each run started in; the handlers validate the renderer's claim against it. */
+  runDirectories: Pick<RunDirectoryRegistry, 'get'>
+  /** Batches this app created, kept outside the project (see snapshot-ledger.ts). */
+  ledger: SnapshotLedger
   /** Overrides APPLY_MAX_SNAPSHOT_BYTES. */
   maxSnapshotBytes?: number
   hooks?: ApplyHooks
@@ -151,6 +193,8 @@ let modeStoreModule: Promise<typeof import('./coding-mode-store')> | undefined
 export function defaultApplyDeps(): ApplyDeps {
   return {
     store: getEditProposalStore(),
+    runDirectories: getRunDirectoryRegistry(),
+    ledger: getSnapshotLedger(),
     findGrant: (id) => defaultReadToolDeps.findGrant(id),
     async getMode(id) {
       modeStoreModule ??= import('./coding-mode-store')
@@ -458,7 +502,9 @@ async function readSmallFile(file: string, maxBytes: number): Promise<Buffer | n
 // Restoring one file (shared by the rollback and by undo)
 // ---------------------------------------------------------------------------
 
-type RestoreResult = 'restored' | 'skipped'
+type RestoreResult = { kind: 'restored' } | { kind: 'skipped'; reason: SkipReason }
+
+const SKIPPED = (reason: SkipReason): RestoreResult => ({ kind: 'skipped', reason })
 
 /**
  * Put one file back to its snapshot, but only when that is provably safe:
@@ -469,20 +515,20 @@ type RestoreResult = 'restored' | 'skipped'
  */
 async function restoreEntry(entry: ManifestEntry, batchDir: string, scope: Scope): Promise<RestoreResult> {
   const resolved = await resolveReadableFile(entry.rel, scope)
-  if (resolved.kind !== 'ok') return 'skipped'
-  if (isInsideWorkspace(resolved.realRelPosix)) return 'skipped'
+  if (resolved.kind !== 'ok') return SKIPPED('path-not-allowed')
+  if (isInsideWorkspace(resolved.realRelPosix)) return SKIPPED('path-not-allowed')
 
   const current = await openAndRead(resolved.realTarget)
-  if (!current) return 'skipped'
+  if (!current) return SKIPPED('unreadable')
   try {
-    if (sha256(current.data) !== entry.after) return 'skipped'
+    if (sha256(current.data) !== entry.after) return SKIPPED('changed-since-apply')
     const snapshot = await readSmallFile(path.join(batchDir, entry.file), APPLY_FILE_MAX_BYTES)
-    if (!snapshot || sha256(snapshot) !== entry.before) return 'skipped'
+    if (!snapshot || sha256(snapshot) !== entry.before) return SKIPPED('snapshot-damaged')
     await writeFileAtomic(resolved.realTarget, snapshot, {
       mode: current.mode,
       expectIdentity: { dev: current.dev, ino: current.ino }
     })
-    return 'restored'
+    return { kind: 'restored' }
   } finally {
     await current.handle.close().catch(() => undefined)
   }
@@ -563,7 +609,11 @@ async function applyInner(
         }
       }
       const manifest: Manifest = { version: 1, entries }
-      await writeFileAtomic(path.join(batchDir, MANIFEST_NAME), JSON.stringify(manifest), { mode: 0o600 })
+      const manifestJson = JSON.stringify(manifest)
+      await writeFileAtomic(path.join(batchDir, MANIFEST_NAME), manifestJson, { mode: 0o600 })
+      // The authority for undo: a row outside the project, written BEFORE the
+      // first project file is touched. If it cannot be written, nothing is.
+      await deps.ledger.record(scope.realRoot, runId, batchNumber(batchDir), sha256(manifestJson))
     } catch (error) {
       await fs.promises.rm(batchDir, { recursive: true, force: true }).catch(() => undefined)
       // A failed verification keeps its reason; anything else here is the snapshot.
@@ -613,12 +663,16 @@ async function rollBack(
   let stuck = 0
   for (const index of [...written].reverse()) {
     try {
-      if ((await restoreEntry(entries[index], batchDir, scope)) !== 'restored') stuck++
+      if ((await restoreEntry(entries[index], batchDir, scope)).kind !== 'restored') stuck++
     } catch {
       stuck++
     }
   }
   return stuck
+}
+
+function batchNumber(batchDir: string): number {
+  return Number(BATCH_NAME.exec(path.basename(batchDir))?.[1])
 }
 
 async function makeBatchDir(ws: ProjectWorkspace, scope: Scope, runId: string): Promise<string> {
@@ -657,13 +711,18 @@ async function writeNewFile(file: string, data: Buffer): Promise<void> {
 
 /**
  * Restore every file of the run from its snapshots, newest batch first, and
- * return the paths that were restored. No git needed.
+ * return what was restored AND what was left alone, with the reason. No git
+ * needed.
  *
  * A file is restored only when it still holds exactly what the apply wrote:
- * a file the user changed afterwards is left alone and does not appear in the
- * result. A malformed manifest throws before anything is restored.
+ * a file the user changed afterwards is left alone and reported as skipped.
+ * A malformed manifest throws before anything is restored.
  */
-export async function undoRun(runId: string, ws: ProjectWorkspace): Promise<string[]> {
+export async function undoRun(
+  runId: string,
+  ws: ProjectWorkspace,
+  deps: Pick<ApplyDeps, 'ledger'> = defaultApplyDeps()
+): Promise<UndoResult> {
   if (typeof runId !== 'string' || !SAFE_RUN_ID.test(runId)) throw new Error('invalid run id')
   if (!ws || typeof ws.root !== 'string' || path.basename(ws.root) !== WORKSPACE_DIR) {
     throw new Error('invalid workspace')
@@ -683,16 +742,24 @@ export async function undoRun(runId: string, ws: ProjectWorkspace): Promise<stri
       const batchDir = path.join(ws.snapshotDir, `batch-${number}`)
       const raw = await readSmallFile(path.join(batchDir, MANIFEST_NAME), MANIFEST_MAX_BYTES)
       if (!raw) throw new Error('manifest unreadable')
+      // The disk inside the project vouches for nothing. The manifest must be
+      // byte-for-byte what this app recorded outside the project, else the
+      // batch is refused. Do not "repair" a missing record by trusting the disk.
+      const recorded = await deps.ledger.lookup(scope.realRoot, runId, number)
+      if (recorded === undefined || recorded !== sha256(raw)) throw new UndoRefusal(REFUSE_UNRECORDED)
       parsed.push({ batchDir, manifest: parseManifest(raw.toString('utf-8')) })
     }
 
     const restored: string[] = []
+    const skipped: SkippedFile[] = []
     for (const { batchDir, manifest } of parsed) {
       for (const entry of [...manifest.entries].reverse()) {
-        if ((await restoreEntry(entry, batchDir, scope)) === 'restored') restored.push(entry.rel)
+        const result = await restoreEntry(entry, batchDir, scope)
+        if (result.kind === 'restored') restored.push(entry.rel)
+        else skipped.push({ path: entry.rel, reason: result.reason })
       }
     }
-    return restored
+    return { restored, skipped }
   } finally {
     busyProjects.delete(scope.realRoot)
   }
@@ -720,6 +787,17 @@ function validIds(runId: unknown, directoryId: unknown): runId is string {
   )
 }
 
+/**
+ * The directory the run started in is the main process's record; the id the
+ * renderer sent is only checked against it. No record, or a different id, is a
+ * refusal: never a silent preference for either side, and never a fallback to
+ * the parameter.
+ */
+function runBelongsTo(deps: Pick<ApplyDeps, 'runDirectories'>, runId: string, directoryId: unknown): boolean {
+  const recorded = deps.runDirectories?.get(runId)
+  return typeof recorded === 'string' && recorded === directoryId
+}
+
 export async function acceptEditsForRun(
   runId: unknown,
   directoryId: unknown,
@@ -727,6 +805,7 @@ export async function acceptEditsForRun(
 ): Promise<ApplyOutcome> {
   try {
     if (!validIds(runId, directoryId)) return refused(REFUSE_INPUT)
+    if (!runBelongsTo(deps, runId, directoryId)) return refused(REFUSE_RUN_DIRECTORY)
     const grant = await deps.findGrant(directoryId as string)
     if (!permitsEdit(grant)) return refused(REFUSE_GRANT)
     if (deps.store.pending(runId).length === 0) return refused(REFUSE_NOTHING)
@@ -764,8 +843,11 @@ export function rejectEditsForRun(
 }
 
 /**
- * Undo needs the grant with read and edit (it writes), but not the mode: the
- * user who switched coding off afterwards still gets their files back.
+ * Undo needs the grant with read and edit (it writes), and deliberately NOT the
+ * coding mode. Undo is the safety net: someone switches coding off BECAUSE
+ * something went wrong, and making undo depend on the mode would lock them out
+ * of restoring their own files exactly then. The grant is the right gate: the
+ * directory must still be one this app may write. Do not "tighten" this.
  */
 export async function undoRunForDirectory(
   runId: unknown,
@@ -774,6 +856,7 @@ export async function undoRunForDirectory(
 ): Promise<UndoOutcome> {
   try {
     if (!validIds(runId, directoryId)) return refused(REFUSE_INPUT)
+    if (!runBelongsTo(deps, runId, directoryId)) return refused(REFUSE_RUN_DIRECTORY)
     const grant = await deps.findGrant(directoryId as string)
     if (!permitsEdit(grant)) return refused(REFUSE_GRANT)
 
@@ -783,8 +866,9 @@ export async function undoRunForDirectory(
     } catch {
       return refused(REFUSE_WORKSPACE)
     }
-    return { kind: 'restored', paths: await undoRun(runId, ws) }
-  } catch {
+    return { kind: 'restored', ...(await undoRun(runId, ws, deps)) }
+  } catch (error) {
+    if (error instanceof UndoRefusal) return refused(error.reason)
     return refused(REFUSE_FS)
   }
 }

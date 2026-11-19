@@ -16,6 +16,7 @@ import type { ToolUseResponse } from '../../src/main/llm-clients/client-manager'
 import type { CodingMode } from '../../src/shared/coding-types'
 import type { ToolContext } from '../../src/main/agent/tool-registry'
 import { getEditProposalStore } from '../../src/main/coding/edit-proposals'
+import { getRunDirectoryRegistry } from '../../src/main/coding/run-directories'
 
 vi.mock('../../src/main/security/request-guard-deps', () => ({
   getGuardDeps: () => ({
@@ -204,6 +205,29 @@ describe('coding run workspace wiring', () => {
 })
 
 describe('coding run mode and tool context', () => {
+  it('records which directory the run belongs to, in the main process', async () => {
+    storedModes['dir-1'] = 'propose'
+    llmResponses = [toolCallStep('tc-1')]
+    const run = await executor.execute('task', 'anthropic', 'm', [], undefined, {
+      directoryId: 'dir-1',
+      projectPath,
+      mode: 'propose' as const
+    })
+    expect(getRunDirectoryRegistry().get(run.id)).toBe('dir-1')
+  })
+
+  it('records nothing for a run that is refused (mode mismatch) or has no coding options', async () => {
+    storedModes['dir-1'] = 'read-only'
+    const refused = await executor.execute('task', 'anthropic', 'm', [], undefined, {
+      directoryId: 'dir-1',
+      projectPath,
+      mode: 'propose-run' as const
+    })
+    expect(getRunDirectoryRegistry().get(refused.id)).toBeUndefined()
+    const plain = await executor.execute('task', 'anthropic', 'm')
+    expect(getRunDirectoryRegistry().get(plain.id)).toBeUndefined()
+  })
+
   it('hands the tool context to the tool list and to execution of a coding run', async () => {
     storedModes['dir-1'] = 'propose'
     llmResponses = [toolCallStep('tc-1')]

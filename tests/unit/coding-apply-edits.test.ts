@@ -19,6 +19,8 @@ import {
   undoRunForDirectory,
   type ApplyDeps
 } from '../../src/main/coding/apply-edits'
+import { createSnapshotLedger, LEDGER_MAX_ROWS, type SnapshotLedger } from '../../src/main/coding/snapshot-ledger'
+import { createRunDirectoryRegistry, type RunDirectoryRegistry } from '../../src/main/coding/run-directories'
 import { createEditProposalStore, type EditProposalStore } from '../../src/main/coding/edit-proposals'
 import { ensureProjectWorkspace, type ProjectWorkspace } from '../../src/main/coding/project-workspace'
 import type { AllowedDirectory } from '../../src/shared/file-access-types'
@@ -34,6 +36,8 @@ let store: EditProposalStore
 let grants: AllowedDirectory[]
 let modes: Map<string, CodingMode>
 let extraDeps: Partial<ApplyDeps>
+let runDirs: RunDirectoryRegistry
+let ledger: SnapshotLedger
 
 function grant(overrides: Partial<AllowedDirectory> = {}): AllowedDirectory {
   return {
@@ -54,6 +58,8 @@ function deps(): ApplyDeps {
     store,
     findGrant: async (id) => grants.find((g) => g.id === id),
     getMode: (id) => modes.get(id) ?? 'off',
+    runDirectories: runDirs,
+    ledger,
     ...extraDeps
   }
 }
@@ -91,6 +97,10 @@ beforeEach(async () => {
   modes = new Map([['dir-1', 'propose']])
   store = createEditProposalStore()
   extraDeps = {}
+  runDirs = createRunDirectoryRegistry()
+  const rows = new Map<string, unknown>()
+  ledger = createSnapshotLedger({ get: (k, d) => rows.get(k) ?? d, set: (k, v) => void rows.set(k, v) })
+  for (const r of [RUN, 'runA', 'runB', 'done1', 'maxed']) runDirs.record(r, 'dir-1')
   ws = await ensureProjectWorkspace(project, RUN)
 })
 
@@ -475,13 +485,13 @@ describe('undoRun', () => {
     propose('b.ts', 'x = 1', 'x = 2')
     expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
     expect(read(a)).not.toBe(ORIGINAL)
-    const restored = await undoRun(RUN, ws)
+    const restored = (await undoRun(RUN, ws, deps())).restored
     expect([...restored].sort()).toEqual(['b.ts', 'src/a.ts'])
     expect(read(a)).toBe(ORIGINAL)
     expect(read(b)).toBe('x = 1\n')
   })
 
-  it('does not overwrite a file the user changed after the run, and says so by leaving it out', async () => {
+  it('does not overwrite a file the user changed after the run, and reports it as skipped with the reason', async () => {
     const a = write('a.ts', ORIGINAL)
     const b = write('b.ts', 'x = 1\n')
     propose('a.ts', 'const a = 1', 'const a = 2')
@@ -489,8 +499,9 @@ describe('undoRun', () => {
     await applyPendingEdits(RUN, ws, grants[0], deps())
     const later = 'x = 2\n// later work of the user\n'
     fs.writeFileSync(b, later)
-    const restored = await undoRun(RUN, ws)
-    expect(restored).toEqual(['a.ts'])
+    const result = await undoRun(RUN, ws, deps())
+    expect(result.restored).toEqual(['a.ts'])
+    expect(result.skipped).toEqual([{ path: 'b.ts', reason: 'changed-since-apply' }])
     expect(read(a)).toBe(ORIGINAL)
     expect(read(b)).toBe(later)
   })
@@ -499,8 +510,12 @@ describe('undoRun', () => {
     const a = write('a.ts', ORIGINAL)
     propose('a.ts', 'const a = 1', 'const a = 2')
     await applyPendingEdits(RUN, ws, grants[0], deps())
-    expect(await undoRun(RUN, ws)).toEqual(['a.ts'])
-    expect(await undoRun(RUN, ws)).toEqual([])
+    expect((await undoRun(RUN, ws, deps())).restored).toEqual(['a.ts'])
+    // Second time the file no longer holds what the apply wrote: reported, not hidden.
+    expect(await undoRun(RUN, ws, deps())).toEqual({
+      restored: [],
+      skipped: [{ path: 'a.ts', reason: 'changed-since-apply' }]
+    })
     expect(read(a)).toBe(ORIGINAL)
   })
 
@@ -510,7 +525,10 @@ describe('undoRun', () => {
     await applyPendingEdits(RUN, ws, grants[0], deps())
     const applied = read(a)
     fs.writeFileSync(path.join(ws.snapshotDir, 'batch-1', '0.bak'), 'tampered\n')
-    expect(await undoRun(RUN, ws)).toEqual([])
+    expect(await undoRun(RUN, ws, deps())).toEqual({
+      restored: [],
+      skipped: [{ path: 'a.ts', reason: 'snapshot-damaged' }]
+    })
     expect(read(a)).toBe(applied)
   })
 
@@ -522,7 +540,9 @@ describe('undoRun', () => {
     fs.writeFileSync(outsideFile, read(a))
     fs.rmSync(a)
     fs.symlinkSync(outsideFile, a)
-    expect(await undoRun(RUN, ws)).toEqual([])
+    const result = await undoRun(RUN, ws, deps())
+    expect(result.restored).toEqual([])
+    expect(result.skipped).toEqual([{ path: 'a.ts', reason: 'path-not-allowed' }])
     expect(read(outsideFile)).toContain('const a = 2')
   })
 
@@ -532,8 +552,11 @@ describe('undoRun', () => {
     propose('a.ts', 'const a = 1', 'const a = 2')
     await applyPendingEdits(RUN, ws, grants[0], deps())
     const afterA = read(a)
-    fs.writeFileSync(path.join(ws.snapshotDir, 'batch-1', 'manifest.json'), '{"entries": "no"}')
-    await expect(undoRun(RUN, ws)).rejects.toThrow()
+    const malformed = '{"entries": "no"}'
+    fs.writeFileSync(path.join(ws.snapshotDir, 'batch-1', 'manifest.json'), malformed)
+    // Vouched for by the ledger, so the test reaches the parser and not the ledger check.
+    await ledger.record(fs.realpathSync(project), RUN, 1, sha(malformed))
+    await expect(undoRun(RUN, ws, deps())).rejects.toThrow()
     expect(read(a)).toBe(afterA)
     expect(read(b)).toBe('x = 1\n')
   })
@@ -546,8 +569,101 @@ describe('undoRun', () => {
     propose('a.ts', 'const a = 2', 'const a = 3')
     expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
     expect(read(a)).toContain('const a = 3')
-    await undoRun(RUN, ws)
+    await undoRun(RUN, ws, deps())
     expect(read(a)).toBe(ORIGINAL)
+  })
+})
+
+describe('FIX C: undo trusts only batches this app recorded outside the project', () => {
+  async function appliedWithManifest(): Promise<{ a: string; manifest: string }> {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    return { a, manifest: path.join(ws.snapshotDir, 'batch-1', 'manifest.json') }
+  }
+
+  it('a batch this app created restores (positive control)', async () => {
+    const { a } = await appliedWithManifest()
+    expect((await undoRun(RUN, ws, deps())).restored).toEqual(['a.ts'])
+    expect(read(a)).toBe(ORIGINAL)
+  })
+
+  it('refuses a batch whose manifest was changed on disk after the record was written, naming the reason', async () => {
+    const { a, manifest } = await appliedWithManifest()
+    const applied = read(a)
+    // Same shape, same hashes of file bodies: only a byte of the manifest differs.
+    fs.writeFileSync(manifest, fs.readFileSync(manifest, 'utf8') + ' ')
+    await expect(undoRun(RUN, ws, deps())).rejects.toThrow(/no record in this app/)
+    expect(read(a)).toBe(applied)
+    const out = await undoRunForDirectory(RUN, 'dir-1', deps())
+    expect(out.kind).toBe('refused')
+    if (out.kind === 'refused') expect(out.reason).toMatch(/no record in this app/)
+    expect(read(a)).toBe(applied)
+  })
+
+  it('refuses a planted batch that has no record at all, and never writes its content', async () => {
+    const a = write('a.ts', ORIGINAL)
+    const planted = path.join(ws.snapshotDir, 'batch-1')
+    fs.mkdirSync(planted)
+    const evil = 'EVIL CONTENT\n'
+    fs.writeFileSync(path.join(planted, '0.bak'), evil)
+    fs.writeFileSync(
+      path.join(planted, 'manifest.json'),
+      JSON.stringify({
+        version: 1,
+        entries: [{ rel: 'a.ts', file: '0.bak', before: sha(evil), after: sha(ORIGINAL) }]
+      })
+    )
+    const out = await undoRunForDirectory(RUN, 'dir-1', deps())
+    expect(out.kind).toBe('refused')
+    if (out.kind === 'refused') expect(out.reason).toMatch(/no record in this app/)
+    expect(read(a)).toBe(ORIGINAL)
+  })
+
+  it('refuses when the record is gone, even for a genuine snapshot (accepted consequence)', async () => {
+    const { a } = await appliedWithManifest()
+    const applied = read(a)
+    ledger = createSnapshotLedger({ get: (_k, d) => d, set: () => undefined })
+    await expect(undoRun(RUN, ws, deps())).rejects.toThrow(/no record in this app/)
+    expect(read(a)).toBe(applied)
+  })
+
+  it('writes the record before the first project file is overwritten', async () => {
+    write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    let recordedBeforeWrite = false
+    extraDeps = {
+      hooks: {
+        afterVerify: async () => {
+          recordedBeforeWrite = (await ledger.lookup(fs.realpathSync(project), RUN, 1)) !== undefined
+        }
+      }
+    }
+    await applyPendingEdits(RUN, ws, grants[0], deps())
+    expect(recordedBeforeWrite).toBe(true)
+  })
+
+  it('writes nothing when the record cannot be written', async () => {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    ledger = {
+      record: async () => {
+        throw new Error('userData not writable')
+      },
+      lookup: async () => undefined
+    }
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('refused')
+    expect(read(a)).toBe(ORIGINAL)
+    expect(fs.readdirSync(ws.snapshotDir)).toEqual([])
+  })
+
+  it('the ledger is bounded as a whole and drops the oldest row', async () => {
+    const rows = new Map<string, unknown>()
+    const small = createSnapshotLedger({ get: (k, d) => rows.get(k) ?? d, set: (k, v) => void rows.set(k, v) }, 3)
+    for (let i = 1; i <= 4; i++) await small.record('/p', 'r', i, 'h' + i)
+    expect(await small.lookup('/p', 'r', 1)).toBeUndefined()
+    expect(await small.lookup('/p', 'r', 4)).toBe('h4')
+    expect(LEDGER_MAX_ROWS).toBeGreaterThan(3)
   })
 })
 
@@ -628,11 +744,62 @@ describe('handlers: R56 (the workspace is rebuilt from the grant) and R63 (propo
       // And with the grant back, it works.
       grants = [grant()]
       const back = await undoRunForDirectory(RUN, 'dir-1', deps())
-      expect(back).toEqual({ kind: 'restored', paths: ['a.ts'] })
+      expect(back).toEqual({ kind: 'restored', restored: ['a.ts'], skipped: [] })
       expect(read(a)).toBe(ORIGINAL)
     } finally {
       fs.rmSync(fresh, { recursive: true, force: true })
     }
+  })
+
+  it('FIX A: a mismatched directory id is refused even though the grant for that other directory is valid', async () => {
+    const otherProject = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-apply-other-')))
+    try {
+      fs.writeFileSync(path.join(otherProject, 'a.ts'), ORIGINAL)
+      grants = [grant(), grant({ id: 'dir-2', path: otherProject })]
+      modes.set('dir-2', 'propose')
+      const a = write('a.ts', ORIGINAL)
+      propose('a.ts', 'const a = 1', 'const a = 2')
+      expect((await acceptEditsForRun(RUN, 'dir-2', deps())).kind).toBe('refused')
+      expect(read(a)).toBe(ORIGINAL)
+      expect(fs.readFileSync(path.join(otherProject, 'a.ts'), 'utf8')).toBe(ORIGINAL)
+      expect(fs.existsSync(path.join(otherProject, '.mingly'))).toBe(false)
+      expect(store.pending(RUN)).toHaveLength(1)
+      // The recorded one proceeds.
+      expect((await acceptEditsForRun(RUN, 'dir-1', deps())).kind).toBe('applied')
+    } finally {
+      fs.rmSync(otherProject, { recursive: true, force: true })
+    }
+  })
+
+  it('FIX A: undo with a mismatched directory id is refused and restores nothing', async () => {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    await acceptEditsForRun(RUN, 'dir-1', deps())
+    const applied = read(a)
+    grants = [grant(), grant({ id: 'dir-2', path: project })]
+    expect((await undoRunForDirectory(RUN, 'dir-2', deps())).kind).toBe('refused')
+    expect(read(a)).toBe(applied)
+  })
+
+  it('FIX A: a run with no recorded directory is refused, not answered from the parameter', async () => {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2', 'unrecorded')
+    expect((await acceptEditsForRun('unrecorded', 'dir-1', deps())).kind).toBe('refused')
+    expect((await undoRunForDirectory('unrecorded', 'dir-1', deps())).kind).toBe('refused')
+    expect(read(a)).toBe(ORIGINAL)
+    expect(fs.existsSync(path.join(project, '.mingly', 'snapshots', 'unrecorded'))).toBe(false)
+  })
+
+  it('FIX A: the registry keeps the first record of a run and is bounded as a whole', () => {
+    const reg = createRunDirectoryRegistry(3)
+    reg.record('r1', 'd1')
+    reg.record('r1', 'd2')
+    expect(reg.get('r1')).toBe('d1')
+    reg.record('r2', 'd')
+    reg.record('r3', 'd')
+    reg.record('r4', 'd')
+    expect(reg.get('r1')).toBeUndefined()
+    expect(reg.get('r4')).toBe('d')
   })
 
   it('takes nothing but a run id and a directory id: bad input is refused', async () => {
