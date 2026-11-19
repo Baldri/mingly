@@ -639,6 +639,16 @@ git commit -m "feat(coding): keep snapshots and externalized results inside the 
 **Files:**
 - Modify: `src/main/agent/tool-registry.ts` — `registerBuiltIn` (Zeile 70), `getAvailableTools` (105), `executeToolCalls` (185), `executeToolInner` (206)
 - Modify: `src/main/agent/agent-executor.ts:195`, `:264` (Kontext durchreichen)
+- Modify: `src/main/agent/agent-executor.ts` — **Pflicht, nicht optional:** ein Coding-Run
+  ruft `ensureProjectWorkspace(coding.projectPath, runId)` **einmal** am Runbeginn und gibt
+  `workspace.contextDir` als drittes Argument an `compactToolResult` (heute Zeile 431, ohne
+  Ziel). Ohne das bleibt die Auslagerung in `os.tmpdir()`, und damit verlaesst
+  Projekt-Quelltext die Projektgrenze — die Eigenschaft, fuer die Task 6 ueberhaupt
+  existiert. Ausserdem weist der Kompaktierungstext das Modell an, die ausgelagerte Datei
+  mit `read_file` zu lesen; das geht nur innerhalb des Grants, also nur unter `.mingly/`.
+  Der Plan behauptete diese Durchreichung in Task 6 («Der Coding-Pfad uebergibt
+  `workspace.contextDir`»), wies sie aber keinem Task zu. Entscheid R30.
+  **Eine Instanz pro Run**, die Tasks 9 und 11 verbrauchen dieselbe — nicht jeder sein eigenes.
 - Test: `tests/unit/tool-registry.test.ts`
 
 **Interfaces:**
@@ -654,6 +664,11 @@ git commit -m "feat(coding): keep snapshots and externalized results inside the 
   executeToolCalls(toolCalls: AgentToolCall[], ctx?: ToolContext): Promise<AgentToolResult[]>
   ```
 - Produces für Task 9, 10, 12: `ToolContext` wird an jeden Coding-Handler als zweites Argument gegeben: `BuiltInToolHandler = (args: Record<string, unknown>, ctx?: ToolContext) => Promise<string>`.
+
+Ein Test muss belegen, dass die ausgelagerte Datei eines Coding-Runs **unter dem
+Projektpfad** liegt, nicht unter `os.tmpdir()` — und dass ein Nicht-Coding-Run (Vergleich,
+Subagent) unveraendert im Temp-Verzeichnis bleibt. Ein Test, der nur `ensureProjectWorkspace`
+oder nur `compactToolResult` einzeln prueft, bleibt gruen, waehrend die Verdrahtung fehlt.
 
 Ein Werkzeug, dessen Gate `false` sagt, wird **gar nicht angeboten** — nicht angeboten und dann verweigert. Ein angebotenes und verweigertes Werkzeug lehrt das Modell, es trotzdem zu versuchen, und füllt den Kontext mit Fehlern.
 
