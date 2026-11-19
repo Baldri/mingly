@@ -358,11 +358,60 @@ async function rootHasMark(tool: CommandTool, scope: Scope): Promise<boolean> {
 
 const GIT_POINTER_MAX_BYTES = 4096
 
-/** A directory strictly inside the grant, symlinks resolved on both sides. */
-async function containedDirectory(candidate: string, scope: Scope): Promise<string | null> {
+const MAX_LINK_HOPS = 40
+
+/**
+ * Resolve `input` against the REAL directory `start` the way the operating
+ * system would: segment by segment, with lstat and readlink, and every `..`
+ * applied to the physical path reached so far (which holds no symlink, so its
+ * dirname is its physical parent). Returns the real path, or null when a
+ * segment is missing, a link loops (more than 40 hops) or anything fails.
+ *
+ * Why not path.resolve or fs.realpath: both collapse `..` TEXTUALLY first, so
+ * `sub/../x` with `sub` a link into another tree answers `<here>/x` where the
+ * kernel (and git) land in `<link target's parent>/x`. Measured on this machine:
+ * `cd -P` and Python's realpath follow the link; Node's fs.realpathSync gives
+ * ENOENT for the physical-only target, i.e. it collapsed first.
+ */
+export async function physicalPath(start: string, input: string): Promise<string | null> {
   try {
-    const real = await fs.promises.realpath(candidate)
-    if (!(await fs.promises.stat(real)).isDirectory()) return null
+    const separator = path.sep === '\\' ? /[\\/]+/ : /\/+/
+    const pending = input.split(separator)
+    let current = start
+    let hops = 0
+    while (pending.length > 0) {
+      const segment = pending.shift() as string
+      if (segment === '' || segment === '.') continue
+      if (segment === '..') {
+        current = path.dirname(current)
+        continue
+      }
+      const next = path.join(current, segment)
+      const info = await fs.promises.lstat(next)
+      if (info.isSymbolicLink()) {
+        if (++hops > MAX_LINK_HOPS) return null
+        const target = await fs.promises.readlink(next)
+        if (path.isAbsolute(target)) current = path.parse(target).root
+        pending.unshift(...target.split(separator))
+      } else {
+        current = next
+      }
+    }
+    return current
+  } catch {
+    return null
+  }
+}
+
+/**
+ * `rel` resolved physically from the real directory `base` (see physicalPath):
+ * the result must be a directory strictly inside the grant, symlinks resolved
+ * on both sides.
+ */
+async function containedDirectory(base: string, rel: string, scope: Scope): Promise<string | null> {
+  try {
+    const real = await physicalPath(base, rel)
+    if (real === null || !(await fs.promises.stat(real)).isDirectory()) return null
     // Equal to the root is refused too: a git dir that IS the work tree is not a git dir.
     if (real === scope.realRoot || !(await isRealPathWithin(real, scope.root))) return null
     return real
@@ -390,12 +439,12 @@ async function resolveGitDir(scope: Scope): Promise<string | null> {
     const stat = await fs.promises.stat(real)
     let gitDir: string | null
     if (stat.isDirectory()) {
-      gitDir = await containedDirectory(real, scope)
+      gitDir = await containedDirectory(real, '', scope)
     } else if (stat.isFile() && stat.size <= GIT_POINTER_MAX_BYTES) {
       const firstLine = (await fs.promises.readFile(real, 'utf8')).split(/\r?\n/, 1)[0]
       const match = /^gitdir: (.+)$/.exec(firstLine)
       if (!match || match[1].includes('\u0000')) return null
-      gitDir = await containedDirectory(path.resolve(scope.realRoot, match[1]), scope)
+      gitDir = await containedDirectory(scope.realRoot, match[1], scope)
     } else {
       return null
     }
@@ -407,7 +456,7 @@ async function resolveGitDir(scope: Scope): Promise<string | null> {
     } catch {
       common = null
     }
-    if (common !== null && (common === '' || (await containedDirectory(path.resolve(gitDir, common), scope)) === null)) {
+    if (common !== null && (common === '' || (await containedDirectory(gitDir, common, scope)) === null)) {
       return null
     }
     return gitDir

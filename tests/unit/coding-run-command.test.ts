@@ -12,7 +12,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { ToolRegistry, type ToolContext } from '../../src/main/agent/tool-registry'
-import { registerRunCommand, readInterpreterPaths, type RunLimits } from '../../src/main/coding/run-command'
+import { registerRunCommand, readInterpreterPaths, physicalPath, type RunLimits } from '../../src/main/coding/run-command'
 import { COMMAND_UNAVAILABLE } from '../../src/main/coding/command-allowlist'
 import { ensureProjectWorkspace } from '../../src/main/coding/project-workspace'
 import type { AllowedDirectory } from '../../src/shared/file-access-types'
@@ -543,6 +543,66 @@ describe('run_command: the granted root must be the tool\'s own root (class fix 
       fs.writeFileSync(path.join(project, '.git'), 'gitdir: .gitdata/wt\n')
       expect(await gitRun()).toBe(COMMAND_UNAVAILABLE)
       expect(fs.existsSync(started)).toBe(false)
+    })
+
+    // `..` after a symlink applies to the link TARGET's parent. A lexical
+    // check (path.resolve, and also Node's realpath, which collapses `..` first)
+    // answers "inside"; the operating system lands outside.
+    it('physicalPath follows the filesystem, not the string: sub/../x differs from path.resolve', async () => {
+      const far = path.join(outside, 'a', 'b')
+      fs.mkdirSync(far, { recursive: true })
+      fs.mkdirSync(path.join(outside, 'a', 'x'))
+      fs.symlinkSync(far, path.join(project, 'sub'))
+      expect(path.resolve(project, 'sub/../x')).toBe(path.join(project, 'x')) // the lexical answer
+      expect(await physicalPath(project, 'sub/../x')).toBe(path.join(outside, 'a', 'x')) // the physical one
+      // Links with their own `..` and absolute links, and the plain cases:
+      fs.symlinkSync('sub/..', path.join(project, 'hop'))
+      expect(await physicalPath(project, 'hop')).toBe(path.join(outside, 'a'))
+      fs.symlinkSync(far, path.join(project, 'abs'))
+      expect(await physicalPath(project, 'abs')).toBe(far)
+      expect(await physicalPath(project, '.')).toBe(project)
+      expect(await physicalPath(project, '')).toBe(project)
+      expect(await physicalPath(project, 'nope')).toBeNull()
+    })
+
+    it('physicalPath gives up on a link loop', async () => {
+      fs.symlinkSync('loop2', path.join(project, 'loop1'))
+      fs.symlinkSync('loop1', path.join(project, 'loop2'))
+      expect(await physicalPath(project, 'loop1')).toBeNull()
+    })
+
+    it('a commondir whose lexical path is inside but whose physical path is outside is refused', async () => {
+      fs.mkdirSync(path.join(outside, 'a', 'b'), { recursive: true })
+      fs.mkdirSync(path.join(outside, 'a', 'foreign'))
+      const gd = path.join(project, '.git')
+      fs.mkdirSync(path.join(gd, 'foreign'), { recursive: true })
+      fs.symlinkSync(path.join(outside, 'a', 'b'), path.join(gd, 'sub'))
+      fs.writeFileSync(path.join(gd, 'commondir'), 'sub/../foreign')
+      expect(await gitRun()).toBe(COMMAND_UNAVAILABLE)
+      expect(fs.existsSync(started)).toBe(false)
+    })
+
+    it('a gitdir pointer whose lexical path is inside but whose physical path is outside is refused', async () => {
+      fs.mkdirSync(path.join(outside, 'a', 'b'), { recursive: true })
+      fs.mkdirSync(path.join(outside, 'a', 'inner-git'))
+      fs.mkdirSync(path.join(project, 'inner-git'))
+      fs.symlinkSync(path.join(outside, 'a', 'b'), path.join(project, 'link'))
+      fs.writeFileSync(path.join(project, '.git'), 'gitdir: link/../inner-git\n')
+      expect(await gitRun()).toBe(COMMAND_UNAVAILABLE)
+      expect(fs.existsSync(started)).toBe(false)
+    })
+
+    it('false alarm direction: a physical path inside the grant that a lexical check would miss still runs', async () => {
+      // grant/link -> grant/real/sub; `link/../gd` is grant/real/gd physically,
+      // grant/gd lexically (which does not exist).
+      fs.mkdirSync(path.join(project, 'real', 'sub'), { recursive: true })
+      fs.mkdirSync(path.join(project, 'real', 'gd'))
+      fs.symlinkSync(path.join(project, 'real', 'sub'), path.join(project, 'link'))
+      fs.writeFileSync(path.join(project, '.git'), 'gitdir: link/../gd\n')
+      fake('git', 'echo "GIT_DIR=$GIT_DIR"')
+      const out = await gitRun()
+      expect(out).toContain('exit code 0')
+      expect(out).toContain(`GIT_DIR=${path.join(project, 'real', 'gd')}\n`)
     })
 
     it('a linked worktree whose git dir and commondir are inside the grant still runs, with git pinned to them', async () => {
