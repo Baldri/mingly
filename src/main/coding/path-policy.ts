@@ -57,7 +57,10 @@ export const CODING_BLOCKED_PATTERNS: readonly string[] = [
  * readable; everything else (data, config, markup-as-data, unknown) is not
  * exempt.
  *
- * Deliberately NOT in CODE/DOC although readable: `xml` and `svg` (data
+ * Exemption line: extensions whose purpose is human-authored source or
+ * prose. Deliberately NOT in CODE/DOC although readable: `sql` (often a
+ * generated dump; a user table dump leaks hashes, and the content guard would
+ * only offer to anonymise the emails), `xml` and `svg` (data
  * formats), `txt` (a plain text file named secrets is what people actually
  * write secrets into), and everything under DATA.
  */
@@ -65,7 +68,7 @@ export const CODING_CODE_EXTENSIONS: readonly string[] = [
   "ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs",
   "py", "rb", "go", "rs", "java", "kt", "kts", "scala", "swift",
   "c", "h", "cc", "cpp", "hpp", "cs", "php", "lua", "dart", "ex", "exs",
-  "sh", "bash", "zsh", "sql", "graphql", "gql", "proto", "gradle",
+  "sh", "bash", "zsh", "graphql", "gql", "proto", "gradle",
   "html", "htm", "css", "scss", "sass", "less", "vue", "svelte",
 ];
 export const CODING_DOC_EXTENSIONS: readonly string[] = ["md", "mdx"];
@@ -73,6 +76,8 @@ const CODING_DATA_EXTENSIONS: readonly string[] = [
   "xml", "svg",
   "json", "jsonc", "yaml", "yml", "toml", "ini", "cfg", "conf", "properties",
   "csv", "tsv", "lock",
+  // sql is data wearing a code extension (often a generated dump).
+  "sql",
   "txt",
 ];
 

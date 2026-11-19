@@ -383,6 +383,20 @@ describe("coding path policy: fix round 3 (secrets is a data file, not a code fi
     }
   });
 
+  it("treats sql as data (often a dump), while hand-written markup stays exempt", () => {
+    // Exemption line: extensions whose purpose is human-authored source or
+    // prose. A .sql file is frequently a generated dump, so secrets.sql is
+    // refused; ordinary SQL elsewhere in a project stays readable.
+    expect(isBlockedPath("secrets.sql")).toBe(true);
+    expect(isBlockedPath("db/Secrets.SQL")).toBe(true);
+    for (const p of ["migrations/001_init.sql", "schema.sql", "secrets.html", "secrets.css"]) {
+      expect(isBlockedPath(p), p).toBe(false);
+    }
+    expect(isReadableExtension("migrations/001_init.sql")).toBe(true);
+    expect(CODING_CODE_EXTENSIONS).not.toContain("sql");
+    expect(CODING_READ_EXTENSIONS).toContain("sql");
+  });
+
   it("applies the code/prose exemption to the file name only, never to a directory", () => {
     // secrets.ts/ is not source code, it is a folder named like one.
     for (const p of [
