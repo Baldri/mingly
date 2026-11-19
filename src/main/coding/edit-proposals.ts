@@ -112,8 +112,9 @@ const LIMIT_REACHED =
  * file: no count, no distinction, no difference between files.
  */
 const NOT_EXACTLY_ONCE =
-  'the old text was not found exactly once in the file. Nothing was changed. Read the file ' +
-  'and give a longer old text that appears exactly once.'
+  'the old text was not found exactly once in the file, or the resulting change is too large ' +
+  'to hold. Nothing was changed. Read the file and give a longer old text that appears exactly ' +
+  'once, or a smaller edit.'
 const CAPACITY_BYTES =
   'too much pending change data in this session (byte budget). Propose smaller edits, or ' +
   'resolve the proposals that are waiting for review to free space.'
@@ -141,6 +142,16 @@ export interface EditProposalStore {
     edit: Pick<ProposedEdit, 'path' | 'oldText' | 'newText'>,
     fileContent: string
   ): ProposeOutcome
+  /**
+   * Every check that needs nothing from the file. The handler calls it BEFORE
+   * reading the file, so a refusal that does not depend on content never opens
+   * it. Null means: go on and read. `propose` runs the same checks again.
+   */
+  precheck(
+    runId: string,
+    stepNumber: number,
+    edit: Pick<ProposedEdit, 'path' | 'oldText' | 'newText'>
+  ): ProposeOutcome | null
   /** Copies, in proposal order. */
   pending(runId: string): ProposedEdit[]
   /**
@@ -429,101 +440,164 @@ export function createEditProposalStore(
     st.records.push({ ...rec, at: Date.now() })
   }
 
+  /** One failed attempt on a path: counted and audited. */
+  const failPath = (
+    st: RunState,
+    key: string,
+    runId: string,
+    stepNumber: number,
+    displayPath: string,
+    what: Pick<EditAuditRecord, 'outcome' | 'occurrences' | 'reason'>
+  ): void => {
+    const failedAttempts = (st.failures.get(key) ?? 0) + 1
+    st.failures.set(key, failedAttempts)
+    record(st, { runId, stepNumber, path: displayPath, failedAttempts, ...what })
+  }
+
+  /**
+   * Every decision that needs nothing from the file. Returns the refusal, or
+   * null when the proposal may go on to the content search. May record and
+   * count (it is where the per-path cap lives), so it is the single place both
+   * `precheck` (before the file is read) and `propose` go through.
+   */
+  const admit = (
+    runId: string,
+    stepNumber: number,
+    edit: Pick<ProposedEdit, 'path' | 'oldText' | 'newText'>
+  ): ProposeOutcome | null => {
+    if (typeof runId !== 'string' || runId === '' || runId.length > RUN_ID_MAX_CHARS) {
+      return reject('no valid run to attach the proposal to.')
+    }
+    if (!Number.isInteger(stepNumber) || stepNumber < 0) {
+      return reject('no valid step to attach the proposal to.')
+    }
+    if (
+      !edit ||
+      typeof edit.path !== 'string' ||
+      edit.path === '' ||
+      typeof edit.oldText !== 'string' ||
+      typeof edit.newText !== 'string'
+    ) {
+      return reject('the proposal is malformed.')
+    }
+    if (edit.oldText === '') return reject('the old text must not be empty.')
+    if (edit.oldText === edit.newText) {
+      return reject('old and new text are identical; there is no change to propose.')
+    }
+    if (edit.oldText.length > EDIT_TEXT_MAX_CHARS || edit.newText.length > EDIT_TEXT_MAX_CHARS) {
+      return reject('the old or new text is too large for one proposal.')
+    }
+    // The result must stay a text file.
+    if (edit.oldText.includes('\u0000') || edit.newText.includes('\u0000')) {
+      return reject('the old or new text contains a NUL character.')
+    }
+
+    // A run that has ended adds nothing: a straggler tool call must not
+    // grow a package a human is about to review (or revive an abandoned one).
+    if (finished.has(runId) || runs.get(runId)?.ended) {
+      return reject('this run has already ended; no further proposals are accepted.')
+    }
+
+    // A run that holds no package yet waits while too many finished runs are
+    // awaiting review: refuse it (every time, not only the first), never drop
+    // one of them.
+    const existing = runs.get(runId)
+    if ((!existing || existing.entries.length === 0) && retained.length >= EDIT_MAX_RETAINED_RUNS) {
+      record(stateFor(runId), {
+        runId,
+        stepNumber,
+        path: edit.path,
+        outcome: 'rejected-capacity',
+        reason: 'retained-run cap'
+      })
+      return reject(CAPACITY_RUNS)
+    }
+
+    const st = stateFor(runId)
+    const key = pathKey(edit.path)
+
+    // One pending proposal per file per run, across steps: a later one would
+    // be verified against the file without the earlier change, and the human
+    // would approve a diff computed against stale content.
+    if (st.entries.some((e) => e.key === key)) {
+      return reject(
+        'this file already has a pending proposal in this run. Combine all changes to the ' +
+          'file into a single edit_file call: old and new text may span the whole region ' +
+          'that changes. If the pending proposal was a mistake, wait for it to be resolved.'
+      )
+    }
+
+    const failedBefore = st.failures.get(key) ?? 0
+    if (failedBefore >= EDIT_MAX_FAILED_ATTEMPTS_PER_PATH) {
+      // Decided before the file is looked at: nothing about it can show.
+      record(st, {
+        runId,
+        stepNumber,
+        path: edit.path,
+        outcome: 'limit-reached',
+        failedAttempts: failedBefore
+      })
+      return reject(LIMIT_REACHED)
+    }
+
+    // Pending cap: needs nothing from the file, so it is decided HERE, before
+    // the search. It counts as a failed attempt so that a full run cannot be
+    // used to ask the match question around the per-path cap.
+    if (st.entries.length >= EDIT_MAX_PENDING_PER_RUN) {
+      failPath(st, key, runId, stepNumber, edit.path, {
+        outcome: 'rejected-capacity',
+        reason: 'pending cap'
+      })
+      return reject('too many unresolved proposals in this run.')
+    }
+
+    // Byte budget, conservative lower bound (the diff only adds to it): when
+    // even path + old + new do not fit, refuse without touching the file.
+    const lowerBound =
+      Buffer.byteLength(edit.path) + Buffer.byteLength(edit.oldText) + Buffer.byteLength(edit.newText)
+    if (totalBytes + lowerBound > byteBudget) {
+      record(st, {
+        runId,
+        stepNumber,
+        path: edit.path,
+        outcome: 'rejected-capacity',
+        reason: 'byte budget (lower bound)'
+      })
+      return reject(CAPACITY_BYTES)
+    }
+    return null
+  }
+
   return {
+    precheck(runId, stepNumber, edit): ProposeOutcome | null {
+      try {
+        return admit(runId, stepNumber, edit)
+      } catch {
+        return reject('the proposal could not be checked.')
+      }
+    },
+
     propose(runId, stepNumber, edit, fileContent): ProposeOutcome {
       try {
-        if (typeof runId !== 'string' || runId === '' || runId.length > RUN_ID_MAX_CHARS) {
-          return reject('no valid run to attach the proposal to.')
-        }
-        if (!Number.isInteger(stepNumber) || stepNumber < 0) {
-          return reject('no valid step to attach the proposal to.')
-        }
-        if (
-          !edit ||
-          typeof edit.path !== 'string' ||
-          edit.path === '' ||
-          typeof edit.oldText !== 'string' ||
-          typeof edit.newText !== 'string' ||
-          typeof fileContent !== 'string'
-        ) {
-          return reject('the proposal is malformed.')
-        }
-        if (edit.oldText === '') return reject('the old text must not be empty.')
-        if (edit.oldText === edit.newText) {
-          return reject('old and new text are identical; there is no change to propose.')
-        }
-        if (edit.oldText.length > EDIT_TEXT_MAX_CHARS || edit.newText.length > EDIT_TEXT_MAX_CHARS) {
-          return reject('the old or new text is too large for one proposal.')
-        }
-        // The result must stay a text file.
-        if (edit.oldText.includes('\u0000') || edit.newText.includes('\u0000')) {
-          return reject('the old or new text contains a NUL character.')
-        }
-
-        // A run that has ended adds nothing: a straggler tool call must not
-        // grow a package a human is about to review (or revive an abandoned one).
-        if (finished.has(runId) || runs.get(runId)?.ended) {
-          return reject('this run has already ended; no further proposals are accepted.')
-        }
-
-        // A run that holds no package yet waits while too many finished runs are
-        // awaiting review: refuse it (every time, not only the first), never drop
-        // one of them.
-        const existing = runs.get(runId)
-        if ((!existing || existing.entries.length === 0) && retained.length >= EDIT_MAX_RETAINED_RUNS) {
-          record(stateFor(runId), {
-            runId,
-            stepNumber,
-            path: edit.path,
-            outcome: 'rejected-capacity',
-            reason: 'retained-run cap'
-          })
-          return reject(CAPACITY_RUNS)
-        }
+        // Everything that does not need the file comes first: a decision taken
+        // before the file is looked at cannot show anything about it, and must
+        // not be reachable only after the content search (that would make the
+        // match/no-match bit readable around the per-path cap).
+        if (typeof fileContent !== 'string') return reject('the proposal is malformed.')
+        const early = admit(runId, stepNumber, edit)
+        if (early) return early
 
         const st = stateFor(runId)
         const key = pathKey(edit.path)
-
-        // One pending proposal per file per run, across steps: a later one would
-        // be verified against the file without the earlier change, and the human
-        // would approve a diff computed against stale content.
-        if (st.entries.some((e) => e.key === key)) {
-          return reject(
-            'this file already has a pending proposal in this run. Combine all changes to the ' +
-              'file into a single edit_file call: old and new text may span the whole region ' +
-              'that changes. If the pending proposal was a mistake, wait for it to be resolved.'
-          )
-        }
-
         const failedBefore = st.failures.get(key) ?? 0
-        if (failedBefore >= EDIT_MAX_FAILED_ATTEMPTS_PER_PATH) {
-          // Decided before the file is looked at: nothing about it can show.
-          record(st, {
-            runId,
-            stepNumber,
-            path: edit.path,
-            outcome: 'limit-reached',
-            failedAttempts: failedBefore
-          })
-          return reject(LIMIT_REACHED)
-        }
 
         const { count, first } = countUpToTwo(fileContent, edit.oldText)
         if (count !== 1) {
-          const failedAttempts = failedBefore + 1
-          st.failures.set(key, failedAttempts)
-          record(st, {
-            runId,
-            stepNumber,
-            path: edit.path,
+          failPath(st, key, runId, stepNumber, edit.path, {
             outcome: count === 0 ? 'rejected-not-found' : 'rejected-ambiguous',
-            occurrences: count,
-            failedAttempts
+            occurrences: count
           })
           return reject(NOT_EXACTLY_ONCE)
-        }
-        if (st.entries.length >= EDIT_MAX_PENDING_PER_RUN) {
-          return reject('too many unresolved proposals in this run.')
         }
 
         const after =
@@ -546,18 +620,16 @@ export function createEditProposalStore(
           Buffer.byteLength(stored.oldText) +
           Buffer.byteLength(stored.newText) +
           Buffer.byteLength(stored.diff)
-        // Over the budget: refuse. Never evict a package that is waiting for
-        // review to make room for a new one; the model can shorten its edit and
-        // the human can resolve what is pending.
+        // Over the budget once the diff exists: unavoidable after reading the
+        // file, so it must cost what every other content-dependent refusal costs:
+        // the SAME model-visible text and a failed attempt. (The audit keeps the
+        // real cause.) Never evict a package that waits for review.
         if (totalBytes + bytes > byteBudget) {
-          record(st, {
-            runId,
-            stepNumber,
-            path: edit.path,
+          failPath(st, key, runId, stepNumber, edit.path, {
             outcome: 'rejected-capacity',
-            reason: 'byte budget'
+            reason: 'byte budget (after the diff)'
           })
-          return reject(CAPACITY_BYTES)
+          return reject(NOT_EXACTLY_ONCE)
         }
         totalBytes += bytes
         st.entries.push({ bytes, stepNumber, key, edit: stored })
@@ -672,6 +744,15 @@ async function editFile(
     if (resolved.kind === 'bad-type') return BAD_TYPE
     if (resolved.kind !== 'ok') return REFUSED
 
+    // Everything that needs nothing from the file is decided before it is read.
+    const realRelEarly = resolved.realRel.split(path.sep).join('/')
+    const early = deps.store.precheck(runId, stepNumber, {
+      path: realRelEarly,
+      oldText,
+      newText
+    })
+    if (early && early.kind === 'rejected') return `Rejected: ${early.reason}`
+
     const file = await readHeadAndBody(resolved.realTarget)
     if (file.verdict === 'binary') return BINARY
     if (file.verdict === 'large') return TOO_LARGE
@@ -680,7 +761,7 @@ async function editFile(
 
     // The path as the file system spells it, never the model's spelling: this
     // is what the dialog shows and what the accept step will open.
-    const realRel = resolved.realRel.split(path.sep).join('/')
+    const realRel = realRelEarly
 
     const outcome = deps.store.propose(
       runId,

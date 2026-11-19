@@ -20,6 +20,7 @@ import {
   EDIT_MAX_FAILED_ATTEMPTS_PER_PATH,
   EDIT_MAX_RETAINED_RUNS,
   EDIT_PENDING_BYTES_BUDGET,
+  EDIT_MAX_PENDING_PER_RUN,
   editStillMatches,
   type EditProposalStore
 } from '../../src/main/coding/edit-proposals'
@@ -415,7 +416,8 @@ describe('global byte budget over everything pending', () => {
 
     const out = propose(small, 'active', 'a.ts', 2000)
 
-    expect(out).toEqual({ kind: 'rejected', reason: expect.stringMatching(/budget|resolve/i) })
+    expect(out.kind).toBe('rejected')
+    expect(small.auditRecords('active').records.some((r) => r.outcome === 'rejected-capacity')).toBe(true)
     expect(small.pending('old')).toHaveLength(1)
     expect(small.pending('newer')).toHaveLength(1)
     expect(small.pending('active')).toEqual([])
@@ -730,6 +732,137 @@ describe('the counting work is bounded', () => {
 
   it('a longer old text than the file can never match and is refused at once', () => {
     expect(store.propose(RUN, 1, { path: 'a.ts', oldText: 'abcd', newText: 'x' }, 'abc').kind).toBe('rejected')
+  })
+})
+
+describe('capacity checks must not become a content probe', () => {
+  const CAP = EDIT_MAX_FAILED_ATTEMPTS_PER_PATH
+  const NOT_ONCE = /exactly once/i
+
+  /** A store whose run RUN already holds the maximum number of pending proposals. */
+  function fullRun(): EditProposalStore {
+    const st = createEditProposalStore()
+    for (let i = 0; i < EDIT_MAX_PENDING_PER_RUN; i++) {
+      expect(st.propose(RUN, 1, { path: `f${i}.ts`, oldText: 'a', newText: 'b' }, 'a').kind).toBe('proposed')
+    }
+    return st
+  }
+
+  it('with the pending cap full, a matching and a non-matching old text give the IDENTICAL message', () => {
+    const st = fullRun()
+    const match = st.propose(RUN, 2, { path: 'z.ts', oldText: 'present', newText: 'x' }, 'present')
+    const miss = st.propose(RUN, 2, { path: 'z.ts', oldText: 'absent', newText: 'x' }, 'present')
+    if (match.kind !== 'rejected' || miss.kind !== 'rejected') throw new Error('expected rejections')
+    expect(match.reason).toBe(miss.reason)
+  })
+
+  it('with the pending cap full, both outcomes increment the per-path failure count and hit the cap together', () => {
+    const st = fullRun()
+    for (let i = 0; i < CAP; i++) {
+      const old = i % 2 === 0 ? 'present' : 'absent'
+      st.propose(RUN, 2, { path: 'z.ts', oldText: old, newText: 'x' }, 'present')
+    }
+    const counts = st.auditRecords(RUN).records.filter((r) => r.path === 'z.ts').map((r) => r.failedAttempts)
+    expect(counts).toEqual([1, 2, 3, 4, 5].slice(0, CAP))
+    const after = st.propose(RUN, 2, { path: 'z.ts', oldText: 'present', newText: 'x' }, 'present')
+    expect(after).toEqual({ kind: 'rejected', reason: expect.stringMatching(/limit/i) })
+  })
+
+  it('the pending-cap decision does not look at the file: a content that cannot match gives the same answer', () => {
+    const st = fullRun()
+    const a = st.propose(RUN, 2, { path: 'y.ts', oldText: 'q', newText: 'x' }, '')
+    const b = st.propose(RUN, 2, { path: 'x.ts', oldText: 'q', newText: 'x' }, 'q')
+    if (a.kind !== 'rejected' || b.kind !== 'rejected') throw new Error('expected rejections')
+    expect(a.reason).toBe(b.reason)
+  })
+
+  it('oversized by lower bound: refused before any search, same text whether or not the old text matches, and not counted as a failure', () => {
+    const small = createEditProposalStore({ byteBudget: 2000 })
+    const huge = 'n'.repeat(5000)
+    const match = small.propose(RUN, 1, { path: 'a.ts', oldText: 'present', newText: huge }, 'present')
+    const miss = small.propose(RUN, 1, { path: 'a.ts', oldText: 'absent', newText: huge }, 'present')
+    if (match.kind !== 'rejected' || miss.kind !== 'rejected') throw new Error('expected rejections')
+    expect(match.reason).toBe(miss.reason)
+    expect(match.reason).toMatch(/budget/i)
+    for (let i = 0; i < CAP * 3; i++) {
+      small.propose(RUN, 1, { path: 'a.ts', oldText: 'present', newText: huge }, 'present')
+    }
+    // not locked out: no failure was counted for decisions that need nothing from the file
+    expect(small.propose(RUN, 1, { path: 'a.ts', oldText: 'present', newText: 'ok' }, 'present').kind).toBe('proposed')
+  })
+
+  it('oversized only after the diff exists: refused with the NOT-EXACTLY-ONCE text, and it costs a failed attempt', () => {
+    const line = 'c'.repeat(1000)
+    const content = `${line}\n${line}\n${line}\ntarget\n${line}\n${line}\n${line}\n`
+    const small = createEditProposalStore({ byteBudget: 3000 })
+    const overflow = small.propose(RUN, 1, { path: 'a.ts', oldText: 'target', newText: 'T' }, content)
+    const plainMiss = small.propose(RUN, 1, { path: 'b.ts', oldText: 'absent', newText: 'T' }, content)
+    if (overflow.kind !== 'rejected' || plainMiss.kind !== 'rejected') throw new Error('expected rejections')
+    expect(overflow.reason).toBe(plainMiss.reason)
+    expect(overflow.reason).toMatch(NOT_ONCE)
+    const rec = small.auditRecords(RUN).records.find((r) => r.path === 'a.ts')
+    expect(rec).toMatchObject({ outcome: 'rejected-capacity', failedAttempts: 1 })
+    expect(small.pendingBytes()).toBe(0)
+  })
+
+  it('the audit keeps the causes apart: pending cap, byte lower bound, after the diff, ambiguous', () => {
+    const line = 'c'.repeat(1000)
+    const big = `${line}\n${line}\n${line}\ntarget\n${line}\n${line}\n${line}\n`
+    const st = createEditProposalStore({ byteBudget: 3000 })
+    st.propose(RUN, 1, { path: 'lb.ts', oldText: 'x', newText: 'n'.repeat(5000) }, 'x')
+    st.propose(RUN, 1, { path: 'diff.ts', oldText: 'target', newText: 'T' }, big)
+    st.propose(RUN, 1, { path: 'amb.ts', oldText: 'a', newText: 'b' }, 'a a')
+    const by = (p: string) => st.auditRecords(RUN).records.find((r) => r.path === p)
+    expect(by('lb.ts')).toMatchObject({ outcome: 'rejected-capacity', reason: expect.stringMatching(/lower bound/i) })
+    expect(by('diff.ts')).toMatchObject({ outcome: 'rejected-capacity', reason: expect.stringMatching(/after the diff/i) })
+    expect(by('amb.ts')).toMatchObject({ outcome: 'rejected-ambiguous' })
+    const full = fullRun()
+    full.propose(RUN, 2, { path: 'z.ts', oldText: 'a', newText: 'b' }, 'a')
+    expect(full.auditRecords(RUN).records.find((r) => r.path === 'z.ts')).toMatchObject({
+      outcome: 'rejected-capacity',
+      reason: expect.stringMatching(/pending cap/i)
+    })
+  })
+
+  describe('through the tool', () => {
+    it('an oversized proposal is refused WITHOUT the file being opened (spy on open, not timing)', async () => {
+      write('a.ts', 'present\n')
+      const tiny = createEditProposalStore({ byteBudget: 2000 })
+      registry = new ToolRegistry({ toolTimeoutMs: 5000, maxResultChars: 1_000_000 })
+      const deps = { findGrant: async (id: string) => grants.find((g) => g.id === id) }
+      registerReadTools(registry, deps)
+      registerEditTools(registry, { ...deps, store: tiny })
+      const ctx = await ctxFor()
+      const opened: string[] = []
+      const realOpen = fs.promises.open.bind(fs.promises)
+      const spy = vi.spyOn(fs.promises, 'open').mockImplementation(((p: fs.PathLike, ...rest: unknown[]) => {
+        opened.push(String(p))
+        return (realOpen as (...a: unknown[]) => Promise<fs.promises.FileHandle>)(p, ...rest)
+      }) as typeof fs.promises.open)
+      try {
+        const out = await edit({ path: 'a.ts', old: 'present', new: 'n'.repeat(5000) }, ctx)
+        expect(out).toMatch(/budget/i)
+        expect(opened.filter((p) => p.endsWith('a.ts'))).toEqual([])
+        // control: a proposal that fits DOES open the file
+        const ok = await edit({ path: 'a.ts', old: 'present', new: 'ok' }, ctx)
+        expect(ok).toMatch(/proposed/i)
+        expect(opened.filter((p) => p.endsWith('a.ts'))).toHaveLength(1)
+      } finally {
+        spy.mockRestore()
+      }
+    })
+
+    it('with the pending cap full, matching and non-matching old text give the same tool result without opening the file', async () => {
+      write('z.ts', 'present\n')
+      for (let i = 0; i < EDIT_MAX_PENDING_PER_RUN; i++) {
+        store.propose(RUN, 1, { path: `f${i}.ts`, oldText: 'a', newText: 'b' }, 'a')
+      }
+      const ctx = await ctxFor('propose', { stepNumber: 2 })
+      const match = await edit({ path: 'z.ts', old: 'present', new: 'x' }, ctx)
+      const miss = await edit({ path: 'z.ts', old: 'absent', new: 'x' }, ctx)
+      expect(match).toBe(miss)
+      expect(match).toMatch(/too many/i)
+    })
   })
 })
 
