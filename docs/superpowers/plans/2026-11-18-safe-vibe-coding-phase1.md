@@ -801,6 +801,17 @@ git commit -m "feat(coding): add the coding read allowlist and the absolute bloc
 
 **Interfaces:**
 - Consumes: `ToolContext`, `ToolGate` (Task 7); `isBlockedPath`, `isReadableExtension`, `isProbablyBinary` (Task 8); `isRealPathWithin(requestedPath, allowedDir): Promise<boolean>` aus `src/main/file-access/real-path-guard.ts:91`; `hasPermission` (Task 3); `ProjectWorkspace` (Task 6).
+- **Pflicht, nicht optional (Entscheid R33):** `ToolContext` fuehrt den
+  `ProjectWorkspace` nicht — Task 7 definiert ihn als `{ coding? }`, und der Executor
+  haelt die Instanz nur als lokales `contextDir` in `execute`. Dieser Task **erweitert
+  `ToolContext`** um den Arbeitsbereich und laesst den Executor die **eine** Instanz
+  hineingeben, die er schon erzeugt. Ein Handler darf **nicht** sein eigenes
+  `ensureProjectWorkspace` rufen: zwei Instanzen pro Run heisst doppelte
+  Dateisystemarbeit und ein Rennen auf denselben Verzeichnissen. Ein Test muss belegen,
+  dass der Handler denselben Pfad sieht, den der Executor angelegt hat.
+  **Dritter Vorfall derselben Klasse** (R27, R30, R33): ein «Produces fuer Task N»-Block
+  sagt, was gebaut wird, aber nicht, wer es *traegt*. Bei kuenftigen Plaenen gehoert zu
+  jedem produzierten Wert die Zeile, wer ihn durchreicht.
 - Produces:
   ```ts
   export function registerReadTools(registry: ToolRegistry): void
