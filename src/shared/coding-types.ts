@@ -48,3 +48,52 @@ export interface CodingRunOptions {
   projectPath: string;
   mode: CodingMode;
 }
+
+// ── Consent mid-run ─────────────────────────────────────────
+
+/**
+ * What the user may decide about ONE tool result the guard flagged.
+ *
+ * `drop-file` is the third option the loop lacked: the run neither dies nor
+ * ships the finding, it continues without that one result.
+ */
+export type CodingConsentChoice = "send" | "anonymize" | "drop-file";
+
+/** Every choice there is. The source for parsing, so the two cannot drift. */
+export const CODING_CONSENT_CHOICES: readonly CodingConsentChoice[] = [
+  "send",
+  "anonymize",
+  "drop-file",
+];
+
+/**
+ * The question put to the user, as it crosses into the renderer.
+ *
+ * It carries NO match value. The finding is described by type and risk level
+ * only: a dialog payload holding the credential it warns about would have
+ * reopened the hole at the surface, and this object reaches a window, a log and
+ * possibly a screenshot.
+ */
+export interface CodingConsentRequest {
+  runId: string;
+  stepNumber: number;
+  toolName: string;
+  filePath?: string;
+  /** Type and risk level of every finding. Never the value. */
+  matches: Array<{ type: string; riskLevel: string }>;
+  /** `anonymize` appears only when every finding is anonymizable. */
+  offers: readonly CodingConsentChoice[];
+}
+
+/**
+ * Parse an untrusted answer into a CodingConsentChoice; anything unrecognised
+ * is `drop-file`.
+ *
+ * The strict side is the default here, exactly as `parseCodingMode` returns
+ * `off`: an unparseable answer is not a reason to send. Whether the parsed
+ * choice was actually OFFERED is a separate question, answered against the
+ * request itself (see the consent broker).
+ */
+export function parseCodingConsentChoice(raw: unknown): CodingConsentChoice {
+  return CODING_CONSENT_CHOICES.find((choice) => choice === raw) ?? "drop-file";
+}

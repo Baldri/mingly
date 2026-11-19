@@ -8,13 +8,15 @@
  * purpose and stays untouched. Here the deps are the opposite: a cloud
  * provider, and a sensitive-data detector that actually finds a credential.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { AgentExecutor } from '../../src/main/agent/agent-executor'
-import type { AgentToolCall, AgentToolResult, ToolDefinition } from '../../src/shared/types'
+import type { AgentToolCall, AgentToolResult, Message, ToolDefinition } from '../../src/shared/types'
 import type { ToolUseResponse } from '../../src/main/llm-clients/client-manager'
 import { postflightGuard, type GuardDeps, type SensitiveScan } from '../../src/main/security/request-guard'
 import { getGuardDeps } from '../../src/main/security/request-guard-deps'
 import type { CodingRunOptions } from '../../src/shared/coding-types'
+import type { CodingConsentChoice, CodingConsentRequest } from '../../src/shared/coding-types'
+import type { ConsentBroker } from '../../src/main/coding/consent-broker'
 
 // Spies must exist before the mocked modules are imported.
 const spies = vi.hoisted(() => ({
@@ -123,6 +125,78 @@ const FINAL_STEP: ToolUseResponse = {
   tokens: { input: 50, output: 20 }
 }
 
+const RUN_TIMEOUT_MS = 10000
+
+const RUN_CONFIG = {
+  maxSteps: 5,
+  maxTokensPerRun: 50000,
+  toolTimeoutMs: 5000,
+  runTimeoutMs: RUN_TIMEOUT_MS
+}
+
+/** An upload decision that needs a human — the input to the consent channel. */
+const NEEDS_CONSENT = {
+  decision: 'pending',
+  requiresUserConsent: true,
+  reason: 'critical risk: 1 sensitive item detected',
+  request: { fileId: 'file-1', filePath: 'src/config.ts' },
+}
+
+/** A broker that answers immediately with a fixed choice. */
+function answeringBroker(choice: CodingConsentChoice): {
+  broker: ConsentBroker
+  requests: CodingConsentRequest[]
+} {
+  const requests: CodingConsentRequest[] = []
+  return {
+    requests,
+    broker: {
+      ask: async (req) => {
+        requests.push(req)
+        return choice
+      },
+      respond: () => false,
+      cancel: () => undefined,
+    },
+  }
+}
+
+/**
+ * A broker that holds the run open until the test answers — the dialog a human
+ * is still reading.
+ */
+function pausingBroker(): {
+  broker: ConsentBroker
+  asked: Promise<CodingConsentRequest>
+  answer: (choice: CodingConsentChoice) => void
+} {
+  let settle: ((choice: CodingConsentChoice) => void) | undefined
+  let onAsked: ((req: CodingConsentRequest) => void) | undefined
+  const asked = new Promise<CodingConsentRequest>((resolve) => {
+    onAsked = resolve
+  })
+  return {
+    asked,
+    answer: (choice) => settle?.(choice),
+    broker: {
+      ask: (req) => {
+        onAsked?.(req)
+        return new Promise<CodingConsentChoice>((resolve) => {
+          settle = resolve
+        })
+      },
+      respond: () => false,
+      // What an aborted run does to an open dialog: fail closed, never hang.
+      cancel: () => settle?.('drop-file'),
+    },
+  }
+}
+
+/** The messages handed to the Nth sendMessageWithTools call (1-based). */
+function messagesOfCall(n: number): Message[] {
+  return spies.sendMessageWithTools.mock.calls[n - 1][1] as Message[]
+}
+
 let llmCallCount = 0
 let llmResponses: ToolUseResponse[] = []
 /** toolCallId → content the tool "returned". */
@@ -197,12 +271,13 @@ beforeEach(() => {
       : { violations: [] },
   )
 
-  executor = new AgentExecutor({
-    maxSteps: 5,
-    maxTokensPerRun: 50000,
-    toolTimeoutMs: 5000,
-    runTimeoutMs: 10000
-  })
+  executor = new AgentExecutor(RUN_CONFIG)
+})
+
+afterEach(() => {
+  // Only the timeout tests switch them on; leaving them on would poison the
+  // rest of the file.
+  vi.useRealTimers()
 })
 
 // ── The central regression test ─────────────────────────────
@@ -346,5 +421,213 @@ describe('Tool results pass the same guards as typed text', () => {
     const firstToolsCall = spies.getAvailableTools.mock.calls[0] as unknown[] | undefined
     const toolsArg = firstToolsCall?.[0] as { coding?: unknown } | undefined
     expect(toolsArg?.coding).toBeUndefined()
+  })
+})
+
+// ── Consent mid-run ─────────────────────────────────────────
+
+describe('A finding the user has to decide about', () => {
+  beforeEach(() => {
+    // The upload-permission manager asks instead of denying: this is the only
+    // input that produces a `consent` outcome at all.
+    spies.checkUploadPermission.mockResolvedValue(NEEDS_CONSENT)
+  })
+
+  it('drop-file withholds the file and continues the run', async () => {
+    llmResponses = [readFileStep(['tc-1']), FINAL_STEP]
+    toolResultContents = { 'tc-1': CREDENTIAL }
+    const { broker, requests } = answeringBroker('drop-file')
+
+    const run = await new AgentExecutor(RUN_CONFIG, { consentBroker: broker }).execute(
+      'read the project config',
+      'anthropic',
+      'claude-3-5-sonnet',
+      [],
+      undefined,
+      CODING,
+    )
+
+    expect(run.status).toBe('completed')
+    expect(spies.sendMessageWithTools).toHaveBeenCalledTimes(2)
+
+    const second = messagesOfCall(2)
+    expect(second.some((m) => m.content.includes('sk-live'))).toBe(false)
+    expect(second.some((m) => m.content.includes('Content withheld'))).toBe(true)
+
+    // The user was asked about the right step, and the question carried no value.
+    expect(requests).toHaveLength(1)
+    expect(requests[0].stepNumber).toBe(1)
+    expect(requests[0].toolName).toBe('read_file')
+    expect(JSON.stringify(requests[0])).not.toContain('sk-live')
+  })
+
+  it('send lets the content through once the user allows it', async () => {
+    // Positive control for the test above: drop-file must be the user's
+    // decision, not what the channel does to everything.
+    llmResponses = [readFileStep(['tc-1']), FINAL_STEP]
+    toolResultContents = { 'tc-1': CREDENTIAL }
+    const { broker } = answeringBroker('send')
+
+    const run = await new AgentExecutor(RUN_CONFIG, { consentBroker: broker }).execute(
+      'read the project config',
+      'anthropic',
+      'claude-3-5-sonnet',
+      [],
+      undefined,
+      CODING,
+    )
+
+    expect(run.status).toBe('completed')
+    expect(spies.sendMessageWithTools).toHaveBeenCalledTimes(2)
+    expect(messagesOfCall(2).some((m) => m.content.includes('sk-live'))).toBe(true)
+  })
+
+  it('still guards the results after the one that was decided', async () => {
+    // A consent answer settles ONE result. The rest of the step is unguarded
+    // until the guard runs again — and an injection in the second result must
+    // still end the run.
+    llmResponses = [readFileStep(['tc-1', 'tc-2']), FINAL_STEP]
+    toolResultContents = { 'tc-1': CREDENTIAL, 'tc-2': INJECTION }
+    const { broker } = answeringBroker('drop-file')
+
+    const run = await new AgentExecutor(RUN_CONFIG, { consentBroker: broker }).execute(
+      'read both files',
+      'anthropic',
+      'claude-3-5-sonnet',
+      [],
+      undefined,
+      CODING,
+    )
+
+    expect(run.status).toBe('failed')
+    expect(run.error).toContain('Prompt injection')
+    expect(spies.sendMessageWithTools).toHaveBeenCalledTimes(1)
+  })
+
+  it('the run timeout does not elapse while a consent dialog is open', async () => {
+    vi.useFakeTimers()
+    llmResponses = [readFileStep(['tc-1']), FINAL_STEP]
+    toolResultContents = { 'tc-1': CREDENTIAL }
+    const dialog = pausingBroker()
+
+    const runPromise = new AgentExecutor(RUN_CONFIG, { consentBroker: dialog.broker }).execute(
+      'read the project config',
+      'anthropic',
+      'claude-3-5-sonnet',
+      [],
+      undefined,
+      CODING,
+    )
+
+    await dialog.asked
+    // Ten times the run timeout spent reading the dialog.
+    await vi.advanceTimersByTimeAsync(10 * RUN_TIMEOUT_MS)
+    dialog.answer('drop-file')
+    const run = await runPromise
+
+    expect(run.status).toBe('completed')
+    expect(spies.sendMessageWithTools).toHaveBeenCalledTimes(2)
+  })
+
+  it('the run timeout still ends a run that is not waiting for a human', async () => {
+    // The control for the test above: a suspended timeout that is never
+    // re-armed would also let the run finish, and nothing else here would say so.
+    vi.useFakeTimers()
+    llmResponses = [readFileStep(['tc-1']), FINAL_STEP]
+    toolResultContents = { 'tc-1': 'export const answer = 42' }
+    spies.executeToolCalls.mockImplementation(async (calls: AgentToolCall[]) => {
+      await new Promise((resolve) => setTimeout(resolve, 2 * RUN_TIMEOUT_MS))
+      return calls.map((tc) => ({
+        toolCallId: tc.id,
+        content: toolResultContents[tc.id] ?? `Result for ${tc.name}: mock data`,
+        isError: false,
+      }))
+    })
+
+    const runPromise = new AgentExecutor(RUN_CONFIG).execute(
+      'read the file',
+      'anthropic',
+      'claude-3-5-sonnet',
+      [],
+      undefined,
+      CODING,
+    )
+
+    await vi.advanceTimersByTimeAsync(2 * RUN_TIMEOUT_MS + 1)
+    const run = await runPromise
+
+    expect(run.status).toBe('cancelled')
+    expect(spies.sendMessageWithTools).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not open a dialog for a run that has already timed out', async () => {
+    // The timeout can fire between the tool call and the finding. Adding an
+    // abort listener to a signal that is ALREADY aborted never fires it, so a
+    // dialog opened here would wait for an answer forever — and the broker
+    // below cannot be cancelled, so not asking is the only way out.
+    vi.useFakeTimers()
+    llmResponses = [readFileStep(['tc-1']), FINAL_STEP]
+    toolResultContents = { 'tc-1': CREDENTIAL }
+    spies.executeToolCalls.mockImplementation(async (calls: AgentToolCall[]) => {
+      await new Promise((resolve) => setTimeout(resolve, 2 * RUN_TIMEOUT_MS))
+      return calls.map((tc) => ({
+        toolCallId: tc.id,
+        content: toolResultContents[tc.id] ?? `Result for ${tc.name}: mock data`,
+        isError: false,
+      }))
+    })
+
+    const asks: CodingConsentRequest[] = []
+    const broker: ConsentBroker = {
+      ask: (req) => {
+        asks.push(req)
+        return new Promise<CodingConsentChoice>(() => undefined)
+      },
+      respond: () => false,
+      cancel: () => undefined,
+    }
+
+    const runPromise = new AgentExecutor(RUN_CONFIG, { consentBroker: broker }).execute(
+      'read the project config',
+      'anthropic',
+      'claude-3-5-sonnet',
+      [],
+      undefined,
+      CODING,
+    )
+
+    await vi.advanceTimersByTimeAsync(2 * RUN_TIMEOUT_MS + 1)
+    const run = await runPromise
+
+    expect(asks).toEqual([])
+    expect(run.status).toBe('cancelled')
+    expect(spies.sendMessageWithTools).toHaveBeenCalledTimes(1)
+  })
+
+  it('a run cancelled while the dialog is open withholds and ends as cancelled', async () => {
+    llmResponses = [readFileStep(['tc-1']), FINAL_STEP]
+    toolResultContents = { 'tc-1': CREDENTIAL }
+    const dialog = pausingBroker()
+    const exec = new AgentExecutor(RUN_CONFIG, { consentBroker: dialog.broker })
+
+    const runPromise = exec.execute(
+      'read the project config',
+      'anthropic',
+      'claude-3-5-sonnet',
+      [],
+      undefined,
+      CODING,
+    )
+
+    await dialog.asked
+    const [runId] = exec.getActiveRunIds()
+    expect(runId).toBeDefined()
+    expect(exec.cancelRun(runId)).toBe(true)
+
+    const run = await runPromise
+
+    expect(run.status).toBe('cancelled')
+    // Nothing from the step travelled: the second call never happened.
+    expect(spies.sendMessageWithTools).toHaveBeenCalledTimes(1)
   })
 })

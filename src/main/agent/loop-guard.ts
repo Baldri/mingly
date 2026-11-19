@@ -67,18 +67,30 @@ function describeOrigin(origin: ToolResultOrigin | undefined): string {
  * large result with a reference plus a raw 200-character preview, and that
  * preview is the part that travels. Guarding afterwards would check the part
  * that no longer goes out and pass the part that does.
+ *
+ * @param startIndex First result the INPUT phase runs over. A `consent`
+ *   outcome hands the step back to the caller, which settles that one result
+ *   and calls again from the next index; re-asking about a result the user has
+ *   already decided would ask the same question forever. The dispatch phase
+ *   below always runs over ALL results, so the content the user approved is
+ *   still part of the budget and routing check. Nothing is skipped silently:
+ *   the caller may only move the index past a result it has resolved, and a
+ *   resolved result is either machine-written (the withheld notice) or
+ *   anonymised text whose original already passed the injection scan — that
+ *   scan runs before the sensitive branch in guardInput.
  */
 export async function guardToolResults(
   results: readonly AgentToolResult[],
   origins: readonly ToolResultOrigin[],
   ctx: LoopGuardContext,
   deps: GuardDeps,
+  startIndex = 0,
 ): Promise<LoopGuardOutcome> {
   // One guardInput call per result. guardInput sanitizes only the LAST element
   // of `texts` (request-guard.ts:53), so handing it three results as one array
   // would leave two of them un-scanned for injection — and injection inside a
   // file the agent read itself is the central coding threat.
-  for (let i = 0; i < results.length; i++) {
+  for (let i = startIndex; i < results.length; i++) {
     const origin = origins[i]
     const outcome = await guardInput(
       {

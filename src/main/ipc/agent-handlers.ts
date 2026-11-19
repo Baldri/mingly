@@ -9,6 +9,7 @@ import { IPC_CHANNELS } from '../../shared/types'
 import { getAgentExecutor } from '../agent/agent-executor'
 import { getAgentComparisonService } from '../services/agent-comparison-service'
 import { getSubagentOrchestrator } from '../agent/subagent-orchestrator'
+import { getConsentBroker } from '../coding/consent-broker'
 import { wrapHandler, requireFeature } from './ipc-utils'
 import type {
   AgentConfig,
@@ -70,6 +71,27 @@ export function registerAgentHandlers(): void {
     (runId: string) => {
       const cancelled = executor.cancelRun(runId)
       return { success: true, cancelled }
+    }
+  )
+
+  // ========================================
+  // Coding consent — the answer to a mid-run question
+  // ========================================
+  //
+  // The question travels the other way (CODING_CONSENT_REQUEST), sent by the
+  // broker itself. Only the answer needs a handler.
+  //
+  // Everything arriving here is an input: the broker refuses a choice that was
+  // never offered for that request and ignores a runId with no open question,
+  // so this handler neither parses nor interprets the value.
+
+  wrapHandler(
+    IPC_CHANNELS.CODING_CONSENT_RESPOND,
+    (runId: string, choice: unknown) => {
+      // Answering resumes agent work, so it is gated like starting it.
+      requireFeature('agentic_mode')
+      const settled = getConsentBroker().respond(runId, choice)
+      return { success: true, settled }
     }
   )
 

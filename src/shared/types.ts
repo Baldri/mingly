@@ -716,6 +716,11 @@ export const IPC_CHANNELS = {
   AGENT_COMPARISON_CANCEL: 'agent-comparison:cancel',
   AGENT_COMPARISON_STEP: 'agent-comparison:step',
 
+  // Coding consent (a sensitive finding in ONE tool result, mid-run)
+  // main → renderer: the question. renderer → main: the answer.
+  CODING_CONSENT_REQUEST: 'coding:consent-request',
+  CODING_CONSENT_RESPOND: 'coding:consent-respond',
+
   // Subagent Orchestration (Master → N Subtasks → N ReAct → Merge)
   SUBAGENT_DECOMPOSE: 'subagent:decompose',
   SUBAGENT_START: 'subagent:start',

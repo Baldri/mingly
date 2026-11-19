@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '../shared/types'
 import type { LLMProvider, AppSettings, TranscriptExportFormat } from '../shared/types'
 import type { NetworkShareConfigInput } from '../shared/file-access-types'
+import type { CodingConsentChoice, CodingConsentRequest } from '../shared/coding-types'
 
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
@@ -562,6 +563,24 @@ const api = {
       ipcRenderer.on(IPC_CHANNELS.AGENT_STEP, listener)
       return () => ipcRenderer.removeListener(IPC_CHANNELS.AGENT_STEP, listener)
     }
+  },
+
+  // Coding consent (a sensitive finding in ONE tool result, mid-run)
+  //
+  // The run is paused while the question is open and its timeout is suspended,
+  // so an answer — any answer — is what gets it moving again. A choice the
+  // request did not offer is refused in the main process, not here: the bridge
+  // forwards, it does not decide.
+  codingConsent: {
+    onRequest: (callback: (request: CodingConsentRequest) => void) => {
+      const listener = (_event: any, request: CodingConsentRequest) => callback(request)
+      ipcRenderer.on(IPC_CHANNELS.CODING_CONSENT_REQUEST, listener)
+      return () =>
+        ipcRenderer.removeListener(IPC_CHANNELS.CODING_CONSENT_REQUEST, listener)
+    },
+
+    respond: (runId: string, choice: CodingConsentChoice) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CODING_CONSENT_RESPOND, runId, choice)
   },
 
   // Agent Comparison (Parallel Model Comparison with tool-use)

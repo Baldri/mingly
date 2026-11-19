@@ -20,7 +20,13 @@ import { getGuardDeps } from '../security/request-guard-deps'
 
 import { nanoid } from 'nanoid'
 import { guardToolResults } from './loop-guard'
-import type { CodingRunOptions } from '../../shared/coding-types'
+import {
+  buildConsentRequest,
+  getConsentBroker,
+  resolveConsentChoice,
+  type ConsentBroker,
+} from '../coding/consent-broker'
+import type { CodingConsentChoice, CodingRunOptions } from '../../shared/coding-types'
 import { getToolRegistry, type ToolRegistry } from './tool-registry'
 import { getAgentContextManager } from './agent-context-manager'
 import { getClientManager } from '../llm-clients/client-manager'
@@ -62,13 +68,26 @@ export type AgentEventHandler = (event: AgentEvent) => void
 
 // ── AgentExecutor ──────────────────────────────────────────────
 
+/**
+ * Collaborators an executor may be built with.
+ *
+ * Only the consent broker so far: it owns a dialog, and a test that drives the
+ * pause must be able to answer — or deliberately not answer — without a
+ * renderer on the other end of the IPC.
+ */
+export interface AgentExecutorDeps {
+  consentBroker?: ConsentBroker
+}
+
 export class AgentExecutor {
   private config: AgentConfig
   private eventHandlers: AgentEventHandler[] = []
   private activeRuns: Map<string, AbortController> = new Map()
+  private readonly consentBroker: ConsentBroker
 
-  constructor(config?: Partial<AgentConfig>) {
+  constructor(config?: Partial<AgentConfig>, deps?: AgentExecutorDeps) {
     this.config = { ...DEFAULT_AGENT_CONFIG, ...config }
+    this.consentBroker = deps?.consentBroker ?? getConsentBroker()
   }
 
   // ── Configuration ────────────────────────────────────────────
@@ -183,10 +202,25 @@ export class AgentExecutor {
     }
     provider = preflight.provider
 
-    // Run timeout
-    const runTimeout = setTimeout(() => {
-      abortController.abort()
-    }, this.config.runTimeoutMs)
+    // Run timeout.
+    //
+    // Re-armable, because it is SUSPENDED while a consent dialog is open: the
+    // run gets `runTimeoutMs` of its own work, not of the user's thinking. A
+    // dialog that kills the run would teach the user to click without reading,
+    // which is the opposite of what asking is for.
+    let runTimeout: ReturnType<typeof setTimeout> | undefined
+    /** Total wall time this run spent waiting for a human. */
+    let consentWaitMs = 0
+    const armRunTimeout = (): void => {
+      const spentWorking = Date.now() - startTime - consentWaitMs
+      const remaining = this.config.runTimeoutMs - spentWorking
+      // A non-positive remainder means the budget really is used up outside the
+      // dialog: the timer then fires on the next tick rather than never.
+      runTimeout = setTimeout(() => {
+        abortController.abort()
+      }, Math.max(0, remaining))
+    }
+    armRunTimeout()
 
     try {
       // Verify provider supports tool-use
@@ -294,29 +328,95 @@ export class AgentExecutor {
         // of the result, and that preview is the part that travels. Checking
         // afterwards would check what no longer goes out and pass what does.
         //
-        // Fail closed: the run ends with the reason, like the pre-flight above.
-        // The step is deliberately not pushed and no step_complete is emitted —
-        // blocked content must not travel onwards to the renderer either.
-        const loopGuard = await guardToolResults(
+        // Fail closed on `blocked`: the run ends with the reason, like the
+        // pre-flight above. The step is deliberately not pushed and no
+        // step_complete is emitted — blocked content must not travel onwards to
+        // the renderer either. A `consent` finding is the one outcome that does
+        // not end the run: it is put to the user below.
+        const origins = rawToolResults.map((r) => ({
+          toolName: llmResponse.toolCalls.find((tc) => tc.id === r.toolCallId)?.name ?? 'unknown'
+        }))
+        const guardCtx = { provider, model, conversationId: run.conversationId }
+
+        // A `consent` outcome settles ONE result, then the guard continues over
+        // the rest of the step from the next index. The loop is bounded: every
+        // round moves `guardFrom` forward by at least one, and the dispatch
+        // phase inside the guard always sees the whole, final step content.
+        let guardFrom = 0
+        let loopGuard = await guardToolResults(
           rawToolResults,
-          rawToolResults.map((r) => ({
-            toolName: llmResponse.toolCalls.find((tc) => tc.id === r.toolCallId)?.name ?? 'unknown'
-          })),
-          { provider, model, conversationId: run.conversationId },
+          origins,
+          guardCtx,
           getGuardDeps(),
+          guardFrom,
         )
+
+        while (loopGuard.kind === 'consent') {
+          // Already aborted — the timeout can fire between the tool call and
+          // here. Asking now would be a dialog for a dead run, and the abort
+          // listener below would never fire for a signal that is already
+          // aborted, so the run would wait for an answer forever.
+          if (abortController.signal.aborted) {
+            run.status = 'cancelled'
+            break
+          }
+
+          const index = loopGuard.index
+          const request = buildConsentRequest({
+            runId,
+            stepNumber: stepNum,
+            origin: loopGuard.origin,
+            scan: loopGuard.scanResult,
+          })
+
+          // Timeout off for the duration of the question, then re-armed with
+          // what is left of the run's OWN time.
+          clearTimeout(runTimeout)
+          const askedAt = Date.now()
+          // An aborted run must not leave the dialog pending: the broker
+          // settles it to 'drop-file' rather than let the promise hang.
+          const onAbort = (): void => this.consentBroker.cancel(runId)
+          abortController.signal.addEventListener('abort', onAbort, { once: true })
+
+          // The fail-closed default, in place before anything can throw.
+          let choice: CodingConsentChoice = 'drop-file'
+          try {
+            choice = await this.consentBroker.ask(request)
+          } finally {
+            abortController.signal.removeEventListener('abort', onAbort)
+            consentWaitMs += Date.now() - askedAt
+            armRunTimeout()
+          }
+
+          if (abortController.signal.aborted) {
+            run.status = 'cancelled'
+            break
+          }
+
+          const resolution = await resolveConsentChoice({
+            choice,
+            runId,
+            origin: loopGuard.origin,
+            content: rawToolResults[index].content,
+          })
+          rawToolResults[index] = { ...rawToolResults[index], content: resolution.content }
+
+          guardFrom = index + 1
+          loopGuard = await guardToolResults(
+            rawToolResults,
+            origins,
+            guardCtx,
+            getGuardDeps(),
+            guardFrom,
+          )
+        }
+
+        // The cancellation inside the loop above has to leave the ReAct loop too.
+        if (run.status === 'cancelled') break
+
         if (loopGuard.kind === 'blocked') {
           run.status = 'failed'
           run.error = loopGuard.reason
-          break
-        }
-        if (loopGuard.kind === 'consent') {
-          // No consent channel on this path (Task 5 adds one) — fail closed,
-          // exactly as preflightGuard treats `requiresConsent`.
-          run.status = 'failed'
-          run.error =
-            `User consent required for sensitive data in the result of ` +
-            `${loopGuard.origin.toolName} (${loopGuard.scanResult.overallRiskLevel} risk).`
           break
         }
         // `provider` is deliberately NOT reassigned from the guard: a budget or
