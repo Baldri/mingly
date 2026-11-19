@@ -813,6 +813,16 @@ Jeder Pfad wird **nach** `realpath` geprüft, nicht davor — ein Symlink im Pro
 
 Reihenfolge der Prüfungen in `read_file`, abschliessend: Grant vorhanden und `hasPermission(dir,'read')` → `isBlockedPath` → `isRealPathWithin` → `isReadableExtension` → Kopf lesen und `isProbablyBinary` → Inhalt. Blockliste vor der Pfadauflösung, damit eine Ablehnung nichts über das Dateisystem verrät.
 
+Ein weiterer Test muss einen **symlinkierten Projektpfad** verwenden (auf macOS ist
+`/var` genau das) und belegen, dass eine Datei unter `.mingly/context/` die
+Containment-Pruefung von `read_file` passiert. `ensureProjectWorkspace` gibt seine Pfade
+per `path.resolve` zurueck, nicht per `realpath` — laeuft der Projektpfad ueber einen
+Symlink, koennen aufgeloeste und unaufgeloeste Form auseinanderfallen, und dann weist
+`read_file` die eigene Auslagerungsdatei ab, obwohl der Kompaktierungstext dem Modell
+sagt, es solle sie lesen. Vom Task-6-Review als «cannot verify from diff» korrekt offen
+gelassen und hierher weitergegeben; verwandt mit der Memory-Notiz
+`containment-pruefung-bricht-an-der-dateisystemwurzel`.
+
 Ein Test muss belegen, dass ein `read_file`-Ergebnis beim Guard mit **gefuelltem**
 `filePath` ankommt — nicht nur, dass `originForToolCall` den Pfad zurueckgibt. Ein Test
 gegen die Funktion allein wuerde gruen bleiben, waehrend der Executor sie ignoriert.
