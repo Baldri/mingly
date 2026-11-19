@@ -19,14 +19,47 @@ import type {
   AgentToolResult,
   MCPTool
 } from '../../shared/types'
+import type { CodingRunOptions } from '../../shared/coding-types'
 
 // ── Built-in tool handler type ─────────────────────────────────
 
-type BuiltInToolHandler = (args: Record<string, unknown>) => Promise<string>
+/**
+ * What a run tells the registry about itself. `coding` is exactly the
+ * CodingRunOptions type, not a second structure with the same fields.
+ * Comparison and subagent runs pass no context at all.
+ */
+export interface ToolContext {
+  coding?: CodingRunOptions
+}
+
+/**
+ * Decides whether a built-in tool exists for a run. Absent context means the
+ * strictest caller, so a coding gate must answer `false` for `undefined`.
+ */
+export type ToolGate = (ctx: ToolContext | undefined) => boolean
+
+export type BuiltInToolHandler = (
+  args: Record<string, unknown>,
+  ctx?: ToolContext
+) => Promise<string>
 
 interface BuiltInToolEntry {
   definition: ToolDefinition
   handler: BuiltInToolHandler
+  gate?: ToolGate
+}
+
+/**
+ * Evaluate a gate fail-closed: no gate means always available; anything other
+ * than a literal `true` (false, a truthy non-boolean, a throw) means closed.
+ */
+function gateAllows(entry: BuiltInToolEntry, ctx: ToolContext | undefined): boolean {
+  if (!entry.gate) return true
+  try {
+    return entry.gate(ctx) === true
+  } catch {
+    return false
+  }
 }
 
 // ── MCP tool mapping ───────────────────────────────────────────
@@ -65,13 +98,16 @@ export class ToolRegistry {
 
   /**
    * Register a built-in tool with its handler function.
-   * Built-in tools are always available, regardless of MCP server state.
+   * Built-in tools are independent of MCP server state. Without a `gate` the
+   * tool is always available; with one it is offered (and run) only for a
+   * context the gate accepts.
    */
   registerBuiltIn(
     definition: ToolDefinition,
-    handler: BuiltInToolHandler
+    handler: BuiltInToolHandler,
+    gate?: ToolGate
   ): void {
-    this.builtInTools.set(definition.name, { definition, handler })
+    this.builtInTools.set(definition.name, { definition, handler, gate })
   }
 
   /**
@@ -102,12 +138,12 @@ export class ToolRegistry {
    * Combines built-in tools + MCP tools.
    * MCP tools are converted from MCPTool format to ToolDefinition.
    */
-  getAvailableTools(): ToolDefinition[] {
+  getAvailableTools(ctx?: ToolContext): ToolDefinition[] {
     const tools: ToolDefinition[] = []
 
-    // Built-in tools
+    // Built-in tools — a tool whose gate says no is not offered at all
     for (const entry of this.builtInTools.values()) {
-      tools.push(entry.definition)
+      if (gateAllows(entry, ctx)) tools.push(entry.definition)
     }
 
     // MCP tools (converted from MCPTool → ToolDefinition)
@@ -158,9 +194,9 @@ export class ToolRegistry {
    * Handles both built-in and MCP tools.
    * Enforces timeout and truncates large results.
    */
-  async executeTool(toolCall: AgentToolCall): Promise<AgentToolResult> {
+  async executeTool(toolCall: AgentToolCall, ctx?: ToolContext): Promise<AgentToolResult> {
     try {
-      const result = await this.executeWithTimeout(toolCall)
+      const result = await this.executeWithTimeout(toolCall, ctx)
       return result
     } catch (error) {
       const err = error as Error
@@ -182,9 +218,12 @@ export class ToolRegistry {
    * Execute multiple tool calls in parallel.
    * Returns results in the same order as the input calls.
    */
-  async executeToolCalls(toolCalls: AgentToolCall[]): Promise<AgentToolResult[]> {
+  async executeToolCalls(
+    toolCalls: AgentToolCall[],
+    ctx?: ToolContext
+  ): Promise<AgentToolResult[]> {
     const results = await Promise.allSettled(
-      toolCalls.map((tc) => this.executeTool(tc))
+      toolCalls.map((tc) => this.executeTool(tc, ctx))
     )
 
     return results.map((result, index) => {
@@ -203,11 +242,24 @@ export class ToolRegistry {
 
   // ── Private helpers ─────────────────────────────────────────
 
-  private async executeToolInner(toolCall: AgentToolCall): Promise<AgentToolResult> {
+  private async executeToolInner(
+    toolCall: AgentToolCall,
+    ctx?: ToolContext
+  ): Promise<AgentToolResult> {
     // 1. Check built-in tools first
     const builtIn = this.builtInTools.get(toolCall.name)
     if (builtIn) {
-      const result = await builtIn.handler(toolCall.arguments)
+      // Second check, independent of getAvailableTools: a model can name a tool
+      // it was never offered, and the two methods have different callers.
+      // Deliberately does not fall through to an MCP tool of the same name.
+      if (!gateAllows(builtIn, ctx)) {
+        return {
+          toolCallId: toolCall.id,
+          content: `Unknown tool: "${toolCall.name}". Available tools: ${this.getToolNames(ctx).join(', ')}`,
+          isError: true
+        }
+      }
+      const result = await builtIn.handler(toolCall.arguments, ctx)
       return {
         toolCallId: toolCall.id,
         content: this.truncateResult(result),
@@ -249,7 +301,7 @@ export class ToolRegistry {
     // 3. Unknown tool
     return {
       toolCallId: toolCall.id,
-      content: `Unknown tool: "${toolCall.name}". Available tools: ${this.getToolNames().join(', ')}`,
+      content: `Unknown tool: "${toolCall.name}". Available tools: ${this.getToolNames(ctx).join(', ')}`,
       isError: true
     }
   }
@@ -284,14 +336,17 @@ export class ToolRegistry {
    * Execute a tool with a properly clearable timeout.
    * Prevents timer resource leaks when the tool completes before the timeout.
    */
-  private executeWithTimeout(toolCall: AgentToolCall): Promise<AgentToolResult> {
+  private executeWithTimeout(
+    toolCall: AgentToolCall,
+    ctx?: ToolContext
+  ): Promise<AgentToolResult> {
     return new Promise<AgentToolResult>((resolve, reject) => {
       const timer = setTimeout(
         () => reject(new Error(`Tool execution timed out after ${this.config.toolTimeoutMs}ms`)),
         this.config.toolTimeoutMs
       )
 
-      this.executeToolInner(toolCall)
+      this.executeToolInner(toolCall, ctx)
         .then((result) => {
           clearTimeout(timer)
           resolve(result)
@@ -306,9 +361,11 @@ export class ToolRegistry {
   /**
    * Get names of all available tools (for error messages).
    */
-  private getToolNames(): string[] {
+  private getToolNames(ctx?: ToolContext): string[] {
     const names: string[] = []
-    for (const name of this.builtInTools.keys()) names.push(name)
+    for (const [name, entry] of this.builtInTools) {
+      if (gateAllows(entry, ctx)) names.push(name)
+    }
     for (const name of this.mcpToolMap.keys()) names.push(name)
     return names
   }

@@ -76,6 +76,26 @@ vi.mock('../../src/main/agent/agent-context-manager', async () => {
   }
 })
 
+// A coding run now verifies its claimed mode against the store and creates the
+// project workspace before the first model call (Task 7). This file tests the
+// guard, not those two, so they are stubbed to agree with CODING below. The
+// wiring itself is covered by agent-executor-coding.test.ts.
+vi.mock('../../src/main/coding/coding-mode-store', () => ({
+  getCodingModeStore: () => ({ getMode: () => 'read-only', setMode: () => undefined }),
+}))
+
+vi.mock('../../src/main/coding/project-workspace', async () => {
+  const actual = await vi.importActual('../../src/main/coding/project-workspace')
+  return {
+    ...actual,
+    ensureProjectWorkspace: async () => ({
+      root: '/tmp/project/.mingly',
+      snapshotDir: '/tmp/project/.mingly/snapshots/run',
+      contextDir: '/tmp/project/.mingly/context/run',
+    }),
+  }
+})
+
 vi.mock('nanoid', () => ({
   nanoid: vi.fn(() => `test-${Math.random().toString(36).substring(7)}`)
 }))

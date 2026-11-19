@@ -28,7 +28,9 @@ import {
   type ConsentDecision,
 } from '../coding/consent-broker'
 import type { CodingRunOptions } from '../../shared/coding-types'
-import { getToolRegistry, type ToolRegistry } from './tool-registry'
+import { getToolRegistry, type ToolContext, type ToolRegistry } from './tool-registry'
+import { getCodingModeStore } from '../coding/coding-mode-store'
+import { ensureProjectWorkspace } from '../coding/project-workspace'
 import { getAgentContextManager } from './agent-context-manager'
 import { getClientManager } from '../llm-clients/client-manager'
 import type { ToolUseResponse } from '../llm-clients/client-manager'
@@ -147,9 +149,11 @@ export class AgentExecutor {
    * @param systemPrompt - System prompt (optional)
    * @param coding - Coding-run context (optional). Left out by the comparison
    *                 and subagent callers, which therefore get no coding run.
-   *                 Nothing in this task consumes it: the loop guard treats
-   *                 every run alike. It is the switch later tasks read for the
-   *                 coding tool surface and the consent channel.
+   *                 It selects the coding tool surface (via ToolContext) and the
+   *                 project workspace that externalized results go to. The mode
+   *                 it claims must equal the one the CodingModeStore holds for
+   *                 its directory, otherwise the run ends: the renderer cannot
+   *                 hand itself a mode the store does not give.
    */
   async execute(
     task: string,
@@ -232,10 +236,29 @@ export class AgentExecutor {
         )
       }
 
+      // Coding run: verify the claimed mode against the store, then create the
+      // project workspace ONCE. Everything below consumes this single instance.
+      // Fail closed: a store that throws, an unknown directory (reads as `off`)
+      // or a workspace that cannot be created all end the run before any model
+      // call, via the catch below.
+      let toolCtx: ToolContext | undefined
+      let contextDir: string | undefined
+      if (coding) {
+        const storedMode = getCodingModeStore().getMode(coding.directoryId)
+        if (coding.mode !== storedMode) {
+          throw new Error(
+            `Coding mode mismatch: run claims "${String(coding.mode)}" but the stored mode is "${storedMode}"`
+          )
+        }
+        const workspace = await ensureProjectWorkspace(coding.projectPath, runId)
+        contextDir = workspace.contextDir
+        toolCtx = { coding }
+      }
+
       // Get available tools
       const toolRegistry = getToolRegistry()
       toolRegistry.refreshMCPTools()
-      const tools = toolRegistry.getAvailableTools()
+      const tools = toolRegistry.getAvailableTools(toolCtx)
 
       if (tools.length === 0) {
         throw new Error(
@@ -319,7 +342,7 @@ export class AgentExecutor {
         }
 
         // Execute tool calls
-        const rawToolResults = await toolRegistry.executeToolCalls(llmResponse.toolCalls)
+        const rawToolResults = await toolRegistry.executeToolCalls(llmResponse.toolCalls, toolCtx)
 
         // The guard inside the loop. Tool results are content the AGENT
         // collected; the pre-flight guard above never saw them, yet every
@@ -426,9 +449,15 @@ export class AgentExecutor {
         // Adopting one would send content that guardInput only ever checked
         // against the previous provider.
 
-        // Task 4: File-based context — externalize large tool results to temp files
+        // Task 4: File-based context — externalize large tool results to files.
+        // A coding run externalizes INTO the project workspace (`contextDir`),
+        // so project content never reaches os.tmpdir(); every other run keeps
+        // the temp directory. `contextDir` stays undefined only for non-coding
+        // runs, because a coding run without a workspace has already ended above.
         const contextManager = getAgentContextManager()
-        const toolResults = rawToolResults.map((r) => contextManager.compactToolResult(runId, r))
+        const toolResults = rawToolResults.map((r) =>
+          contextManager.compactToolResult(runId, r, contextDir)
+        )
         step.toolResults = toolResults
 
         run.steps.push(step)

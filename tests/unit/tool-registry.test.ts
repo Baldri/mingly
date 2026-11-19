@@ -3,7 +3,9 @@
  * Validates tool registration, MCP bridging, execution, timeouts, and error handling.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { ToolRegistry } from '../../src/main/agent/tool-registry'
+import { ToolRegistry, type ToolContext, type ToolGate } from '../../src/main/agent/tool-registry'
+import { CODING_MODE_ORDER, type CodingMode } from '../../src/shared/coding-types'
+import { atLeast } from '../../src/main/policy/policy-types'
 import type { ToolDefinition, AgentToolCall, AgentToolResult } from '../../src/shared/types'
 
 // Mock MCPClientManager
@@ -308,5 +310,108 @@ describe('Tool lookup', () => {
   it('should return undefined for unknown tool', () => {
     const tool = registry.getToolByName('nonexistent')
     expect(tool).toBeUndefined()
+  })
+})
+
+// ── Context-gated tools (coding mode) ───────────────────────
+
+describe('Context-gated built-in tools', () => {
+  const gatedDef: ToolDefinition = {
+    name: 'edit_file',
+    description: 'Gated test tool',
+    inputSchema: { type: 'object', properties: {}, required: [] }
+  }
+  const proposeGate: ToolGate = (ctx) =>
+    atLeast(CODING_MODE_ORDER, ctx?.coding?.mode ?? 'off', 'propose')
+  const codingCtx = (mode: CodingMode): ToolContext => ({
+    coding: { directoryId: 'dir-1', projectPath: '/tmp/p', mode }
+  })
+
+  it('withholds a gated tool when no context is given', () => {
+    registry.registerBuiltIn(gatedDef, async () => 'edited', proposeGate)
+    expect(registry.getAvailableTools().map((t) => t.name)).not.toContain('edit_file')
+  })
+
+  it('offers a gated tool when the mode reaches its threshold', () => {
+    registry.registerBuiltIn(gatedDef, async () => 'edited', proposeGate)
+    expect(registry.getAvailableTools(codingCtx('propose')).map((t) => t.name)).toContain('edit_file')
+    expect(registry.getAvailableTools(codingCtx('propose-run')).map((t) => t.name)).toContain('edit_file')
+  })
+
+  it('withholds it again one step below the threshold', () => {
+    registry.registerBuiltIn(gatedDef, async () => 'edited', proposeGate)
+    expect(registry.getAvailableTools(codingCtx('read-only')).map((t) => t.name)).not.toContain('edit_file')
+    expect(registry.getAvailableTools(codingCtx('off')).map((t) => t.name)).not.toContain('edit_file')
+  })
+
+  it('refuses execution of a gated tool even when it was never offered', async () => {
+    const handler = vi.fn(async () => 'edited')
+    registry.registerBuiltIn(gatedDef, handler, proposeGate)
+    const [res] = await registry.executeToolCalls(
+      [{ id: '1', name: 'edit_file', arguments: {} }],
+      undefined
+    )
+    expect(res.isError).toBe(true)
+    expect(handler).not.toHaveBeenCalled()
+  })
+
+  it('refuses execution one step below the threshold, runs it at the threshold', async () => {
+    const handler = vi.fn(async () => 'edited')
+    registry.registerBuiltIn(gatedDef, handler, proposeGate)
+    const call = [{ id: '1', name: 'edit_file', arguments: {} }]
+    const [below] = await registry.executeToolCalls(call, codingCtx('read-only'))
+    expect(below.isError).toBe(true)
+    expect(handler).not.toHaveBeenCalled()
+    const [at] = await registry.executeToolCalls(call, codingCtx('propose'))
+    expect(at.isError).toBe(false)
+    expect(at.content).toBe('edited')
+  })
+
+  it('hands the context to the handler as its second argument', async () => {
+    const handler = vi.fn(async () => 'ok')
+    registry.registerBuiltIn(gatedDef, handler, proposeGate)
+    const ctx = codingCtx('propose')
+    await registry.executeToolCalls([{ id: '1', name: 'edit_file', arguments: { a: 1 } }], ctx)
+    expect(handler).toHaveBeenCalledWith({ a: 1 }, ctx)
+  })
+
+  it('treats a throwing gate as closed', async () => {
+    const handler = vi.fn(async () => 'x')
+    registry.registerBuiltIn(gatedDef, handler, () => {
+      throw new Error('boom')
+    })
+    expect(registry.getAvailableTools(codingCtx('propose')).map((t) => t.name)).not.toContain('edit_file')
+    const [res] = await registry.executeToolCalls(
+      [{ id: '1', name: 'edit_file', arguments: {} }],
+      codingCtx('propose')
+    )
+    expect(res.isError).toBe(true)
+    expect(handler).not.toHaveBeenCalled()
+  })
+
+  it('treats a non-boolean gate result as closed', () => {
+    registry.registerBuiltIn(gatedDef, async () => 'x', (() => 'yes') as unknown as ToolGate)
+    expect(registry.getAvailableTools(codingCtx('propose')).map((t) => t.name)).not.toContain('edit_file')
+  })
+
+  it('does not name a gated tool in the unknown-tool listing of an ungated caller', async () => {
+    registry.registerBuiltIn(gatedDef, async () => 'x', proposeGate)
+    const [res] = await registry.executeToolCalls(
+      [{ id: '1', name: 'edit_file', arguments: {} }],
+      undefined
+    )
+    expect(res.isError).toBe(true)
+    expect(res.content).not.toMatch(/Available tools:.*edit_file/)
+  })
+
+  it('leaves ungated tools unaffected', async () => {
+    registry.registerBuiltIn(
+      { name: 'echo', description: 'e', inputSchema: { type: 'object', properties: {}, required: [] } },
+      async () => 'pong'
+    )
+    expect(registry.getAvailableTools().map((t) => t.name)).toContain('echo')
+    expect(registry.getAvailableTools(codingCtx('off')).map((t) => t.name)).toContain('echo')
+    const [res] = await registry.executeToolCalls([{ id: '1', name: 'echo', arguments: {} }])
+    expect(res.content).toBe('pong')
   })
 })
