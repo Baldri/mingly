@@ -119,14 +119,23 @@ export async function ensureProjectWorkspace(
       throw new ProjectWorkspaceError('.gitignore exists but is not a regular file')
     }
     try {
-      await fs.promises.access(gitignorePath, fs.constants.W_OK)
       gitignoreContent = await fs.promises.readFile(gitignorePath, 'utf-8')
     } catch {
-      throw new ProjectWorkspaceError('.gitignore is not readable and writable')
+      throw new ProjectWorkspaceError('.gitignore is not readable')
     }
     gitignoreNeedsEntry = !gitignoreContent
       .split(/\r?\n/)
       .some((line) => GITIGNORE_EQUIVALENTS.has(line.trim()))
+    // Writability matters only when the entry has to be appended. Without the
+    // entry, .mingly/ (externalized tool results) could be committed, so an
+    // unwritable .gitignore then fails closed.
+    if (gitignoreNeedsEntry) {
+      try {
+        await fs.promises.access(gitignorePath, fs.constants.W_OK)
+      } catch {
+        throw new ProjectWorkspaceError('.gitignore lacks the .mingly/ entry and is not writable')
+      }
+    }
   }
 
   // ── Pass 2: write ───────────────────────────────────────────────────────

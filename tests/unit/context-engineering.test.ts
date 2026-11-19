@@ -660,6 +660,43 @@ describe('Task 4: AgentContextManager', () => {
       expect(fs.existsSync(tempDir) ? fs.readdirSync(tempDir) : []).toEqual([])
     })
 
+    describe('compactMessages with a target dir', () => {
+      const msgs = (): Message[] => [
+        { id: 'm-1', role: 'tool', content: 'Y'.repeat(200), toolCallId: 'tc-1' },
+        { id: 'm-2', role: 'tool', content: 'Small', toolCallId: 'tc-2' }
+      ]
+
+      it('writes into the project and nothing into the temp dir', () => {
+        const out = manager.compactMessages('run-1', msgs(), undefined, contextDir)
+        const match = out[0].content.match(/externalized to: (.+?)\]/)
+        expect(match).not.toBeNull()
+        expect(match![1].startsWith(contextDir + path.sep)).toBe(true)
+        expect(fs.readFileSync(match![1], 'utf-8')).toBe('Y'.repeat(200))
+        expect(fs.statSync(match![1]).mode & 0o777).toBe(0o600)
+        expect(out[1].content).toBe('Small')
+        expect(fs.existsSync(tempDir) ? fs.readdirSync(tempDir) : []).toEqual([])
+        manager.cleanup('run-1')
+        expect(fs.readdirSync(contextDir)).toEqual([])
+      })
+
+      it('keeps content in context for a relative, missing or non-directory target', () => {
+        const blocker = path.join(projectDir, 'blocker')
+        fs.writeFileSync(blocker, 'file')
+        for (const bad of ['relative/dir', path.join(projectDir, 'nope'), blocker]) {
+          const out = manager.compactMessages('run-1', msgs(), undefined, bad)
+          expect(out[0].content).toBe('Y'.repeat(200))
+        }
+        expect(fs.existsSync(path.join(projectDir, 'nope'))).toBe(false)
+        expect(fs.existsSync(tempDir) ? fs.readdirSync(tempDir) : []).toEqual([])
+      })
+
+      it('still uses the temp dir when no target is given', () => {
+        const out = manager.compactMessages('run-1', msgs())
+        expect(out[0].content).toContain(tempDir)
+        expect(fs.readdirSync(contextDir)).toEqual([])
+      })
+    })
+
     it('does not create a missing target dir', () => {
       const missing = path.join(projectDir, '.mingly', 'context', 'never-created')
       const compacted = manager.compactToolResult('run-1', big, missing)

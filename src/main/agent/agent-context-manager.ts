@@ -94,20 +94,31 @@ export class AgentContextManager {
   /**
    * Compact an existing message array by externalizing large tool results.
    * Used for mid-run compaction when context grows too large.
+   *
+   * `targetDir` has the same strict semantics as in compactToolResult: absolute,
+   * existing, never created, no fall-back to the temp dir.
    */
-  compactMessages(runId: string, messages: Message[], threshold?: number): Message[] {
+  compactMessages(
+    runId: string,
+    messages: Message[],
+    threshold?: number,
+    targetDir?: string
+  ): Message[] {
     const limit = threshold ?? this.config.compactionThreshold
+    const targetUsable = targetDir === undefined || this.isUsableTargetDir(targetDir)
+    const baseDir = targetDir === undefined ? this.config.tempDir : targetDir
     return messages.map((msg) => {
       if (msg.role !== 'tool') return msg
       if (msg.content.length <= limit) return msg
+      if (!targetUsable) return msg
 
       // Externalize this tool result
       const filename = `agent-${runId}-${nanoid(8)}.txt`
-      const filepath = path.join(this.config.tempDir, filename)
+      const filepath = path.join(baseDir, filename)
 
       try {
-        fs.writeFileSync(filepath, msg.content, 'utf-8')
-        this.trackFile(runId, filepath)
+        fs.writeFileSync(filepath, msg.content, { encoding: 'utf-8', mode: 0o600 })
+        this.trackFile(runId, filepath, baseDir)
 
         const lineCount = msg.content.split('\n').length
         const preview = msg.content.substring(0, 200).replace(/\n/g, ' ')

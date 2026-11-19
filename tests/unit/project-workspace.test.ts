@@ -130,6 +130,24 @@ describe('ensureProjectWorkspace', () => {
     expect(fs.existsSync(path.join(p, '.mingly'))).toBe(false)
   })
 
+  it.skipIf(isRoot)('succeeds with a read-only .gitignore that already has the entry', async () => {
+    const gi = path.join(p, '.gitignore')
+    fs.writeFileSync(gi, 'dist\n.mingly/\n')
+    fs.chmodSync(gi, 0o400)
+    const ws = await ensureProjectWorkspace(p, 'r1')
+    expect(fs.statSync(ws.contextDir).isDirectory()).toBe(true)
+    expect(fs.readFileSync(gi, 'utf-8')).toBe('dist\n.mingly/\n')
+  })
+
+  it.skipIf(isRoot)('still throws for a read-only .gitignore that lacks the entry', async () => {
+    const gi = path.join(p, '.gitignore')
+    fs.writeFileSync(gi, 'dist\n')
+    fs.chmodSync(gi, 0o400)
+    await expect(ensureProjectWorkspace(p, 'r1')).rejects.toThrow(ProjectWorkspaceError)
+    expect(fs.existsSync(path.join(p, '.mingly'))).toBe(false)
+    expect(fs.readFileSync(gi, 'utf-8')).toBe('dist\n')
+  })
+
   it('tightens permissions of an already existing .mingly to 0700', async () => {
     // existing directory: mkdir({ recursive, mode }) would be a no-op here
     fs.mkdirSync(path.join(p, '.mingly'), { mode: 0o755 })
