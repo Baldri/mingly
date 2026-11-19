@@ -1342,6 +1342,23 @@ zeigen lassen — am Grant-System vorbei. Gleiche Klasse wie die Memory-Notiz
 Run mit einem `projectPath`, der nicht zum Grant des `directoryId` passt, **abgelehnt**
 wird — nicht korrigiert, abgelehnt. Befund I-3 des Task-7-Reviews.
 
+**Pflicht, nicht optional (Entscheid R75):** eine Ablehnung aus dem Schreibpfad ist die
+**normale Antwort**, kein Fehler. Die IPC-Kanaele von Task 11 liefern
+`{ success, outcome }` mit `success: false`, wenn abgelehnt wurde, und `outcome.reason`
+traegt den Grund. Die Oberflaeche zeigt diesen Grund **an**, statt ihn als Fehler zu
+verschlucken oder durch einen generischen Text zu ersetzen. Die haeufigsten Gruende sind
+kein Defekt, sondern das Feature bei der Arbeit: der Grant wurde entzogen, der Modus
+gesenkt, die Datei hat sich seit dem Vorschlag geaendert, oder ein Ziel liegt in
+`.mingly/`. Wer den Grund nicht liest, sieht nur «ging nicht» und hat keine Chance, es zu
+beheben.
+
+**Pflicht, nicht optional (Entscheid R76):** `undoRun` liefert **zwei** Gruppen —
+wiederhergestellt und **uebersprungen, mit Grund**. Uebersprungen wird eine Datei, die
+sich nach dem Anwenden geaendert hat; ihr Inhalt wird bewusst **nicht** ueberschrieben,
+damit spaetere Arbeit des Nutzers nie verloren geht. Die Oberflaeche muss beide Gruppen
+zeigen: ein teilweises Rueckgaengig, das wie ein vollstaendiges aussieht, ist die eine
+Taeuschung, die ein Rettungsweg nie erzeugen darf.
+
 **Pflicht, nicht optional (Entscheid R64):** der Abnahme-Dialog zeigt das Merkmal
 `introducesHiddenCharacters` **auffaellig**, nicht als Fussnote. Ein Vorschlag darf
 Bidi-Overrides oder Nullbreiten-Zeichen enthalten, sodass der abgenommene Code anders
