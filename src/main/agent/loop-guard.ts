@@ -43,13 +43,11 @@ export type LoopGuardOutcome =
 /**
  * What the guard needs to know about the step it is guarding.
  *
- * Deliberately no coding context: every check here runs for every agent run —
- * comparison and subagent runs push tool results to a provider just as
- * unguarded as a coding run does, and the provider-switch refusal below holds
- * for all of them. A `coding` field would teach the next reader that this file
- * treats coding runs differently, which it does not. File attribution travels
- * through `origins`; a later task that genuinely needs project context here
- * adds it in the commit that reads it.
+ * It does not need to know the run type. Every check here runs for every agent
+ * run: comparison and subagent runs push tool results to a provider just as
+ * unguarded as a coding run does, and the dispatch refusal below holds for all
+ * of them. File attribution travels through `origins`; a later task that
+ * genuinely needs project context adds it in the commit that reads it.
  */
 export interface LoopGuardContext {
   provider: string
@@ -141,17 +139,28 @@ export async function guardToolResults(
   // false), accumulates tool results, and a budget fallback to a cloud provider
   // would then ship the lot. Re-running both phases over the whole accumulated
   // stack on every switch is the opposite of incremental, so the run ends.
-  if (dispatch.provider !== ctx.provider) {
+  //
+  // The gate is "did dispatch have to fall back at all", not "is the provider
+  // different". guardDispatch pushes a warning only for budget_fallback and
+  // routing_fallback (request-guard.ts:105, :116), and both mean the original
+  // dispatch was refused. Comparing providers would miss a budget fallback to
+  // another provider that a routing suggestion then sends back: identical
+  // provider in and out, yet its budget verdict was "not allowed".
+  if (dispatch.warnings.length > 0) {
     const causes = dispatch.warnings
       .filter((w) => w.type === 'budget_fallback' || w.type === 'routing_fallback')
       .map((w) => (w.type === 'budget_fallback' ? 'budget' : 'routing'))
     const cause = causes.length > 0 ? `${causes.join(' and ')} fallback` : 'a dispatch fallback'
+    const landing =
+      dispatch.provider === ctx.provider
+        ? `it came back to ${ctx.provider} only through a further fallback`
+        : `the content would move to ${dispatch.provider}`
     return {
       kind: 'blocked',
       reason:
-        `Collected content would be re-routed from ${ctx.provider} to ${dispatch.provider} ` +
-        `(${cause}), but it was only ever checked against ${ctx.provider}. The run ends instead ` +
-        'of switching providers mid-run.',
+        `Dispatch refused ${ctx.provider} as-is for the collected content (${cause}): ` +
+        `${landing}. The content was only ever checked against ${ctx.provider}, so the run ends ` +
+        'instead of switching providers mid-run.',
     }
   }
 

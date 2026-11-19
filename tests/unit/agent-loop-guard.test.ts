@@ -185,7 +185,14 @@ beforeEach(() => {
   )
   spies.scanOutput.mockImplementation((output: string) =>
     output.includes('SECRET_LEAK')
-      ? { violations: [{ type: 'system_prompt_leak', severity: 'critical', description: 'System prompt leaked.' }] }
+      ? {
+          violations: [
+            { type: 'system_prompt_leak', severity: 'critical', description: 'System prompt leaked.' },
+            // Non-blocking: postflightGuard blocks on critical/high only, so
+            // this one must not be named as a reason the run ended.
+            { type: 'verbose_phrasing', severity: 'low', description: 'Wordy answer.' },
+          ],
+        }
       : { violations: [] },
   )
 
@@ -257,6 +264,8 @@ describe('Tool results pass the same guards as typed text', () => {
 
     expect(run.status).toBe('failed')
     expect(run.error).toContain('system_prompt_leak')
+    // Only the violations that actually blocked are named as the reason.
+    expect(run.error).not.toContain('verbose_phrasing')
     expect(spies.sendMessageWithTools).toHaveBeenCalledTimes(1)
     // Post-flight sits between the LLM call and tool execution.
     expect(spies.executeToolCalls).not.toHaveBeenCalled()

@@ -19,7 +19,7 @@ import { postflightGuard, preflightGuard } from '../security/request-guard'
 import { getGuardDeps } from '../security/request-guard-deps'
 
 import { nanoid } from 'nanoid'
-import { guardToolResults } from './coding-guard'
+import { guardToolResults } from './loop-guard'
 import type { CodingRunOptions } from '../../shared/coding-types'
 import { getToolRegistry, type ToolRegistry } from './tool-registry'
 import { getAgentContextManager } from './agent-context-manager'
@@ -253,10 +253,16 @@ export class AgentExecutor {
         // Tokens are counted first, so a blocked turn still shows its cost.
         const postflight = postflightGuard(llmResponse.text, systemPrompt ?? '', getGuardDeps())
         if (!postflight.ok) {
+          // Name only the severities that actually blocked (request-guard.ts:183);
+          // `violations` also carries low/medium findings, and listing those as
+          // the reason the run ended would misreport why.
+          const blocking = postflight.violations.filter(
+            (v) => v.severity === 'critical' || v.severity === 'high'
+          )
           run.status = 'failed'
           run.error =
             'Output blocked by guardrails: ' +
-            postflight.violations.map((v) => `${v.type} (${v.severity})`).join(', ')
+            blocking.map((v) => `${v.type} (${v.severity})`).join(', ')
           break
         }
 

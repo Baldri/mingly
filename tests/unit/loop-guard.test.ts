@@ -7,7 +7,7 @@
  * itself is covered by request-guard.test.ts.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { guardToolResults, type ToolResultOrigin } from '../../src/main/agent/coding-guard'
+import { guardToolResults, type ToolResultOrigin } from '../../src/main/agent/loop-guard'
 import type { GuardDeps } from '../../src/main/security/request-guard'
 import type { AgentToolResult } from '../../src/shared/types'
 
@@ -137,6 +137,30 @@ describe('guardToolResults', () => {
 
     expect(out.kind).toBe('blocked')
     expect(out.kind === 'blocked' && out.reason).toContain('ollama')
+    expect(out.kind === 'blocked' && out.reason).toContain('routing')
+  })
+
+  it('refuses a dispatch that falls back and then lands on the original provider again', async () => {
+    // budget pushes anthropic → ollama, routing pushes ollama → anthropic back.
+    // The provider in and out is the same, so an inequality check sees nothing,
+    // yet dispatch refused anthropic on budget grounds. The gate is therefore
+    // "did dispatch have to fall back at all", which its warnings record.
+    const deps = makeDeps({
+      checkBudget: () => ({ allowed: false, fallbackProvider: 'ollama' }),
+      checkRouting: (_text, provider) =>
+        provider === 'ollama'
+          ? {
+              allowed: false,
+              suggestedProvider: 'anthropic',
+              classification: { sensitivity: 'internal', reasons: ['tool output'] },
+            }
+          : { allowed: true },
+    })
+
+    const out = await guardToolResults([harmless], [{ toolName: 'read_file' }], ctx, deps)
+
+    expect(out.kind).toBe('blocked')
+    expect(out.kind === 'blocked' && out.reason).toContain('budget')
     expect(out.kind === 'blocked' && out.reason).toContain('routing')
   })
 
