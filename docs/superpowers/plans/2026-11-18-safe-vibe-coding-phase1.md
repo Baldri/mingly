@@ -27,7 +27,7 @@ Gelten für **jeden** Task; die Anforderungen jedes Tasks schliessen sie stillsc
 - **Feature-Gate:** der Coding-Modus erbt `requireFeature('agentic_mode')` (Pro+). Neue IPC-Kanäle, die Coding auslösen, rufen es ebenfalls.
 - **Keine Shell-Interpretation** in `run_command`: kein `&&`, kein `|`, kein `;`, keine Substitution, `spawn(..., { shell: false })`.
 - **Keine Binärdatei aus `process.env.PATH` zur Laufzeit.** Nur `<projekt>/node_modules/.bin` oder ein in den Einstellungen gesetzter absoluter Pfad.
-- **Blockliste ist absolut** (`.env*`, `*.pem`, `*.key`, `*.p12`, `id_rsa*`, `.git/config`, `*.sqlite`). Kein Dialog, kein Modus hebt sie auf.
+- **Blockliste ist absolut** (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*`, `credentials.json`, `secrets.yaml`, `secrets.yml`, `.npmrc`, `.netrc`, `.git/config`, `*.sqlite`, `*.db`). Kein Dialog, kein Modus hebt sie auf. **Erweitert am 2026-11-19 (R38)** um die Namen, die im Task-8-Bericht als lesbar oder nur zufaellig geblockt aufgefallen waren: `*.pfx` ist das Geschwister von `*.p12`, `id_rsa*` allein ist veraltet (ed25519 ist ssh-keygens Standard), `credentials.json` und `secrets.*` sind nach ihrem Inhalt benannt, `.npmrc`/`.netrc` tragen Tokens, `*.db` ist die andere sqlite-Endung. **Nicht** zu `id_*` verallgemeinern — das fienge `id_generator.ts`.
 - **Kein `auto`-Modus in Phase 1.** Jede Schreibung wird abgenommen.
 - **Kein Provider-Wechsel mitten im Run — in keinem Run-Typ.** Der Run endet stattdessen mit Grund. (Verschärft am 2026-11-19 gegenüber der ursprünglichen Fassung «mitten im Coding-Run»; Begründung bei Task 4.)
 - **Sprache:** Code und Kommentare englisch, Dokumentation CH-Deutsch mit echten Umlauten, nie `ß`.
@@ -753,7 +753,7 @@ it('blocks secrets regardless of depth or mode', () => {
   }
 })
 it('does not block ordinary source files', () => {
-  for (const p of ['src/index.ts', 'README.md', '.env.example.md', 'keyboard.ts']) {
+  for (const p of ['src/index.ts', 'README.md', 'env.example.md', 'keyboard.ts']) {
     expect(isBlockedPath(p)).toBe(false)
   }
 })
@@ -763,7 +763,9 @@ it('detects a null byte in the head as binary', () => {
 })
 ```
 
-`'.env.example.md'` und `'keyboard.ts'` stehen absichtlich da: ein Muster, das an einer Zeichenfolge statt an einer Pfadstruktur hängt, fängt beide — und ein Guard, der falschen Alarm schlägt, wird abgeschaltet. Die Verhaltensmatrix prüft beide Richtungen: greift er, wo er soll, **und** schweigt er, wo er soll.
+`'keyboard.ts'` steht absichtlich da: eine Substring-Suche nach `*.key` fängt «keyboard» — und ein Guard, der falschen Alarm schlägt, wird abgeschaltet. Die Verhaltensmatrix prüft beide Richtungen: greift er, wo er soll, **und** schweigt er, wo er soll.
+
+**Korrektur am 2026-11-19 (Entscheid R37):** hier stand zuvor `'.env.example.md'` in derselben Liste. Das war ein Fehler in diesem Plan, kein Fehlalarm: `.env.example.md` ist wirklich ein Name aus der `.env`-Familie, und `.env*` steht auf der **absoluten** Blockliste. Der Widerspruch wird fail-closed aufgeloest — `.env*` blockt alles, auch `.env.example.md`. Eine Dokumentationsdatei kann man umbenennen (`env.example.md`, ohne Punkt); ein gelesenes Geheimnis nicht zurueckholen. Der strukturelle Punkt, auf den die Zeile hinauswollte, haengt an `keyboard.ts` und bleibt damit erhalten.
 
 - [ ] **Step 2: Lauf, der fehlschlägt**
 
@@ -801,6 +803,18 @@ git commit -m "feat(coding): add the coding read allowlist and the absolute bloc
 
 **Interfaces:**
 - Consumes: `ToolContext`, `ToolGate` (Task 7); `isBlockedPath`, `isReadableExtension`, `isProbablyBinary` (Task 8); `isRealPathWithin(requestedPath, allowedDir): Promise<boolean>` aus `src/main/file-access/real-path-guard.ts:91`; `hasPermission` (Task 3); `ProjectWorkspace` (Task 6).
+- **Pflicht, nicht optional (Entscheid R39) — Blockliste ZWEIMAL.** `isBlockedPath` laeuft
+  **vor** der Pfadaufloesung (eine Ablehnung verraet dann nichts ueber das Dateisystem)
+  **und erneut auf dem aufgeloesten `realpath`**. Ohne den zweiten Lauf ist die Blockliste
+  per Symlink zu umgehen: ein Link `src/config.ts -> ../.env` innerhalb des Grants
+  besteht die Namenspruefung (er heisst `config.ts`) **und** die Containment-Pruefung
+  (das Ziel liegt im Grant) — und liefert den Inhalt der `.env`. Befund 2 des
+  Task-8-Berichts, dort korrekt als abgeleitet und nicht gemessen gekennzeichnet. Ein
+  Test muss genau diesen Link legen und die Ablehnung belegen.
+- **Pflicht, nicht optional (Entscheid R40):** `list_files` wendet `isBlockedPath` auf
+  **jeden Eintrag** an. Sonst verraet die Liste selbst, welche geblockten Dateien
+  existieren — die Ablehnung beim Lesen kommt dann zu spaet. Befund 4 des
+  Task-8-Berichts.
 - **Pflicht, nicht optional (Entscheid R33):** `ToolContext` fuehrt den
   `ProjectWorkspace` nicht — Task 7 definiert ihn als `{ coding? }`, und der Executor
   haelt die Instanz nur als lokales `contextDir` in `execute`. Dieser Task **erweitert

@@ -432,6 +432,20 @@ Entscheidung ist eine bewusste Handlung des Nutzers statt ein Klick in einem Dia
 der Agent ausgeloest hat. Eine ueberschreibbare Blockliste waere ausserdem genau die
 Klickstrecke, die unter Anti-Ziele steht.
 
+**Welche Endungen lesbar sind — ein Entscheid, nicht ein Nebeneffekt (2026-11-19).** Die
+Leseliste enthaelt auch `conf`, `cfg`, `ini` und `properties`. Solche Dateien enthalten
+gelegentlich ein Passwort, und sie sind trotzdem lesbar. Der Unterschied zur `.env` ist
+der **Zweck**: eine `.env` existiert, um Geheimnisse zu halten — sie wird deshalb nie
+gelesen, ohne Dialog und ohne Ausnahme. Eine Konfigurationsdatei existiert, um zu
+konfigurieren, und enthaelt manchmal ein Geheimnis — sie wird gelesen, und findet der
+Inhalts-Guard darin eine Zugangsdaten-Fundstelle, fragt er nach Zustimmung. Die
+Blockliste ist die Schicht fuer «nie», der Guard die Schicht fuer «kommt darauf an».
+
+Dateien **ohne** Endung (`Dockerfile`, `Makefile`, `.gitignore` und aehnliche) stehen auf
+einer eigenen Namensliste, weil eine reine Endungsliste sie alle ablehnen wuerde — und
+das sind genau die Dateien, die jemand braucht, der eine Codebase erklaert bekommen
+will.
+
 ---
 
 ## 7. Was dem Builder ueberlassen bleibt
