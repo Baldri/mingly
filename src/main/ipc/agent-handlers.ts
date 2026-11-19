@@ -10,6 +10,7 @@ import { getAgentExecutor } from '../agent/agent-executor'
 import { getAgentComparisonService } from '../services/agent-comparison-service'
 import { getSubagentOrchestrator } from '../agent/subagent-orchestrator'
 import { getConsentBroker } from '../coding/consent-broker'
+import { exportCodingAudit } from '../coding/coding-audit'
 import { acceptEditsForRun, rejectEditsForRun, undoRunForDirectory } from '../coding/apply-edits'
 import { wrapHandler, requireFeature } from './ipc-utils'
 import type {
@@ -132,6 +133,29 @@ export function registerAgentHandlers(): void {
       requireFeature('agentic_mode')
       const outcome = await undoRunForDirectory(runId, directoryId)
       return { success: outcome.kind === 'restored', outcome }
+    }
+  )
+
+  // ========================================
+  // Coding audit export — the one coding channel WITHOUT requireFeature, on purpose
+  // ========================================
+  //
+  // The gate guards channels that START or CONTINUE coding work. This one only
+  // reads rows this app wrote about work that already happened, and returns
+  // paths and numbers (never content, see coding-audit.ts). Gating it would lock
+  // a customer out of their own records exactly when a plan lapses or the
+  // feature is switched off, which is when a compliance officer asks for them.
+  // The renderer's `since` and `limit` are inputs: exportCodingAudit refuses a
+  // `since` it cannot read (it never widens the export) and bounds the size.
+
+  wrapHandler(
+    IPC_CHANNELS.CODING_EXPORT_AUDIT,
+    (since?: unknown, limit?: unknown) => {
+      const csv = exportCodingAudit({
+        since: since as string | undefined,
+        limit: limit as number | undefined
+      })
+      return { success: true, csv }
     }
   )
 

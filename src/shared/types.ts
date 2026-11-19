@@ -727,6 +727,10 @@ export const IPC_CHANNELS = {
   CODING_REJECT_EDITS: 'coding:reject-edits',
   CODING_UNDO_RUN: 'coding:undo-run',
 
+  // Coding audit: the export a compliance officer receives (CSV text). Reads
+  // audit rows, starts nothing, so it is not gated like the channels above.
+  CODING_EXPORT_AUDIT: 'coding:export-audit',
+
   // Subagent Orchestration (Master → N Subtasks → N ReAct → Merge)
   SUBAGENT_DECOMPOSE: 'subagent:decompose',
   SUBAGENT_START: 'subagent:start',

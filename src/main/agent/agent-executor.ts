@@ -33,6 +33,13 @@ import { getToolRegistry, type ToolContext, type ToolRegistry } from './tool-reg
 import { StepPaths } from './step-paths'
 import { getEditProposalStore } from '../coding/edit-proposals'
 import { getRunDirectoryRegistry } from '../coding/run-directories'
+import {
+  currentPolicyVersion,
+  logCodingGuardBlocked,
+  markGuardBlocked,
+  markGuardRedirected,
+  recordRunAuditContext
+} from '../coding/coding-audit'
 import { getCodingModeStore } from '../coding/coding-mode-store'
 import { ensureProjectWorkspace } from '../coding/project-workspace'
 import { getAgentContextManager } from './agent-context-manager'
@@ -257,6 +264,10 @@ export class AgentExecutor {
         // The main process remembers which directory this run belongs to; the
         // accept and undo handlers validate the renderer's claim against it.
         getRunDirectoryRegistry().record(runId, coding.directoryId)
+        // What the apply will need for its audit entries, which it cannot know
+        // later: the provider and model this run acts under (after preflight, so
+        // a fallback is the one recorded) and, below, what the guard did.
+        recordRunAuditContext(runId, { provider, model })
         // Mode `off` is a plain run: no workspace (creating one could even
         // throw in a project where a plain run works), no tool context. The
         // mismatch check above still applies to it.
@@ -451,6 +462,9 @@ export class AgentExecutor {
             content: rawToolResults[index].content,
           })
           rawToolResults[index] = { ...rawToolResults[index], content: resolution.content }
+          // Anonymised or withheld content is a redirect worth a reviewer's eye;
+          // content the user chose to send as it was is not.
+          if (coding && resolution.effect !== 'sent') markGuardRedirected(runId)
 
           guardFrom = index + 1
           loopGuard = await guardToolResults(
@@ -468,6 +482,21 @@ export class AgentExecutor {
         if (loopGuard.kind === 'blocked') {
           run.status = 'failed'
           run.error = loopGuard.reason
+          if (coding && toolCtx) {
+            // Its own audit action. The reason is NOT passed on: it names the
+            // origin and can quote the finding.
+            markGuardBlocked(runId)
+            try {
+              logCodingGuardBlocked(runId, {
+                projectPath: coding.projectPath,
+                provider,
+                model,
+                policyVersion: currentPolicyVersion()
+              })
+            } catch {
+              // A failing audit store does not change what the guard decided.
+            }
+          }
           break
         }
         // `provider` is deliberately NOT reassigned from the guard: a budget or

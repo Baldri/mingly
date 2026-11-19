@@ -57,6 +57,7 @@ import { ensureProjectWorkspace, type ProjectWorkspace } from './project-workspa
 import { writeFileAtomic, ContentChanged } from './atomic-write'
 import { getSnapshotLedger, type SnapshotLedger } from './snapshot-ledger'
 import { getRunDirectoryRegistry, type RunDirectoryRegistry } from './run-directories'
+import { currentPolicyVersion, logCodingChange, logCodingRunUndone, resolveRunAuditContext } from './coding-audit'
 import type { ProposedEdit } from '../../shared/coding-types'
 
 // ---------------------------------------------------------------------------
@@ -710,9 +711,48 @@ async function applyInner(
     }
 
     await clearMarker(batchDir)
+    auditAppliedChanges(runId, scope.realRoot, entries, edits)
     return { kind: 'applied', paths: entries.map((e) => e.rel), edits }
   } finally {
     busyProjects.delete(scope.realRoot)
+  }
+}
+
+/**
+ * One audit entry per file that was written, after the whole package is on disk
+ * and never for a refused or rolled-back apply. Everything it passes on is a
+ * path or a number (see coding-audit.ts for why nothing else can be recorded).
+ *
+ * A failing audit store must not turn a finished apply into a refusal: the
+ * files ARE written, and "nothing was written" would be false. The store's own
+ * logger reports the failure.
+ * DEBT: a lost audit row is only logged -> block the apply on a failed audit
+ * write once the audit store is durable enough to make that refusal rare.
+ */
+function auditAppliedChanges(
+  runId: string,
+  projectRoot: string,
+  entries: ManifestEntry[],
+  edits: ProposedEdit[]
+): void {
+  try {
+    const run = resolveRunAuditContext(runId)
+    const policyVersion = currentPolicyVersion()
+    entries.forEach((entry, i) => {
+      logCodingChange(runId, {
+        projectPath: projectRoot,
+        filePath: entry.rel,
+        addedLines: edits[i].addedLines,
+        removedLines: edits[i].removedLines,
+        provider: run.provider,
+        model: run.model,
+        policyVersion,
+        guardRedirected: run.guardRedirected,
+        guardBlocked: run.guardBlocked
+      })
+    })
+  } catch {
+    // See above: the apply stands.
   }
 }
 
@@ -919,6 +959,11 @@ export async function undoRun(
         await sweepStaleTemps(scope, manifest.entries)
         await clearMarker(batchDir)
       }
+    }
+    try {
+      logCodingRunUndone(runId, { projectPath: scope.realRoot, restored, skipped, interrupted: interruptedRun })
+    } catch {
+      // The restore is done; a failing audit store does not undo it.
     }
     return interruptedRun ? { restored, skipped, interrupted: true } : { restored, skipped }
   } finally {

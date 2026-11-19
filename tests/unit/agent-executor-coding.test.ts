@@ -17,17 +17,37 @@ import type { CodingMode } from '../../src/shared/coding-types'
 import type { ToolContext } from '../../src/main/agent/tool-registry'
 import { getEditProposalStore } from '../../src/main/coding/edit-proposals'
 import { getRunDirectoryRegistry } from '../../src/main/coding/run-directories'
+import { getRunAuditContext } from '../../src/main/coding/coding-audit'
+
+// What the guard does to the big tool result: nothing, block it as an injection,
+// or find a sensitive value in it (which asks the user). Default: nothing.
+const guardCfg = vi.hoisted(() => ({ mode: 'clean' as 'clean' | 'inject' | 'sensitive', big: 'x'.repeat(5000) }))
 
 vi.mock('../../src/main/security/request-guard-deps', () => ({
   getGuardDeps: () => ({
-    sanitize: () => ({ safe: true, riskScore: 0, warnings: [] }),
-    scanSensitive: () => ({ hasSensitiveData: false, matches: [], overallRiskLevel: 'none' }),
-    checkUploadPermission: async () => ({ decision: 'allowed', requiresUserConsent: false }),
+    sanitize: (text: string) =>
+      guardCfg.mode === 'inject' && text === guardCfg.big
+        ? { safe: false, sanitized: text, riskScore: 100, warnings: ['injection'] }
+        : { safe: true, riskScore: 0, warnings: [] },
+    scanSensitive: (text: string) =>
+      guardCfg.mode === 'sensitive' && text.includes(guardCfg.big)
+        ? { hasSensitiveData: true, matches: [], overallRiskLevel: 'high' }
+        : { hasSensitiveData: false, matches: [], overallRiskLevel: 'none' },
+    checkUploadPermission: async () =>
+      guardCfg.mode === 'sensitive'
+        ? { decision: 'ask', requiresUserConsent: true, request: {} }
+        : { decision: 'allowed', requiresUserConsent: false },
     checkBudget: () => ({ allowed: true }),
     checkRouting: () => ({ allowed: true }),
-    isCloudProvider: () => false,
+    isCloudProvider: () => guardCfg.mode === 'sensitive',
     scanOutput: () => ({ violations: [] }),
   }),
+}))
+
+// The audit trail goes through the activity logger; a double keeps what was logged.
+const auditLog = vi.hoisted(() => ({ rows: [] as Array<{ action: string; entityId: string; details: Record<string, unknown> | null }> }))
+vi.mock('../../src/main/audit/activity-logger', () => ({
+  getActivityLogger: () => ({ log: (e: { action: string; entityId: string; details: Record<string, unknown> | null }) => void auditLog.rows.push(e), query: () => [] }),
 }))
 
 // What the model sees on each call: a snapshot of the tool messages, taken at call time.
@@ -125,6 +145,8 @@ beforeEach(() => {
   toolCallHook = undefined
   toolListCtx = []
   storedModes = {}
+  guardCfg.mode = 'clean'
+  auditLog.rows.length = 0
   projectPath = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-coding-wiring-')))
   executor = new AgentExecutor({
     maxSteps: 5,
@@ -451,5 +473,63 @@ describe('edit proposals do not outlive their run', () => {
 
     const { records } = getEditProposalStore().auditRecords(run.id)
     expect(records.some((r) => r.outcome === 'package-abandoned' && r.edits === 1)).toBe(true)
+  })
+})
+
+describe('coding run audit context (Task 13)', () => {
+  const coding = (): { directoryId: string; projectPath: string; mode: 'propose' } => ({ directoryId: 'dir-1', projectPath, mode: 'propose' })
+
+  it('records the provider and model the run acts under, so the apply can audit them', async () => {
+    storedModes['dir-1'] = 'propose'
+    const run = await executor.execute('task', 'anthropic', 'claude-opus-5', [], undefined, coding())
+    expect(getRunAuditContext(run.id)).toEqual({
+      provider: 'anthropic',
+      model: 'claude-opus-5',
+      guardRedirected: false,
+      guardBlocked: false
+    })
+  })
+
+  it('records nothing for a run without coding options', async () => {
+    const plain = await executor.execute('task', 'anthropic', 'm')
+    expect(getRunAuditContext(plain.id)).toBeUndefined()
+  })
+
+  it('records the guard blocking a coding run as coding.guard_blocked, without the reason text', async () => {
+    storedModes['dir-1'] = 'propose'
+    guardCfg.mode = 'inject'
+    llmResponses = [toolCallStep('tc-1')]
+    const run = await executor.execute('task', 'anthropic', 'claude-opus-5', [], undefined, coding())
+    expect(run.status).toBe('failed')
+    expect(getRunAuditContext(run.id)).toMatchObject({ guardBlocked: true })
+    const blocked = auditLog.rows.filter((r) => r.action === 'coding.guard_blocked')
+    expect(blocked).toHaveLength(1)
+    expect(blocked[0].entityId).toBe(run.id)
+    expect(blocked[0].details).toMatchObject({ projectPath, provider: 'anthropic', model: 'claude-opus-5', guardBlocked: true })
+    expect(JSON.stringify(blocked[0].details)).not.toContain('injection')
+  })
+
+  it('does not write coding.guard_blocked for a plain run the guard blocks', async () => {
+    guardCfg.mode = 'inject'
+    llmResponses = [toolCallStep('tc-1')]
+    const run = await executor.execute('task', 'anthropic', 'm')
+    expect(run.status).toBe('failed')
+    expect(auditLog.rows.filter((r) => r.action === 'coding.guard_blocked')).toEqual([])
+  })
+
+  it('marks the run when the user withheld a file at the consent question, and not when they sent it', async () => {
+    storedModes['dir-1'] = 'propose'
+    for (const [choice, expected] of [['drop-file', true], ['send', false]] as const) {
+      guardCfg.mode = 'sensitive'
+      llmCallCount = 0
+      llmResponses = [toolCallStep('tc-1')]
+      const asker = new AgentExecutor(
+        { maxSteps: 5, maxTokensPerRun: 50000, toolTimeoutMs: 5000, runTimeoutMs: 10000 },
+        { consentBroker: { askWithSource: async () => ({ choice, decidedBy: 'user' }), cancel: () => undefined } as never }
+      )
+      const run = await asker.execute('task', 'anthropic', 'm', [], undefined, coding())
+      expect(run.status).toBe('completed')
+      expect(getRunAuditContext(run.id)?.guardRedirected).toBe(expected)
+    }
   })
 })

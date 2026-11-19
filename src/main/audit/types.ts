@@ -40,3 +40,6 @@ export type KnownAction =
   | 'budget.warning'
   | 'session.create'
   | 'session.error'
+  | 'coding.change_applied'
+  | 'coding.run_undone'
+  | 'coding.guard_blocked'

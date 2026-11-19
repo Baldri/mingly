@@ -25,6 +25,21 @@ import { packageDigest, createEditProposalStore, type EditProposalStore } from '
 import { ensureProjectWorkspace, type ProjectWorkspace } from '../../src/main/coding/project-workspace'
 import type { AllowedDirectory } from '../../src/shared/file-access-types'
 import type { CodingMode } from '../../src/shared/coding-types'
+import { recordRunAuditContext, markGuardRedirected } from '../../src/main/coding/coding-audit'
+import { DEFAULT_POLICY } from '../../src/main/policy/policy-engine'
+
+// The audit trail is written through the activity logger; a double that keeps
+// what was logged (and can be made to fail) lets these tests read it without a database.
+const audit = vi.hoisted(() => ({ rows: [] as Array<{ action: string; entityId: string; details: Record<string, unknown> | null }>, fail: false }))
+vi.mock('../../src/main/audit/activity-logger', () => ({
+  getActivityLogger: () => ({
+    log(entry: { action: string; entityId: string; details: Record<string, unknown> | null }) {
+      if (audit.fail) throw new Error('audit store down')
+      audit.rows.push(entry)
+    },
+    query: () => []
+  })
+}))
 
 const RUN = 'run1'
 const ORIGINAL = 'line one\nconst a = 1\nline three\nfooter text\n'
@@ -1461,5 +1476,121 @@ describe('writeFileAtomic as an exported helper', () => {
     expect(read(target)).toBe('hello\n')
     expect(sha(read(target))).toBe(sha('hello\n'))
     expect(leftovers(project)).toEqual([])
+  })
+})
+
+describe('audit: one entry per accepted change, none for anything that was not written', () => {
+  beforeEach(() => {
+    audit.rows.length = 0
+    audit.fail = false
+  })
+
+  it('writes one coding.change_applied per file with the run context and the policy version', async () => {
+    write('src/a.ts', ORIGINAL)
+    write('b.ts', 'x = 1\n')
+    propose('src/a.ts', 'const a = 1', 'const a = 2\nconst extra = 3')
+    propose('b.ts', 'x = 1', 'x = 2')
+    recordRunAuditContext(RUN, { provider: 'anthropic', model: 'claude-opus-5' })
+    markGuardRedirected(RUN)
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    expect(out.kind).toBe('applied')
+    expect(audit.rows.map((r) => r.action)).toEqual(['coding.change_applied', 'coding.change_applied'])
+    expect(audit.rows.every((r) => r.entityId === RUN)).toBe(true)
+    expect(audit.rows[0].details).toEqual({
+      projectPath: project,
+      filePath: 'src/a.ts',
+      addedLines: 2,
+      removedLines: 1,
+      provider: 'anthropic',
+      model: 'claude-opus-5',
+      policyVersion: DEFAULT_POLICY.version,
+      guardRedirected: true,
+      guardBlocked: false
+    })
+    expect(audit.rows[1].details).toMatchObject({ filePath: 'b.ts', addedLines: 1, removedLines: 1 })
+  })
+
+  it('records a run nobody described as unknown, with the guard assumed to have acted', async () => {
+    write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2', 'runA')
+    const out = await applyPendingEdits('runA', await ensureProjectWorkspace(project, 'runA'), grants[0], deps())
+    expect(out.kind).toBe('applied')
+    expect(audit.rows[0].details).toMatchObject({
+      provider: 'unknown',
+      model: 'unknown',
+      guardRedirected: true,
+      guardBlocked: true
+    })
+  })
+
+  it('never puts file content into an entry', async () => {
+    write('a.ts', 'const key = "sk-live-4242424242424242"\n')
+    propose('a.ts', 'sk-live-4242424242424242', 'sk-live-0000000000000000')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    const text = JSON.stringify(audit.rows)
+    expect(text).not.toContain('sk-live')
+    expect(text).not.toContain('const key')
+  })
+
+  it('writes nothing when the apply is refused', async () => {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    fs.writeFileSync(a, ORIGINAL.replace('line one', 'line ONE'))
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    expect(out.kind).toBe('refused')
+    expect(audit.rows).toEqual([])
+  })
+
+  it('writes nothing when a later file refuses and the earlier one is rolled back', async () => {
+    const a = write('a.ts', ORIGINAL)
+    const b = write('b.ts', 'x = 1\n')
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    propose('b.ts', 'x = 1', 'x = 2')
+    extraDeps = {
+      hooks: {
+        afterVerify: (index) => {
+          if (index === 1) fs.writeFileSync(b, 'x = 1\nuser edit\n')
+        }
+      }
+    }
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    expect(out.kind).toBe('refused')
+    expect(read(a)).toBe(ORIGINAL)
+    expect(audit.rows).toEqual([])
+  })
+
+  it('does not turn a finished apply into a refusal when the audit store fails', async () => {
+    const a = write('a.ts', ORIGINAL)
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    audit.fail = true
+    const out = await applyPendingEdits(RUN, ws, grants[0], deps())
+    // The files ARE written: telling the user "nothing was written" would be false.
+    expect(out.kind).toBe('applied')
+    expect(read(a)).toContain('const a = 2')
+  })
+
+  it('writes one coding.run_undone with counts and reason codes when an undo completes', async () => {
+    const a = write('a.ts', ORIGINAL)
+    const b = write('b.ts', 'x = 1\n')
+    propose('a.ts', 'const a = 1', 'const a = 2')
+    propose('b.ts', 'x = 1', 'x = 2')
+    expect((await applyPendingEdits(RUN, ws, grants[0], deps())).kind).toBe('applied')
+    fs.writeFileSync(b, 'x = 2\nlater work\n')
+    audit.rows.length = 0
+    const result = await undoRun(RUN, ws, { ledger })
+    expect(result.restored).toEqual(['a.ts'])
+    expect(audit.rows).toHaveLength(1)
+    expect(audit.rows[0]).toMatchObject({
+      action: 'coding.run_undone',
+      entityId: RUN,
+      details: {
+        projectPath: project,
+        restoredCount: 1,
+        skippedCount: 1,
+        interrupted: false,
+        skippedReasons: { 'changed-since-apply': 1 }
+      }
+    })
+    expect(read(a)).toBe(ORIGINAL)
   })
 })
