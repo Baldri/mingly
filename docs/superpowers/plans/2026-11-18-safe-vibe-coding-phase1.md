@@ -29,7 +29,7 @@ Gelten für **jeden** Task; die Anforderungen jedes Tasks schliessen sie stillsc
 - **Keine Binärdatei aus `process.env.PATH` zur Laufzeit.** Nur `<projekt>/node_modules/.bin` oder ein in den Einstellungen gesetzter absoluter Pfad.
 - **Blockliste ist absolut** (`.env*`, `*.pem`, `*.key`, `*.p12`, `id_rsa*`, `.git/config`, `*.sqlite`). Kein Dialog, kein Modus hebt sie auf.
 - **Kein `auto`-Modus in Phase 1.** Jede Schreibung wird abgenommen.
-- **Kein Provider-Wechsel mitten im Coding-Run.** Der Run endet stattdessen mit Grund.
+- **Kein Provider-Wechsel mitten im Run — in keinem Run-Typ.** Der Run endet stattdessen mit Grund. (Verschärft am 2026-11-19 gegenüber der ursprünglichen Fassung «mitten im Coding-Run»; Begründung bei Task 4.)
 - **Sprache:** Code und Kommentare englisch, Dokumentation CH-Deutsch mit echten Umlauten, nie `ß`.
 - **Conventional Commits.** Jeder Task endet mit einem Commit.
 
@@ -381,7 +381,9 @@ Der Kern des Features. Nach diesem Task ist der Nachweis erbracht, **bevor** es 
 Verhalten, abschliessend:
 - **Ein `guardInput`-Aufruf pro Ergebnis**, mit `texts: [results[i].content]`. `guardInput` sanitisiert nur `texts[texts.length - 1]` (`request-guard.ts:53`) — ein Array aus drei Ergebnissen liesse zwei davon ungeprüft auf Injection, und Injection in einer Datei, die der Agent selbst gelesen hat, ist die zentrale Coding-Bedrohung.
 - **Vor** `compactToolResult`. Die Kompaktierung ersetzt grosse Ergebnisse durch eine Referenz plus `result.content.substring(0, 200)` — roh. Danach zu prüfen heisst, den Teil zu prüfen, der nicht mehr mitgeht, und den durchzulassen, der bleibt.
-- Danach **ein** `guardDispatch`-Aufruf auf dem verbundenen neuen Inhalt plus Progress-Recitation. Liefert er einen **anderen** Provider zurück und `coding` ist gesetzt → `blocked`, nicht wechseln.
+- Danach **ein** `guardDispatch`-Aufruf auf dem verbundenen neuen Inhalt plus Progress-Recitation. Liefert er einen **anderen** Provider zurück → `blocked`, nicht wechseln.
+
+  **Verschärft am 2026-11-19, nach einem Befund der automatischen Sicherheitsprüfung.** Die ursprüngliche Fassung sperrte den Wechsel nur, wenn `coding` gesetzt war. Das war falsch: `guardInput` bewertet den Sensitivdaten-Scan und die Zustimmung gegen den Provider **vor** dem Dispatch. Ein Run auf einem lokalen Anbieter überspringt den Zweig vollständig (`isCloudProvider` false), Tool-Ergebnisse sammeln sich ungeprüft an, und ein Budget-Fallback auf einen Cloud-Anbieter schickt den ganzen Stapel. Abschnitt 6.1 des Spec führt genau dieses Argument — der Satz, der es auf den Coding-Modus einschränkt, ist damit überholt. **Kosten:** ein Run, dessen Provider-Budget mitten im Lauf erschöpft ist, endet mit Grund statt auf einen Ersatzanbieter zu fallen.
 - `postflightGuard(llmResponse.text, systemPrompt ?? '', deps)` nach jedem LLM-Aufruf; `ok === false` → Run endet.
 - Jedes `blocked` setzt `run.status = 'failed'` und `run.error` auf den Grund, wie der heutige Preflight (Zeile 169-175).
 
