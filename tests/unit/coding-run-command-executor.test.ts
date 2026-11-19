@@ -55,7 +55,7 @@ vi.mock('../../src/main/file-access/file-access-manager', () => ({
         path: projectPath,
         name: 'p',
         location: 'local',
-        permissions: ['read'],
+        permissions: ['read', 'edit'],
         recursive: true,
         grantedAt: 1,
         confirmedAt: 1
@@ -141,6 +141,8 @@ beforeEach(() => {
   storedModes = { 'dir-1': 'propose-run' }
   projectPath = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-run-exec-')))
   binDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-run-exec-bin-')))
+  // npm only starts in a root that has its own package.json.
+  fs.writeFileSync(path.join(projectPath, 'package.json'), '{"scripts":{"test":"x"}}')
   executor = new AgentExecutor({
     maxSteps: 5,
     maxTokensPerRun: 50000,

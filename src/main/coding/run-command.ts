@@ -35,7 +35,7 @@ import { CODING_MODE_ORDER, parseCodingMode } from '../../shared/coding-types'
 import { atLeast } from '../policy/policy-types'
 import { isRealPathWithin, resolveRealPath } from '../file-access/real-path-guard'
 import { SimpleStore } from '../utils/simple-store'
-import { COMMAND_UNAVAILABLE, planCommandDetailed } from './command-allowlist'
+import { COMMAND_UNAVAILABLE, ROOT_MARKS, planCommandDetailed, type CommandPlan, type CommandTool } from './command-allowlist'
 import { isBlockedPath, resolvePathSegments } from './path-policy'
 import {
   defaultReadToolDeps,
@@ -141,6 +141,17 @@ class RunBudget {
     entry.count += 1
     entry.reservedMs += grant
     return grant
+  }
+
+  /**
+   * Undo a reservation of a command that never started: the slot and its time
+   * go back, so a refusal costs nothing.
+   */
+  release(runId: string, grantedMs: number): void {
+    const entry = this.runs.get(runId)
+    if (!entry) return
+    entry.count = Math.max(0, entry.count - 1)
+    entry.reservedMs = Math.max(0, entry.reservedMs - grantedMs)
   }
 
   /** Give back the part of the reservation the command did not use. */
@@ -291,14 +302,21 @@ function runProcess(
 // package.json scripts, binary and path checks (all touch the file system)
 // ---------------------------------------------------------------------------
 
-async function readNpmScripts(scope: Scope): Promise<string[]> {
+/**
+ * Script names of the granted root's OWN package.json, or null when it has
+ * none (absent, unreadable, outside the grant, not an object). npm resolves
+ * its prefix by walking UP from the working directory, so a root without a
+ * package.json would run a parent's scripts, outside the grant: null means
+ * every npm command is refused.
+ */
+async function readNpmScripts(scope: Scope): Promise<string[] | null> {
   try {
     const resolved = await resolveReadableFile('package.json', scope)
-    if (resolved.kind !== 'ok') return []
+    if (resolved.kind !== 'ok') return null
     const stat = await fs.promises.stat(resolved.realTarget)
-    if (!stat.isFile() || stat.size > PACKAGE_JSON_MAX_BYTES) return []
+    if (!stat.isFile() || stat.size > PACKAGE_JSON_MAX_BYTES) return null
     const parsed: unknown = JSON.parse(await fs.promises.readFile(resolved.realTarget, 'utf8'))
-    if (typeof parsed !== 'object' || parsed === null) return []
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
     const scripts = (parsed as { scripts?: unknown }).scripts
     if (typeof scripts !== 'object' || scripts === null || Array.isArray(scripts)) return []
     const names: string[] = []
@@ -308,8 +326,28 @@ async function readNpmScripts(scope: Scope): Promise<string[]> {
     }
     return names
   } catch {
-    return []
+    return null
   }
+}
+
+/**
+ * Does the granted root carry a mark of this tool's own root (ROOT_MARKS)?
+ * An entry counts only if it is a file (git: file or directory) and, when it
+ * is a link, only if its real target stays inside the grant.
+ */
+async function rootHasMark(tool: CommandTool, scope: Scope): Promise<boolean> {
+  for (const name of ROOT_MARKS[tool]) {
+    try {
+      const entry = path.join(scope.realRoot, name)
+      const link = await fs.promises.lstat(entry)
+      if (link.isSymbolicLink() && !(await isRealPathWithin(entry, scope.root))) continue
+      const stat = await fs.promises.stat(entry)
+      if (stat.isFile() || (tool === 'git' && stat.isDirectory())) return true
+    } catch {
+      // Absent or unreadable: not a mark.
+    }
+  }
+  return false
 }
 
 async function binaryIsRunnable(file: string, projectBin: boolean, scope: Scope): Promise<boolean> {
@@ -389,23 +427,11 @@ async function runCommand(
     const pre = planCommandDetailed(command as string, projectPath, interpreters, [])
     if (pre.plan.kind === 'refused' && pre.plan.reason !== COMMAND_UNAVAILABLE) return pre.plan.reason
 
-    // 2. Environment: grant and workspace, then package.json, then the binary.
-    const scope = await resolveScope(ctx, { findGrant: deps.findGrant })
-    if (!scope) return COMMAND_UNAVAILABLE
-    let detailed = pre
-    if (pre.plan.kind === 'refused') {
-      detailed = planCommandDetailed(command as string, projectPath, interpreters, await readNpmScripts(scope))
-    }
-    const plan = detailed.plan
-    if (plan.kind !== 'run') return plan.reason
-
-    const projectBin = plan.file.startsWith(path.join(scope.root, 'node_modules', '.bin') + path.sep)
-    if (!(await binaryIsRunnable(plan.file, projectBin, scope))) return COMMAND_UNAVAILABLE
-    for (const arg of detailed.pathArgs) {
-      if (!(await pathArgIsSafe(arg, scope))) return COMMAND_UNAVAILABLE
-    }
-
-    // 3. Budget. Only a command that is about to start counts.
+    // 2. Budget, BEFORE any check that touches the environment. A budget
+    //    outcome placed after them would make every environment check
+    //    observable through it. A command that is then refused on environment
+    //    grounds gives its reservation back (release), so a refusal costs
+    //    nothing and only a command that actually starts stays charged.
     const runId = ctx.runId
     if (typeof runId !== 'string' || runId === '') return COMMAND_UNAVAILABLE
     // The command must be dead before the registry's own timeout fires, or the
@@ -414,25 +440,75 @@ async function runCommand(
     const timeoutMs = budget.reserve(runId, wantMs)
     if (timeoutMs === null) return BUDGET_SPENT
 
-    const resultBudget = Math.max(1000, registry.getMaxResultChars() - HEADER_RESERVE)
-    const headMax = Math.floor(resultBudget / 2)
-    const started = Date.now()
-    const res = await runProcess(
-      plan.file,
-      plan.args,
-      plan.cwd,
-      childEnv(plan.file, interpreters),
-      timeoutMs,
-      headMax,
-      resultBudget - headMax,
-      deps.limits.hardOutputCap
-    )
-    budget.refund(runId, timeoutMs - (Date.now() - started))
-    if (res === null) return COMMAND_UNAVAILABLE
-    return describeResult(res, timeoutMs)
+    let started = false
+    try {
+      // 3. Environment: grant and workspace, package.json, binary, path args.
+      //    Running needs `edit` on the grant, like edit_file: a command can
+      //    write files, so it is the stronger tool and may not ask for less.
+      const scope = await resolveScope(ctx, { findGrant: deps.findGrant }, true)
+      if (!scope) return COMMAND_UNAVAILABLE
+      let detailed = pre
+      let scripts: string[] | null = []
+      if (pre.plan.kind === 'refused' || pre.tool === 'npm') {
+        scripts = await readNpmScripts(scope)
+        detailed = planCommandDetailed(command as string, projectPath, interpreters, scripts ?? [])
+      }
+      const plan = detailed.plan
+      if (plan.kind !== 'run') return plan.reason
+      // The granted root must be the root THIS tool will use: every allowlisted
+      // tool searches upward, so without its own mark it would run outside the
+      // grant. For npm the package.json read above is the mark (and must be valid).
+      if (detailed.tool === undefined) return COMMAND_UNAVAILABLE
+      if (detailed.tool === 'npm' ? scripts === null : !(await rootHasMark(detailed.tool, scope))) {
+        return COMMAND_UNAVAILABLE
+      }
+
+      const projectBin = plan.file.startsWith(path.join(scope.root, 'node_modules', '.bin') + path.sep)
+      if (!(await binaryIsRunnable(plan.file, projectBin, scope))) return COMMAND_UNAVAILABLE
+      for (const arg of detailed.pathArgs) {
+        if (!(await pathArgIsSafe(arg, scope))) return COMMAND_UNAVAILABLE
+      }
+
+      started = true
+      return await execute(plan, interpreters, timeoutMs, deps, registry, budget, runId)
+    } finally {
+      if (!started) budget.release(runId, timeoutMs)
+    }
   } catch {
     return COMMAND_UNAVAILABLE
   }
+}
+
+async function execute(
+  plan: Extract<CommandPlan, { kind: 'run' }>,
+  interpreters: Readonly<Record<string, string>>,
+  timeoutMs: number,
+  deps: RunCommandDeps,
+  registry: ToolRegistry,
+  budget: RunBudget,
+  runId: string
+): Promise<string> {
+  const resultBudget = Math.max(1000, registry.getMaxResultChars() - HEADER_RESERVE)
+  const headMax = Math.floor(resultBudget / 2)
+  const began = Date.now()
+  const res = await runProcess(
+    plan.file,
+    plan.args,
+    plan.cwd,
+    childEnv(plan.file, interpreters),
+    timeoutMs,
+    headMax,
+    resultBudget - headMax,
+    deps.limits.hardOutputCap
+  )
+  if (res === null) {
+    // Nothing started (spawn failure): same text as every environment refusal,
+    // and the reservation goes back like for any other refusal.
+    budget.release(runId, timeoutMs)
+    return COMMAND_UNAVAILABLE
+  }
+  budget.refund(runId, timeoutMs - (Date.now() - began))
+  return describeResult(res, timeoutMs)
 }
 
 export function registerRunCommand(registry: ToolRegistry, deps: Partial<RunCommandDeps> = {}): void {

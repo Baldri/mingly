@@ -33,7 +33,7 @@ function grant(): AllowedDirectory {
     path: project,
     name: 'p',
     location: 'local',
-    permissions: ['read'],
+    permissions: ['read', 'edit'],
     recursive: true,
     grantedAt: 1,
     confirmedAt: 1
@@ -101,6 +101,10 @@ beforeEach(() => {
   outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-run-out-')))
   interpreters = {}
   grants = [grant()]
+  // The tool-root marks every allowlisted tool needs (package.json is left to
+  // each test: its content matters). The marks suite below starts WITHOUT them.
+  fs.mkdirSync(path.join(project, '.git'))
+  for (const m of ['tsconfig.json', 'vitest.config.ts', 'pytest.ini']) fs.writeFileSync(path.join(project, m), '')
 })
 
 afterEach(() => {
@@ -327,6 +331,187 @@ describe('run_command path arguments are re-checked on disk', () => {
     fs.mkdirSync(path.join(project, 'tests'))
     fs.symlinkSync(path.join(project, '.env'), path.join(project, 'tests', 'e.py'))
     expect(await run(makeRegistry(), 'pytest tests/e.py')).toBe(COMMAND_UNAVAILABLE)
+  })
+})
+
+describe('run_command stays inside the grant (fix round 1)', () => {
+  it('I-1: npm test does not start when the granted root has no package.json of its own', async () => {
+    // npm would walk UP from the granted root and run the parent's script.
+    const marker = path.join(outside, 'npm-started.marker')
+    fake('npm', `touch "${marker}"\necho ok`)
+    fs.writeFileSync(path.join(project, '..', 'package.json'), JSON.stringify({ scripts: { test: 'echo PARENT' } }))
+    try {
+      expect(await run(makeRegistry(), 'npm test')).toBe(COMMAND_UNAVAILABLE)
+      expect(fs.existsSync(marker)).toBe(false)
+    } finally {
+      fs.rmSync(path.join(project, '..', 'package.json'), { force: true })
+    }
+  })
+
+  it('I-1: positive control, with its own package.json npm test does start', async () => {
+    const marker = path.join(outside, 'npm-started.marker')
+    fake('npm', `touch "${marker}"\necho ok`)
+    fs.writeFileSync(path.join(project, 'package.json'), JSON.stringify({ scripts: { test: 'x' } }))
+    expect(await run(makeRegistry(), 'npm test')).toContain('exit code 0')
+    expect(fs.existsSync(marker)).toBe(true)
+  })
+
+  it('I-1: a package.json that is a link out of the grant does not count', async () => {
+    const marker = path.join(outside, 'npm-started.marker')
+    fake('npm', `touch "${marker}"\necho ok`)
+    fs.writeFileSync(path.join(outside, 'package.json'), JSON.stringify({ scripts: { test: 'x' } }))
+    fs.symlinkSync(path.join(outside, 'package.json'), path.join(project, 'package.json'))
+    expect(await run(makeRegistry(), 'npm test')).toBe(COMMAND_UNAVAILABLE)
+    expect(fs.existsSync(marker)).toBe(false)
+  })
+
+  it('I-2: once the budget is spent, every environment outcome reads the same', async () => {
+    fake('git', 'echo ok')
+    const registry = makeRegistry({ maxCommands: 1 })
+    const ctx = await ctxFor('rb')
+    expect(await run(registry, 'git status', ctx)).toContain('exit code 0')
+    // would pass every environment check / fails the interpreter check / fails the grant-bound checks
+    const passing = await run(registry, 'git status', ctx)
+    const noInterpreter = await run(registry, 'npm test', ctx)
+    const noBinary = await run(registry, 'vitest run', ctx)
+    expect(passing).toMatch(/used up its command budget/)
+    expect(noInterpreter).toBe(passing)
+    expect(noBinary).toBe(passing)
+  })
+
+  it('I-2: a command refused on environment grounds does not use up budget', async () => {
+    fake('git', 'echo ok')
+    const registry = makeRegistry({ maxCommands: 1 })
+    const ctx = await ctxFor('rc')
+    expect(await run(registry, 'npm test', ctx)).toBe(COMMAND_UNAVAILABLE)
+    expect(await run(registry, 'vitest run', ctx)).toBe(COMMAND_UNAVAILABLE)
+    expect(await run(registry, 'git status && ls', ctx)).toMatch(/shell syntax/)
+    expect(await run(registry, 'git status', ctx)).toContain('exit code 0')
+  })
+
+  it('I-2: a refused command gives its reserved time back as well', async () => {
+    fake('git', 'echo ok')
+    const registry = makeRegistry({ commandMs: 600, totalMs: 1000 })
+    const ctx = await ctxFor('rd')
+    for (let i = 0; i < 4; i++) expect(await run(registry, 'vitest run', ctx)).toBe(COMMAND_UNAVAILABLE)
+    expect(await run(registry, 'git status', ctx)).toContain('exit code 0')
+  })
+
+  it('I-4: a read-only grant does not run commands (edit_file needs edit, running is stronger)', async () => {
+    fake('git', 'echo ok')
+    grants = [{ ...grant(), permissions: ['read'] }]
+    expect(await run(makeRegistry(), 'git status')).toBe(COMMAND_UNAVAILABLE)
+  })
+
+  it('I-4: positive control, read plus edit runs', async () => {
+    fake('git', 'echo ok')
+    grants = [{ ...grant(), permissions: ['read', 'edit'] }]
+    expect(await run(makeRegistry(), 'git status')).toContain('exit code 0')
+  })
+})
+
+describe('run_command: the granted root must be the tool\'s own root (class fix for I-1)', () => {
+  // Measured on this machine: npm, tsc, git and vitest (its CONFIG) all look
+  // UPWARD from the working directory. pytest is UNMEASURED (not installed);
+  // its marks are a fail-closed precondition, not a claim that they suffice.
+  type Case = { command: string; marks: string[]; make: (dir: string, name: string) => void }
+  const file = (dir: string, name: string): void => {
+    fs.writeFileSync(path.join(dir, name), name === 'package.json' ? JSON.stringify({ scripts: { build: 'x', test: 'x' } }) : '{}')
+  }
+  const gitDir = (dir: string, name: string): void => fs.mkdirSync(path.join(dir, name))
+  const VITEST_MARKS = ['ts', 'mts', 'cts', 'js', 'mjs', 'cjs'].flatMap((e) => [`vitest.config.${e}`, `vite.config.${e}`])
+  const PYTEST_MARKS = ['pytest.ini', 'pyproject.toml', 'tox.ini', 'setup.cfg']
+  const CASES: Case[] = [
+    { command: 'npm test', marks: ['package.json'], make: file },
+    { command: 'npm run build', marks: ['package.json'], make: file },
+    { command: 'tsc --noEmit', marks: ['tsconfig.json'], make: file },
+    { command: 'npx tsc --noEmit', marks: ['tsconfig.json'], make: file },
+    { command: 'vitest run', marks: VITEST_MARKS, make: file },
+    { command: 'vitest run src', marks: VITEST_MARKS, make: file },
+    { command: 'git status', marks: ['.git'], make: gitDir },
+    { command: 'git status --short', marks: ['.git'], make: gitDir },
+    { command: 'git diff --stat', marks: ['.git'], make: gitDir },
+    { command: 'git diff --name-only', marks: ['.git'], make: gitDir },
+    { command: 'pytest', marks: PYTEST_MARKS, make: file },
+    { command: 'pytest tests/a.py', marks: PYTEST_MARKS, make: file }
+  ]
+
+  let outer: string
+  let started: string
+
+  /** Every program touches `started`; a refused command leaves it absent. */
+  function arm(): void {
+    started = path.join(outside, `started-${Math.random().toString(36).slice(2)}`)
+    for (const n of ['npm', 'git', 'pytest']) fake(n, `touch "${started}"\necho ok`)
+    for (const n of ['vitest', 'tsc']) {
+      script(path.join(project, 'node_modules', '.bin', n), `touch "${started}"\necho ok`)
+    }
+  }
+
+  beforeEach(() => {
+    // The granted root is a CHILD directory; its parent is where an upward
+    // search would find a root that is outside the grant.
+    outer = project
+    for (const m of ['.git', 'tsconfig.json', 'vitest.config.ts', 'pytest.ini']) {
+      fs.rmSync(path.join(outer, m), { recursive: true, force: true })
+    }
+    project = path.join(outer, 'inner')
+    fs.mkdirSync(project)
+    grants = [grant()]
+    arm()
+  })
+
+  for (const c of CASES) {
+    it(`${c.command}: marks only in the PARENT of the grant -> not started`, async () => {
+      for (const m of c.marks.slice(0, 1)) c.make(outer, m)
+      expect(await run(makeRegistry(), c.command)).toBe(COMMAND_UNAVAILABLE)
+      expect(fs.existsSync(started)).toBe(false)
+    })
+
+    it(`${c.command}: no mark anywhere -> not started`, async () => {
+      expect(await run(makeRegistry(), c.command)).toBe(COMMAND_UNAVAILABLE)
+      expect(fs.existsSync(started)).toBe(false)
+    })
+
+    it(`${c.command}: own mark in the granted root -> runs (false-alarm direction)`, async () => {
+      c.make(project, c.marks[0])
+      expect(await run(makeRegistry(), c.command)).toContain('exit code 0')
+      expect(fs.existsSync(started)).toBe(true)
+    })
+  }
+
+  it('every alternative mark of vitest and pytest suffices on its own', async () => {
+    for (const [command, marks] of [['vitest run', VITEST_MARKS], ['pytest', PYTEST_MARKS]] as const) {
+      for (const m of marks) {
+        fs.rmSync(started, { force: true })
+        for (const old of fs.readdirSync(project)) if (old !== 'node_modules' && old !== '.mingly') fs.rmSync(path.join(project, old), { recursive: true, force: true })
+        file(project, m)
+        expect(await run(makeRegistry(), command), `${command} with ${m}`).toContain('exit code 0')
+      }
+    }
+  })
+
+  it('a file mark that is a DIRECTORY is no mark', async () => {
+    fs.mkdirSync(path.join(project, 'tsconfig.json'))
+    fs.mkdirSync(path.join(project, 'pytest.ini'))
+    expect(await run(makeRegistry(), 'tsc --noEmit')).toBe(COMMAND_UNAVAILABLE)
+    expect(await run(makeRegistry(), 'pytest')).toBe(COMMAND_UNAVAILABLE)
+    expect(fs.existsSync(started)).toBe(false)
+  })
+
+  it('a mark that is a link leading out of the grant is no mark', async () => {
+    fs.writeFileSync(path.join(outer, 'tsconfig.json'), '{}')
+    fs.symlinkSync(path.join(outer, 'tsconfig.json'), path.join(project, 'tsconfig.json'))
+    fs.symlinkSync(path.join(outer, '.git-elsewhere'), path.join(project, '.git'))
+    fs.mkdirSync(path.join(outer, '.git-elsewhere'))
+    expect(await run(makeRegistry(), 'tsc --noEmit')).toBe(COMMAND_UNAVAILABLE)
+    expect(await run(makeRegistry(), 'git status')).toBe(COMMAND_UNAVAILABLE)
+    expect(fs.existsSync(started)).toBe(false)
+  })
+
+  it('a .git FILE (linked worktree) counts as git\'s mark', async () => {
+    fs.writeFileSync(path.join(project, '.git'), 'gitdir: ../elsewhere\n')
+    expect(await run(makeRegistry(), 'git status')).toContain('exit code 0')
   })
 })
 

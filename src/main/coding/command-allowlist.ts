@@ -48,12 +48,39 @@ const SCRIPT_NAME = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$/
 const refuse = (reason: string): CommandPlan => ({ kind: 'refused', reason })
 const unavailable = (): CommandPlan => refuse(COMMAND_UNAVAILABLE)
 
+/** The tools an allowlisted command can start (`npx tsc` counts as tsc). */
+export type CommandTool = 'npm' | 'tsc' | 'vitest' | 'pytest' | 'git'
+
+const CONFIG_EXTENSIONS = ['ts', 'mts', 'cts', 'js', 'mjs', 'cjs']
+
+/**
+ * What marks the granted directory as THIS tool's own root: at least one of
+ * these entries must exist directly in it. Every one of these tools looks for
+ * its root or config UPWARD from the working directory, so without a mark of
+ * its own the tool would run on a root outside the grant.
+ *
+ * Measured on this machine (macOS, 2026-11): npm runs a parent's package.json
+ * scripts; tsc compiles a parent's tsconfig.json; git reports the parent
+ * repository; vitest loads a parent's vitest.config (its root stays the
+ * working directory). pytest is UNMEASURED (not installed here): its marks
+ * are a fail-closed precondition and are NOT a claim that they are enough.
+ * `.git` may be a directory or a file (linked worktree); the rest are files.
+ */
+export const ROOT_MARKS: Readonly<Record<CommandTool, readonly string[]>> = {
+  npm: ['package.json'],
+  tsc: ['tsconfig.json'],
+  vitest: CONFIG_EXTENSIONS.flatMap((e) => [`vitest.config.${e}`, `vite.config.${e}`]),
+  pytest: ['pytest.ini', 'pyproject.toml', 'tox.ini', 'setup.cfg'],
+  git: ['.git']
+}
+
 /** How a planned command finds its executable. */
 type Binary =
   | { kind: 'project-bin'; name: string }
   | { kind: 'interpreter'; name: string }
 
 interface Matched {
+  tool: CommandTool
   binary: Binary
   args: string[]
   /** Arguments that name project paths; the handler re-checks them on disk. */
@@ -99,11 +126,12 @@ function matchTokens(tokens: readonly string[]): Match {
   switch (cmd) {
     case 'npm': {
       if (sameArgs(rest, ['test'])) {
-        return { binary: { kind: 'interpreter', name: 'npm' }, args: ['test'], pathArgs: [] }
+        return { tool: 'npm', binary: { kind: 'interpreter', name: 'npm' }, args: ['test'], pathArgs: [] }
       }
       if (rest.length === 2 && rest[0] === 'run') {
         if (!SCRIPT_NAME.test(rest[1])) return { refusal: 'Refused: not a valid npm script name.' }
         return {
+          tool: 'npm',
           binary: { kind: 'interpreter', name: 'npm' },
           args: ['run', rest[1]],
           pathArgs: [],
@@ -116,33 +144,34 @@ function matchTokens(tokens: readonly string[]): Match {
       // Only the form that maps onto the project's own tsc. npx itself is
       // never run: it can download and execute a package that is not installed.
       if (sameArgs(rest, ['tsc', '--noEmit'])) {
-        return { binary: { kind: 'project-bin', name: 'tsc' }, args: ['--noEmit'], pathArgs: [] }
+        return { tool: 'tsc', binary: { kind: 'project-bin', name: 'tsc' }, args: ['--noEmit'], pathArgs: [] }
       }
       return { refusal: 'Refused: only `npx tsc --noEmit` is allowed.' }
     case 'tsc':
       if (sameArgs(rest, ['--noEmit'])) {
-        return { binary: { kind: 'project-bin', name: 'tsc' }, args: ['--noEmit'], pathArgs: [] }
+        return { tool: 'tsc', binary: { kind: 'project-bin', name: 'tsc' }, args: ['--noEmit'], pathArgs: [] }
       }
       return { refusal: 'Refused: only `tsc --noEmit` is allowed.' }
     case 'vitest': {
       if (rest[0] !== 'run') return { refusal: 'Refused: only `vitest run [paths]` is allowed.' }
       const paths = pathArgsOrRefusal(rest.slice(1))
       if ('refusal' in paths) return paths
-      return { binary: { kind: 'project-bin', name: 'vitest' }, args: ['run', ...paths], pathArgs: paths }
+      return { tool: 'vitest', binary: { kind: 'project-bin', name: 'vitest' }, args: ['run', ...paths], pathArgs: paths }
     }
     case 'pytest': {
       const paths = pathArgsOrRefusal(rest)
       if ('refusal' in paths) return paths
-      return { binary: { kind: 'interpreter', name: 'pytest' }, args: paths, pathArgs: paths }
+      return { tool: 'pytest', binary: { kind: 'interpreter', name: 'pytest' }, args: paths, pathArgs: paths }
     }
     case 'git': {
       // `-c core.fsmonitor=false` and the no-ext-diff/no-textconv switches stop
       // repository configuration from naming a program git would then run.
       if (sameArgs(rest, ['status'])) {
-        return { binary: { kind: 'interpreter', name: 'git' }, args: [...GIT_PREFIX, 'status'], pathArgs: [] }
+        return { tool: 'git', binary: { kind: 'interpreter', name: 'git' }, args: [...GIT_PREFIX, 'status'], pathArgs: [] }
       }
       if (sameArgs(rest, ['status', '--short'])) {
         return {
+          tool: 'git',
           binary: { kind: 'interpreter', name: 'git' },
           args: [...GIT_PREFIX, 'status', '--short'],
           pathArgs: []
@@ -150,6 +179,7 @@ function matchTokens(tokens: readonly string[]): Match {
       }
       if (sameArgs(rest, ['diff', '--stat']) || sameArgs(rest, ['diff', '--name-only'])) {
         return {
+          tool: 'git',
           binary: { kind: 'interpreter', name: 'git' },
           args: [...GIT_PREFIX, 'diff', '--no-ext-diff', '--no-textconv', rest[1]],
           pathArgs: []
@@ -184,6 +214,8 @@ function resolveInterpreter(
 export interface DetailedPlan {
   plan: CommandPlan
   pathArgs: string[]
+  /** The tool the plan starts; absent for a refused plan. */
+  tool?: CommandTool
 }
 
 export function planCommandDetailed(
@@ -227,7 +259,8 @@ export function planCommandDetailed(
   }
   return {
     plan: { kind: 'run', file, args: matched.args, cwd: projectPath },
-    pathArgs: matched.pathArgs
+    pathArgs: matched.pathArgs,
+    tool: matched.tool
   }
 }
 
