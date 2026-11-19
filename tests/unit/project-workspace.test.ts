@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -146,6 +146,60 @@ describe('ensureProjectWorkspace', () => {
     await expect(ensureProjectWorkspace(p, 'r1')).rejects.toThrow(ProjectWorkspaceError)
     expect(fs.existsSync(path.join(p, '.mingly'))).toBe(false)
     expect(fs.readFileSync(gi, 'utf-8')).toBe('dist\n')
+  })
+
+  it('fulfils genuinely concurrent calls on a fresh project', async () => {
+    const ids = ['c1', 'c2', 'c3', 'c4', 'c5', 'c5']
+    const results = await Promise.all(ids.map((id) => ensureProjectWorkspace(p, id)))
+    for (const ws of results) {
+      for (const d of [ws.root, ws.snapshotDir, ws.contextDir]) {
+        expect(fs.statSync(d).isDirectory()).toBe(true)
+        expect(fs.statSync(d).mode & 0o777).toBe(0o700)
+      }
+    }
+    expect(fs.readdirSync(path.join(p, '.mingly', 'snapshots')).sort()).toEqual([
+      'c1',
+      'c2',
+      'c3',
+      'c4',
+      'c5'
+    ])
+  })
+
+  it('rejects a component that turns into a symlink between check and create', async () => {
+    // Simulate the race deterministically: a symlink is planted after pass 1
+    // saw the path as missing, by hooking the first mkdir.
+    const real = fs.promises.mkdir.bind(fs.promises)
+    const spy = vi.spyOn(fs.promises, 'mkdir').mockImplementationOnce(async (target) => {
+      fs.symlinkSync(outside, String(target))
+      return real(String(target), { mode: 0o700 }) // EEXIST: the symlink is there now
+    })
+    try {
+      await expect(ensureProjectWorkspace(p, 'r1')).rejects.toThrow(ProjectWorkspaceError)
+    } finally {
+      spy.mockRestore()
+    }
+    expect(fs.readdirSync(outside)).toEqual([])
+  })
+
+  it.each([
+    ['an entry followed by a negation', 'a\n.mingly/\n!.mingly/\n'],
+    ['a negation of the slash-less form', '.mingly\n!.mingly\n'],
+    ['leading whitespace', 'a\n  .mingly/\n'],
+    ['a tab prefix', '\t.mingly/\n'],
+    ['a comment', '#.mingly/\n']
+  ])('appends the entry when .gitignore only has %s', async (_name, content) => {
+    fs.writeFileSync(path.join(p, '.gitignore'), content)
+    await ensureProjectWorkspace(p, 'r1')
+    const after = fs.readFileSync(path.join(p, '.gitignore'), 'utf-8')
+    expect(after).toBe(`${content}.mingly/\n`)
+  })
+
+  it('a negation followed by a later re-ignore counts as present', async () => {
+    const content = '!.mingly/\n.mingly/\n'
+    fs.writeFileSync(path.join(p, '.gitignore'), content)
+    await ensureProjectWorkspace(p, 'r1')
+    expect(fs.readFileSync(path.join(p, '.gitignore'), 'utf-8')).toBe(content)
   })
 
   it('tightens permissions of an already existing .mingly to 0700', async () => {

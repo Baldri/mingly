@@ -55,6 +55,42 @@ async function assertWritableDir(dir: string): Promise<void> {
   }
 }
 
+/**
+ * Create one directory level, tolerating a concurrent run that created it
+ * first. EEXIST is not swallowed blindly: the path is re-verified with lstat
+ * and must be a real directory, otherwise a symlink planted in between would
+ * be accepted and the following chmod would follow it.
+ */
+async function createDirectory(dir: string): Promise<void> {
+  try {
+    await fs.promises.mkdir(dir, { mode: DIR_MODE })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    const stat = await fs.promises.lstat(dir)
+    if (!stat.isDirectory()) {
+      throw new ProjectWorkspaceError(`${dir} appeared as something other than a plain directory`)
+    }
+  }
+}
+
+/**
+ * True when the last matching rule ignores `.mingly`. Deliberately narrow, not
+ * a gitignore parser. Fail-closed rule: when in doubt the entry counts as
+ * absent and gets appended (a redundant entry is harmless, a missing one lets
+ * externalized tool results be committed). Leading whitespace is part of a
+ * gitignore pattern, so an indented line is NOT treated as a rule here.
+ */
+function ignoresWorkspace(content: string): boolean {
+  let ignored = false
+  for (const raw of content.split('\n')) {
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
+    if (line === '' || line.startsWith('#') || /^\s/.test(line)) continue
+    if (GITIGNORE_EQUIVALENTS.has(line)) ignored = true
+    else if (line.startsWith('!') && GITIGNORE_EQUIVALENTS.has(line.slice(1))) ignored = false
+  }
+  return ignored
+}
+
 export async function ensureProjectWorkspace(
   projectPath: string,
   runId: string
@@ -123,9 +159,7 @@ export async function ensureProjectWorkspace(
     } catch {
       throw new ProjectWorkspaceError('.gitignore is not readable')
     }
-    gitignoreNeedsEntry = !gitignoreContent
-      .split(/\r?\n/)
-      .some((line) => GITIGNORE_EQUIVALENTS.has(line.trim()))
+    gitignoreNeedsEntry = !ignoresWorkspace(gitignoreContent)
     // Writability matters only when the entry has to be appended. Without the
     // entry, .mingly/ (externalized tool results) could be committed, so an
     // unwritable .gitignore then fails closed.
@@ -142,7 +176,7 @@ export async function ensureProjectWorkspace(
   try {
     for (const component of components) {
       if (missing.has(component)) {
-        await fs.promises.mkdir(component, { mode: DIR_MODE })
+        await createDirectory(component)
       }
       // Explicit chmod: mkdir's mode is ignored for a directory that already
       // exists, and is filtered by the umask for a new one.
