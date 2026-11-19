@@ -103,3 +103,24 @@ export interface CodingConsentRequest {
 export function parseCodingConsentChoice(raw: unknown): CodingConsentChoice {
   return CODING_CONSENT_CHOICES.find((choice) => choice === raw) ?? "drop-file";
 }
+
+// -- Edit proposals ----------------------------------------------
+
+/**
+ * One proposed change to one file. `edit_file` records it; nothing is written
+ * until a human accepts the step's package.
+ *
+ * `path` is the REAL path relative to the project root, as the file system
+ * spells it (never the model's spelling). `oldText` and `newText` are kept so
+ * the accept step can re-verify `oldText` against the file as it is THEN.
+ * `diff` is for the human: it carries context lines from the file and is never
+ * returned to the model.
+ */
+export interface ProposedEdit {
+  path: string;
+  oldText: string;
+  newText: string;
+  diff: string;
+  addedLines: number;
+  removedLines: number;
+}

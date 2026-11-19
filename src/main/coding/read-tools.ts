@@ -76,7 +76,7 @@ export interface ReadToolDeps {
  */
 let fileAccessModule: Promise<typeof import('../file-access/file-access-manager')> | undefined
 
-const defaultDeps: ReadToolDeps = {
+export const defaultReadToolDeps: ReadToolDeps = {
   async findGrant(directoryId) {
     // One shared import promise: parallel tool calls in one step must not start
     // parallel imports of the same module.
@@ -98,7 +98,7 @@ const readOnlyGate: ToolGate = (ctx) => {
   return atLeast(CODING_MODE_ORDER, parseCodingMode(ctx.coding.mode), 'read-only')
 }
 
-interface Scope {
+export interface Scope {
   /** path.resolve(projectPath) */
   root: string
   /** realpath of the project root */
@@ -113,9 +113,10 @@ interface Scope {
  * that it sits where ensureProjectWorkspace puts it, so a context that was
  * assembled by hand cannot pass.
  */
-async function resolveScope(
+export async function resolveScope(
   ctx: ToolContext | undefined,
-  deps: ReadToolDeps
+  deps: ReadToolDeps,
+  needsEdit = false
 ): Promise<Scope | null> {
   try {
     if (!ctx || !ctx.coding || !ctx.workspace) return null
@@ -125,6 +126,9 @@ async function resolveScope(
 
     const grant = await deps.findGrant(directoryId)
     if (!grant || !hasPermission(grant, 'read')) return null
+    // A tool that changes files needs the edit permission on top of read: it
+    // has to read the file to verify the old text.
+    if (needsEdit && !hasPermission(grant, 'edit')) return null
 
     const root = path.resolve(projectPath)
     if (ctx.workspace.root !== path.join(root, '.mingly')) return null
@@ -431,7 +435,7 @@ async function listFiles(
  * hands the model absolute paths; the prefix is cut as TEXT so the blocklist
  * still sees every segment the model wrote.
  */
-function toRequestedRelative(input: string, scope: Scope): string | null {
+export function toRequestedRelative(input: string, scope: Scope): string | null {
   if (!path.isAbsolute(input)) return input
   for (const base of [scope.root, scope.realRoot]) {
     const prefix = base.endsWith(path.sep) ? base : base + path.sep
@@ -446,9 +450,12 @@ function positiveInt(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? value : fallback
 }
 
-async function readHeadAndBody(
+export async function readHeadAndBody(
   realTarget: string
-): Promise<{ verdict: 'ok'; text: string } | { verdict: 'binary' | 'large' | 'unreadable' }> {
+): Promise<
+  | { verdict: 'ok'; text: string; roundTrips: boolean }
+  | { verdict: 'binary' | 'large' | 'unreadable' }
+> {
   let handle: fs.promises.FileHandle | undefined
   try {
     // O_NOFOLLOW: the final component was resolved a moment ago; if it has been
@@ -469,12 +476,70 @@ async function readHeadAndBody(
     if (isProbablyBinary(data.subarray(0, Math.min(data.length, BINARY_HEAD_BYTES)))) {
       return { verdict: 'binary' }
     }
-    return { verdict: 'ok', text: data.toString('utf-8') }
+    const text = data.toString('utf-8')
+    // False when the bytes are not valid UTF-8 (decoding replaced some of them):
+    // a caller that writes the text back would corrupt the file.
+    return { verdict: 'ok', text, roundTrips: Buffer.from(text, 'utf-8').equals(data) }
   } catch {
     return { verdict: 'unreadable' }
   } finally {
     await handle?.close().catch(() => undefined)
   }
+}
+
+/**
+ * The path discipline shared by every tool that opens a project file (read and
+ * edit alike), in one fixed order:
+ *
+ *   isBlockedPath on the path AS GIVEN (before anything touches the disk)
+ *   -> extension of the requested name (a pure check on the model's own string)
+ *   -> isRealPathWithin (symlinks resolved on both sides)
+ *   -> isBlockedPath AGAIN on the resolved real path
+ *   -> extension of the real target
+ *
+ * `refused` is the uniform refusal and covers everything that depends on the
+ * file system; `bad-type` may differ because it depends only on the model's
+ * string. Do not copy this order into a second function: that is a second place
+ * to get it wrong.
+ */
+export type ResolvedFile =
+  | { kind: 'ok'; realTarget: string; realRel: string; realRelPosix: string }
+  | { kind: 'refused' | 'bad-type' }
+
+export async function resolveReadableFile(input: unknown, scope: Scope): Promise<ResolvedFile> {
+  if (typeof input !== 'string' || input === '') return { kind: 'refused' }
+  const requested = toRequestedRelative(input, scope)
+  if (requested === null) return { kind: 'refused' }
+
+  // Blocklist on the path as given, before anything touches the disk.
+  if (isBlockedPath(requested)) return { kind: 'refused' }
+
+  // Pure check on the model's own string: it depends on no file system state,
+  // so answering it before containment reveals nothing. (Doing it after left
+  // two different answers for a dangling and an outside link with this name.)
+  if (!isReadableExtension(requested)) return { kind: 'bad-type' }
+
+  // Containment, symlinks resolved on both sides.
+  const full = path.resolve(scope.root, requested)
+  if (!(await isRealPathWithin(full, scope.root))) return { kind: 'refused' }
+
+  // Blocklist again, on the resolved real path.
+  const realTarget = await resolveRealPath(full)
+  if (realTarget === null) return { kind: 'refused' }
+  const realRel = path.relative(scope.realRoot, realTarget)
+  if (realRel === '' || realRel.startsWith('..') || path.isAbsolute(realRel)) {
+    return { kind: 'refused' }
+  }
+  const realSegments = resolvePathSegments(realRel.split(path.sep).join('/'))
+  if (realSegments === null || realSegments.includes('..')) return { kind: 'refused' }
+  const realRelPosix = realSegments.join('/')
+  if (isBlockedPath(realRelPosix)) return { kind: 'refused' }
+
+  // Extension of the real target (the requested name was checked above).
+  // Uniform refusal: what the target is called is not the model's business.
+  if (!isReadableExtension(realRelPosix)) return { kind: 'refused' }
+
+  return { kind: 'ok', realTarget, realRel, realRelPosix }
 }
 
 async function readFile(
@@ -488,36 +553,10 @@ async function readFile(
     const scope = await resolveScope(ctx, deps)
     if (!scope) return REFUSED
 
-    const input = args.path
-    if (typeof input !== 'string' || input === '') return REFUSED
-    const requested = toRequestedRelative(input, scope)
-    if (requested === null) return REFUSED
-
-    // 2. Blocklist on the path as given, before anything touches the disk.
-    if (isBlockedPath(requested)) return REFUSED
-
-    // Pure check on the model's own string: it depends on no file system state,
-    // so answering it before containment reveals nothing. (Doing it after left
-    // two different answers for a dangling and an outside link with this name.)
-    if (!isReadableExtension(requested)) return BAD_TYPE
-
-    // 3. Containment, symlinks resolved on both sides.
-    const full = path.resolve(scope.root, requested)
-    if (!(await isRealPathWithin(full, scope.root))) return REFUSED
-
-    // 4. Blocklist again, on the resolved real path.
-    const realTarget = await resolveRealPath(full)
-    if (realTarget === null) return REFUSED
-    const realRel = path.relative(scope.realRoot, realTarget)
-    if (realRel === '' || realRel.startsWith('..') || path.isAbsolute(realRel)) return REFUSED
-    const realSegments = resolvePathSegments(realRel.split(path.sep).join('/'))
-    if (realSegments === null || realSegments.includes('..')) return REFUSED
-    const realRelPosix = realSegments.join('/')
-    if (isBlockedPath(realRelPosix)) return REFUSED
-
-    // 5. Extension of the real target (the requested name was checked above).
-    // Uniform refusal: what the target is called is not the model's business.
-    if (!isReadableExtension(realRelPosix)) return REFUSED
+    const resolved = await resolveReadableFile(args.path, scope)
+    if (resolved.kind === 'bad-type') return BAD_TYPE
+    if (resolved.kind !== 'ok') return REFUSED
+    const { realTarget, realRel } = resolved
 
     // 6. Head sniff, then the content.
     const result = await readHeadAndBody(realTarget)
@@ -576,7 +615,7 @@ async function readFile(
 // Registration and origin
 // ---------------------------------------------------------------------------
 
-export function registerReadTools(registry: ToolRegistry, deps: ReadToolDeps = defaultDeps): void {
+export function registerReadTools(registry: ToolRegistry, deps: ReadToolDeps = defaultReadToolDeps): void {
   registry.registerBuiltIn(
     {
       name: 'list_files',

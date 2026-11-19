@@ -23,6 +23,7 @@ import type { CodingRunOptions } from '../../shared/coding-types'
 import type { ProjectWorkspace } from '../coding/project-workspace'
 import type { StepPaths } from './step-paths'
 import { registerReadTools } from '../coding/read-tools'
+import { registerEditTools } from '../coding/edit-proposals'
 
 // ── Built-in tool handler type ─────────────────────────────────
 
@@ -53,6 +54,14 @@ export interface ToolContext {
    * that arrives from outside, may repeat and may be empty.
    */
   callKey?: string
+  /**
+   * The run this call belongs to and the 1-based loop step it runs in. Set by
+   * the executor from its own counters (never from the model or the provider).
+   * Proposals are keyed on them; a tool that needs them and finds them missing
+   * must refuse.
+   */
+  runId?: string
+  stepNumber?: number
 }
 
 /**
@@ -437,6 +446,8 @@ export function getToolRegistry(): ToolRegistry {
 function registerDefaultBuiltIns(registry: ToolRegistry): void {
   // Coding read tools (gated: offered only in a coding run of mode read-only or above)
   registerReadTools(registry)
+  // Coding edit tool (gated: offered only in mode propose or above; it records a proposal, it never writes)
+  registerEditTools(registry)
 
   // Echo tool — useful for testing and debugging the agent loop
   registry.registerBuiltIn(

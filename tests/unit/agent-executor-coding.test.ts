@@ -210,6 +210,22 @@ describe('coding run mode and tool context', () => {
     expect(registryCalls[0].ctx?.coding).toEqual(coding)
   })
 
+  it('gives every step the run id and its own step number (edit proposals are keyed on them)', async () => {
+    storedModes['dir-1'] = 'propose'
+    llmResponses = [toolCallStep('tc-1'), toolCallStep('tc-2')]
+    const coding = { directoryId: 'dir-1', projectPath, mode: 'propose' as const }
+
+    const run = await executor.execute('task', 'anthropic', 'm', [], undefined, coding)
+
+    expect(registryCalls).toHaveLength(2)
+    const [first, second] = registryCalls.map((c) => c.ctx)
+    expect(typeof first?.runId).toBe('string')
+    expect(first?.runId).toBe(run.id)
+    expect(second?.runId).toBe(run.id)
+    expect(Number.isInteger(first?.stepNumber)).toBe(true)
+    expect(second?.stepNumber).toBe((first?.stepNumber ?? 0) + 1)
+  })
+
   it('passes no context at all for a run without coding options', async () => {
     llmResponses = [toolCallStep('tc-1')]
 

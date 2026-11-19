@@ -353,7 +353,7 @@ export class AgentExecutor {
         // from a straggler cannot reach this step's origins or the next step's.
         const stepPaths = new StepPaths()
         const stepCtx: ToolContext | undefined = toolCtx
-          ? { ...toolCtx, resolvedPaths: stepPaths }
+          ? { ...toolCtx, resolvedPaths: stepPaths, runId, stepNumber: stepNum }
           : undefined
         const rawToolResults = await toolRegistry.executeToolCalls(llmResponse.toolCalls, stepCtx)
 
