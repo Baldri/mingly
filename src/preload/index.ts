@@ -585,6 +585,18 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.CODING_CONSENT_RESPOND, runId, requestId, choice)
   },
 
+  // Coding edits (the user's decision on a run's proposed package). The bridge
+  // forwards ids only; paths never cross it. A refused apply answers with
+  // `success: false` and a reason, and the proposal stays.
+  codingEdits: {
+    accept: (runId: string, directoryId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CODING_ACCEPT_EDITS, runId, directoryId),
+    reject: (runId: string, reason?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CODING_REJECT_EDITS, runId, reason),
+    undo: (runId: string, directoryId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CODING_UNDO_RUN, runId, directoryId)
+  },
+
   // Agent Comparison (Parallel Model Comparison with tool-use)
   agentComparison: {
     start: (

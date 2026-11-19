@@ -10,6 +10,7 @@ import { getAgentExecutor } from '../agent/agent-executor'
 import { getAgentComparisonService } from '../services/agent-comparison-service'
 import { getSubagentOrchestrator } from '../agent/subagent-orchestrator'
 import { getConsentBroker } from '../coding/consent-broker'
+import { acceptEditsForRun, rejectEditsForRun, undoRunForDirectory } from '../coding/apply-edits'
 import { wrapHandler, requireFeature } from './ipc-utils'
 import type {
   AgentConfig,
@@ -93,6 +94,42 @@ export function registerAgentHandlers(): void {
       requireFeature('agentic_mode')
       const settled = getConsentBroker().respond(runId, requestId, choice)
       return { success: true, settled }
+    }
+  )
+
+  // ========================================
+  // Coding edits: accept, reject, undo (after the run, by the user)
+  // ========================================
+  //
+  // Run id and directory id only, never a path: what is written is decided in
+  // the main process from the pending package, the project path from the grant.
+  // A refusal is a normal answer (`success: false`, with the reason), not an
+  // exception: the proposal stays and the user sees why.
+
+  wrapHandler(
+    IPC_CHANNELS.CODING_ACCEPT_EDITS,
+    async (runId: unknown, directoryId: unknown) => {
+      requireFeature('agentic_mode')
+      const outcome = await acceptEditsForRun(runId, directoryId)
+      return { success: outcome.kind === 'applied', outcome }
+    }
+  )
+
+  wrapHandler(
+    IPC_CHANNELS.CODING_REJECT_EDITS,
+    (runId: unknown, reason?: unknown) => {
+      requireFeature('agentic_mode')
+      const outcome = rejectEditsForRun(runId, undefined, typeof reason === 'string' ? reason : undefined)
+      return { success: outcome.kind === 'rejected', outcome }
+    }
+  )
+
+  wrapHandler(
+    IPC_CHANNELS.CODING_UNDO_RUN,
+    async (runId: unknown, directoryId: unknown) => {
+      requireFeature('agentic_mode')
+      const outcome = await undoRunForDirectory(runId, directoryId)
+      return { success: outcome.kind === 'restored', outcome }
     }
   )
 

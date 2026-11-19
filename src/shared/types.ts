@@ -721,6 +721,12 @@ export const IPC_CHANNELS = {
   CODING_CONSENT_REQUEST: 'coding:consent-request',
   CODING_CONSENT_RESPOND: 'coding:consent-respond',
 
+  // Coding edits: the user's decision on a finished run's proposed package.
+  // Each takes a run id (and a directory id for accept/undo), never a path.
+  CODING_ACCEPT_EDITS: 'coding:accept-edits',
+  CODING_REJECT_EDITS: 'coding:reject-edits',
+  CODING_UNDO_RUN: 'coding:undo-run',
+
   // Subagent Orchestration (Master → N Subtasks → N ReAct → Merge)
   SUBAGENT_DECOMPOSE: 'subagent:decompose',
   SUBAGENT_START: 'subagent:start',
