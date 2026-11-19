@@ -13,23 +13,29 @@
  * with neighbouring lines would be a second read path that skips the consent
  * guard `read_file` results pass through.
  *
- * Three things bound what this tool can leak or mislead with:
- *   - the content it reads to verify the old text is collected BY THE AGENT, so
- *     it passes the same sensitive-data scan as every other collected content;
- *     where it trips, no refusal carries a count (the uniform message).
- *     A per-path cap on failed attempts is defence in depth for the files the
- *     scan does not flag. Together they close the count oracle where it matters
- *     and bound it where it does not; the cap alone is NOT the answer.
- *   - at most ONE pending proposal per file per run, so the diff a human
- *     approves was computed against the file as it will be when written;
- *   - the displayed diff shows invisible and direction-changing characters
- *     escaped (Trojan Source), while the stored text stays byte-exact.
+ * What bounds what this tool can leak or mislead with:
+ *   - every refusal that depends on the file content is ONE text (see
+ *     NOT_EXACTLY_ONCE): the same for "not found" and "not unique", no number,
+ *     the same on every file. Any variation, a count or a different message for
+ *     files a scan flagged, would tell the model something about content it has
+ *     not read. What remains is the one bit of whether a proposal was accepted;
+ *     the per-path cap on failed attempts bounds how often that can be asked.
+ *   - at most ONE pending proposal per file per run, and every proposal stores
+ *     the hash of the file as read plus the match position: the apply step can
+ *     prove the file is the one the human's diff was computed against
+ *     (editStillMatches), including when another run or the user changed it;
+ *   - the displayed diff shows invisible, blank and confusable characters
+ *     escaped (Trojan Source), while the stored text stays byte-exact;
+ *   - everything held is bounded in total (byte budget, retained-run cap), and
+ *     the bound is enforced by REFUSING new proposals: a package waiting for
+ *     review is never dropped to make room.
  *
  * The file is opened through the SAME path discipline as `read_file`
  * (`resolveReadableFile` in read-tools.ts); this module has no path logic of
  * its own. Every refusal that depends on the file system is one uniform text.
  */
 
+import { createHash } from 'crypto'
 import * as path from 'path'
 import type { ToolRegistry, ToolContext, ToolGate } from '../agent/tool-registry'
 import {
@@ -66,11 +72,13 @@ export const EDIT_MAX_FAILED_ATTEMPTS_PER_PATH = 5
 const AUDIT_MAX_RECORDS_PER_RUN = 1000
 const AUDIT_MAX_FINISHED_RUNS = 50
 /**
- * Finished runs whose proposals are still awaiting review. When a new one
- * arrives beyond this, the OLDEST retained run's pending proposals are dropped
- * (and recorded as abandoned). A cap on retained runs rather than a per-directory
- * rule because the store knows runs, not directories; the per-run bounds
- * (EDIT_MAX_PENDING_PER_RUN, EDIT_TEXT_MAX_CHARS) bound each run's size.
+ * Finished runs whose proposals are still awaiting review. A NEW run's first
+ * proposal is refused while this many are waiting (resolve one to free a slot);
+ * nothing already waiting is ever dropped. A cap on runs rather than a
+ * per-directory rule because the store knows runs, not directories. Runs that
+ * were already running when the cap was reached may still end into retention, so
+ * the count can overshoot by the number of concurrent runs; the byte budget
+ * bounds the total regardless.
  */
 export const EDIT_MAX_RETAINED_RUNS = 20
 /**
@@ -78,9 +86,11 @@ export const EDIT_MAX_RETAINED_RUNS = 20
  * text and diff of every pending proposal, in bytes). Each per-run and per-text
  * cap is fine alone; their product is gigabytes in the main process, where that
  * is a crash and not a slowdown. 32 MiB is sized for a real session: a typical
- * proposal is a few KB, a large one 30 KB, so this holds the 20 retained runs at
- * about 50 large proposals each. Over it, the oldest RETAINED runs (finished,
- * awaiting review) are evicted; a run that is still running is never evicted.
+ * proposal is a few KB, a large one 30 KB. A maximal proposal (1,000,000
+ * characters per text) costs several MB, so about eight of those fill it: that
+ * is why the response to reaching it is a REFUSAL of the new proposal and not
+ * the eviction of old ones, which a runaway run could use to wipe every package
+ * waiting for review.
  */
 export const EDIT_PENDING_BYTES_BUDGET = 32 * 1024 * 1024
 const AUDIT_REASON_MAX_CHARS = 500
@@ -96,10 +106,20 @@ const TOO_LARGE = 'Refused: the file is too large to edit.'
 const LIMIT_REACHED =
   'the limit of failed edit attempts for this file was reached in this run; no further edit ' +
   'proposals for this file are accepted in this run.'
-/** One text for zero matches and for several, on a file the scan flagged. */
-const UNIFORM_NO_MATCH =
-  'the old text could not be applied to this file as exactly one match. For this file no ' +
-  'further detail is given.'
+/**
+ * The ONE refusal for a content-dependent miss. "Not found" and "not unique"
+ * need the same remedy, so the advice is the same and nothing varies with the
+ * file: no count, no distinction, no difference between files.
+ */
+const NOT_EXACTLY_ONCE =
+  'the old text was not found exactly once in the file. Nothing was changed. Read the file ' +
+  'and give a longer old text that appears exactly once.'
+const CAPACITY_BYTES =
+  'too much pending change data in this session (byte budget). Propose smaller edits, or ' +
+  'resolve the proposals that are waiting for review to free space.'
+const CAPACITY_RUNS =
+  'too many finished runs are awaiting review. Resolve one of their proposal packages to free ' +
+  'a slot; nothing waiting has been dropped.'
 
 // ---------------------------------------------------------------------------
 // The store
@@ -119,8 +139,7 @@ export interface EditProposalStore {
     runId: string,
     stepNumber: number,
     edit: Pick<ProposedEdit, 'path' | 'oldText' | 'newText'>,
-    fileContent: string,
-    options?: { contentSensitive?: boolean }
+    fileContent: string
   ): ProposeOutcome
   /** Copies, in proposal order. */
   pending(runId: string): ProposedEdit[]
@@ -135,8 +154,8 @@ export interface EditProposalStore {
    *   'abandoned' (cancelled, failed): the pending package is dropped and
    *     recorded, never applied. Nobody stands behind that work.
    *   'finished' (completed, max steps): the pending package is KEPT, it is the
-   *     deliverable awaiting review, and resolve() still works. At most
-   *     EDIT_MAX_RETAINED_RUNS such runs are kept; older ones are dropped.
+   *     deliverable awaiting review, and resolve() still works. Nothing kept
+   *     is ever dropped to make room: new proposals are refused instead.
    * The failed-attempt counters end with the run. Audit records stay readable
    * for the last AUDIT_MAX_FINISHED_RUNS runs.
    */
@@ -152,6 +171,7 @@ export type EditAuditOutcome =
   | 'rejected-ambiguous'
   | 'rejected-not-found'
   | 'limit-reached'
+  | 'rejected-capacity'
   | 'package-accepted'
   | 'package-rejected'
   | 'package-abandoned'
@@ -160,8 +180,8 @@ export type EditAuditOutcome =
  * One fact about an edit proposal, shaped for the audit that a later task
  * builds (that task wires THIS record; it must not invent a second trail).
  * Never holds the old or new text: a probe string may be the very secret being
- * guessed. `occurrences` is the real count even where the model was refused
- * detail (`contentSensitive`).
+ * guessed. `occurrences` is 0 or 2 (two or more): counting stops at the second
+ * match, which is all the decision needs and what bounds the work.
  */
 export interface EditAuditRecord {
   runId: string
@@ -171,7 +191,6 @@ export interface EditAuditRecord {
   occurrences?: number
   /** Failed attempts on this path in this run, including this one. */
   failedAttempts?: number
-  contentSensitive?: boolean
   /** Size of the package, for package-* outcomes. */
   edits?: number
   reason?: string
@@ -196,19 +215,18 @@ function pathKey(p: string): string {
   return p.normalize('NFKC').toLowerCase()
 }
 
-/** Occurrences counted WITH overlap: "aa" in "aaa" is two, i.e. ambiguous. */
-function countOccurrences(haystack: string, needle: string): { count: number; first: number } {
-  let count = 0
-  let first = -1
-  let from = 0
-  for (;;) {
-    const at = haystack.indexOf(needle, from)
-    if (at === -1) break
-    if (count === 0) first = at
-    count++
-    from = at + 1
-  }
-  return { count, first }
+/**
+ * 0, 1, or 2 meaning "two or more", with the first index. At most two searches:
+ * the decision needs nothing more, and counting every (overlapping) match cost
+ * 2.65 s for a^200000 vs a^100000 (measured in review) because each of the
+ * ~100000 matches is compared over 100000 characters. Overlap still counts:
+ * "aa" in "aaa" is two.
+ */
+function countUpToTwo(haystack: string, needle: string): { count: 0 | 1 | 2; first: number } {
+  if (needle.length > haystack.length) return { count: 0, first: -1 }
+  const first = haystack.indexOf(needle)
+  if (first === -1) return { count: 0, first: -1 }
+  return { count: haystack.indexOf(needle, first + 1) === -1 ? 1 : 2, first }
 }
 
 /** Lines with their terminators kept, so "x\n" and "x" at the end differ. */
@@ -230,18 +248,33 @@ interface BuiltDiff {
 }
 
 /**
- * Characters that can make displayed text differ from what is stored. Tab is
- * deliberately not among them. Rendered visibly in the diff, never removed.
+ * Characters that render invisibly or confusably, built from that property and
+ * not from one Unicode category: controls, format characters (bidi, zero-width,
+ * soft hyphen, tags), lone surrogates, private use and unassigned code points,
+ * line and paragraph separators, EVERY space separator (the plain space is
+ * exempted below), and the letters and marks that draw nothing yet are valid in
+ * identifiers: Hangul fillers (U+115F, U+1160, U+3164, U+FFA0), the blank
+ * braille pattern U+2800, the combining grapheme joiner U+034F, the Khmer
+ * inherent vowels, Mongolian and general variation selectors. Err towards
+ * escaping: a visibly escaped harmless character costs the reviewer one glance,
+ * a missed one costs the review. Tab and plain space stay as they are; a
+ * newline never occurs inside one displayed line. Rendered visibly in the diff,
+ * never removed from what is stored.
  */
-const HIDDEN_CHAR = /[\r\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu
+const HIDDEN_SET =
+  '\\p{Cc}\\p{Cf}\\p{Cs}\\p{Co}\\p{Cn}\\p{Zl}\\p{Zp}\\p{Zs}' +
+  '\\u034F\\u115F\\u1160\\u17B4\\u17B5\\u180B-\\u180D\\u2800\\u3164\\uFE00-\\uFE0F\\uFFA0' +
+  '\\u{E0100}-\\u{E01EF}'
+const HIDDEN_CHAR = new RegExp(`[${HIDDEN_SET}]`, 'gu')
+const HIDDEN_ONE = new RegExp(`[${HIDDEN_SET}]`, 'u')
 
 function isHidden(ch: string): boolean {
-  return ch !== '\t' && ch !== '\n' && /[\r\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(ch)
+  return ch !== ' ' && ch !== '\t' && ch !== '\n' && HIDDEN_ONE.test(ch)
 }
 
 function escapeHidden(text: string): string {
   return text.replace(HIDDEN_CHAR, (ch) => {
-    if (ch === '\t') return ch
+    if (ch === ' ' || ch === '\t') return ch
     const hex = (ch.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')
     return `<U+${hex}>`
   })
@@ -287,7 +320,7 @@ function buildDiff(
   const oldCount = ctxBefore.length + removed.length + ctxAfter.length
   const newCount = ctxBefore.length + added.length + ctxAfter.length
   // A file name may carry anything; a line break in it would forge diff lines.
-  const safePath = displayPath.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '?')
+  const safePath = escapeHidden(displayPath)
   const lines = [
     ...(hiddenWarning
       ? [
@@ -308,6 +341,29 @@ function buildDiff(
 
 function reject(reason: string): ProposeOutcome {
   return { kind: 'rejected', reason }
+}
+
+function sha256(text: string): string {
+  return createHash('sha256').update(Buffer.from(text, 'utf-8')).digest('hex')
+}
+
+/**
+ * For the apply step: is `currentContent` provably the file this proposal's
+ * diff was computed against? Compares the hash of the content and then checks
+ * the stored old text sits at the stored position. A changed file (by the user
+ * elsewhere in it, or by another run's accepted proposal) fails the hash even
+ * when the old text still occurs exactly once, which a plain "old text occurs
+ * once" re-check cannot tell. Fails closed on anything malformed.
+ */
+export function editStillMatches(edit: ProposedEdit, currentContent: string): boolean {
+  try {
+    if (typeof currentContent !== 'string') return false
+    if (typeof edit.baseSha256 !== 'string' || edit.baseSha256 !== sha256(currentContent)) return false
+    if (!Number.isInteger(edit.matchIndex) || edit.matchIndex < 0) return false
+    return currentContent.startsWith(edit.oldText, edit.matchIndex)
+  } catch {
+    return false
+  }
 }
 
 interface RunState {
@@ -342,30 +398,6 @@ export function createEditProposalStore(
     st.entries = []
   }
 
-  /**
-   * Drop the oldest retained run's package (recorded for the audit). A run
-   * under review is treated like any other retained run: awaiting review is
-   * exactly what makes a run evictable. Returns false when nothing is retained.
-   */
-  const evictOldestRetained = (reason: string): boolean => {
-    const oldestId = retained[0]
-    if (oldestId === undefined) return false
-    const old = runs.get(oldestId)
-    if (!old) {
-      retained.shift()
-      return true
-    }
-    record(old, {
-      runId: oldestId,
-      outcome: 'package-abandoned',
-      edits: old.entries.length,
-      reason
-    })
-    releaseEntries(old)
-    retire(oldestId, old)
-    return true
-  }
-
   /** The run no longer holds a package: keep only its audit records. */
   const retire = (runId: string, st: RunState): void => {
     runs.delete(runId)
@@ -398,7 +430,7 @@ export function createEditProposalStore(
   }
 
   return {
-    propose(runId, stepNumber, edit, fileContent, options): ProposeOutcome {
+    propose(runId, stepNumber, edit, fileContent): ProposeOutcome {
       try {
         if (typeof runId !== 'string' || runId === '' || runId.length > RUN_ID_MAX_CHARS) {
           return reject('no valid run to attach the proposal to.')
@@ -434,6 +466,21 @@ export function createEditProposalStore(
           return reject('this run has already ended; no further proposals are accepted.')
         }
 
+        // A run that holds no package yet waits while too many finished runs are
+        // awaiting review: refuse it (every time, not only the first), never drop
+        // one of them.
+        const existing = runs.get(runId)
+        if ((!existing || existing.entries.length === 0) && retained.length >= EDIT_MAX_RETAINED_RUNS) {
+          record(stateFor(runId), {
+            runId,
+            stepNumber,
+            path: edit.path,
+            outcome: 'rejected-capacity',
+            reason: 'retained-run cap'
+          })
+          return reject(CAPACITY_RUNS)
+        }
+
         const st = stateFor(runId)
         const key = pathKey(edit.path)
 
@@ -456,13 +503,12 @@ export function createEditProposalStore(
             stepNumber,
             path: edit.path,
             outcome: 'limit-reached',
-            failedAttempts: failedBefore,
-            ...(options?.contentSensitive ? { contentSensitive: true } : {})
+            failedAttempts: failedBefore
           })
           return reject(LIMIT_REACHED)
         }
 
-        const { count, first } = countOccurrences(fileContent, edit.oldText)
+        const { count, first } = countUpToTwo(fileContent, edit.oldText)
         if (count !== 1) {
           const failedAttempts = failedBefore + 1
           st.failures.set(key, failedAttempts)
@@ -472,14 +518,9 @@ export function createEditProposalStore(
             path: edit.path,
             outcome: count === 0 ? 'rejected-not-found' : 'rejected-ambiguous',
             occurrences: count,
-            failedAttempts,
-            ...(options?.contentSensitive ? { contentSensitive: true } : {})
+            failedAttempts
           })
-          if (options?.contentSensitive) return reject(UNIFORM_NO_MATCH)
-          return reject(
-            `the old text occurs ${count} times in the file; it must occur exactly once. ` +
-              'Nothing was changed. Use a longer, unique piece of the file as the old text.'
-          )
+          return reject(NOT_EXACTLY_ONCE)
         }
         if (st.entries.length >= EDIT_MAX_PENDING_PER_RUN) {
           return reject('too many unresolved proposals in this run.')
@@ -496,30 +537,27 @@ export function createEditProposalStore(
           diff: built.diff,
           addedLines: built.addedLines,
           removedLines: built.removedLines,
-          introducesHiddenCharacters: hidden
+          introducesHiddenCharacters: hidden,
+          baseSha256: sha256(fileContent),
+          matchIndex: first
         }
         const bytes =
           Buffer.byteLength(stored.path) +
           Buffer.byteLength(stored.oldText) +
           Buffer.byteLength(stored.newText) +
           Buffer.byteLength(stored.diff)
-        // Make room by evicting the oldest RETAINED runs. Never the running one:
-        // when only running runs are left and it still does not fit, refuse.
-        // Evict only if eviction can make it fit: a proposal that cannot fit even
-        // with every retained run gone must not cost anyone their package.
-        let retainedBytes = 0
-        for (const id of retained) {
-          for (const e of runs.get(id)?.entries ?? []) retainedBytes += e.bytes
-        }
-        const fitsAfterEviction = totalBytes - retainedBytes + bytes <= byteBudget
-        while (fitsAfterEviction && totalBytes + bytes > byteBudget && retained.length > 0) {
-          evictOldestRetained('dropped: pending proposals exceed the byte budget')
-        }
+        // Over the budget: refuse. Never evict a package that is waiting for
+        // review to make room for a new one; the model can shorten its edit and
+        // the human can resolve what is pending.
         if (totalBytes + bytes > byteBudget) {
-          return reject(
-            'too much pending change data in this session (byte budget). Propose smaller edits ' +
-              'or wait for the pending ones to be resolved.'
-          )
+          record(st, {
+            runId,
+            stepNumber,
+            path: edit.path,
+            outcome: 'rejected-capacity',
+            reason: 'byte budget'
+          })
+          return reject(CAPACITY_BYTES)
         }
         totalBytes += bytes
         st.entries.push({ bytes, stepNumber, key, edit: stored })
@@ -566,9 +604,6 @@ export function createEditProposalStore(
       if (how === 'finished' && st.entries.length > 0) {
         st.ended = 'finished'
         retained.push(runId)
-        while (retained.length > EDIT_MAX_RETAINED_RUNS) {
-          if (!evictOldestRetained('dropped: too many finished runs awaiting review')) break
-        }
         return
       }
       if (st.entries.length > 0) {
@@ -603,17 +638,6 @@ export function getEditProposalStore(): EditProposalStore {
 
 export interface EditToolDeps extends ReadToolDeps {
   store: EditProposalStore
-  /**
-   * The sensitive-data scan, applied to the file content this tool reads. Same
-   * detector the loop guard uses. True means: tripped.
-   */
-  scanSensitive: (text: string) => Promise<boolean>
-}
-
-/** Lazy: the detector's module graph must not load when the registry is merely imported. */
-async function defaultScanSensitive(text: string): Promise<boolean> {
-  const { getSensitiveDataDetector } = await import('../security/sensitive-data-detector')
-  return getSensitiveDataDetector().scan(text).hasSensitiveData
 }
 
 const proposeGate: ToolGate = (ctx) => {
@@ -658,20 +682,11 @@ async function editFile(
     // is what the dialog shows and what the accept step will open.
     const realRel = resolved.realRel.split(path.sep).join('/')
 
-    // Content the agent collects passes the same classifier as text a human
-    // typed. Fail closed: a scan that cannot run counts as tripped.
-    let contentSensitive = true
-    try {
-      contentSensitive = await deps.scanSensitive(file.text)
-    } catch {
-      contentSensitive = true
-    }
     const outcome = deps.store.propose(
       runId,
       stepNumber,
       { path: realRel, oldText, newText },
-      file.text,
-      { contentSensitive }
+      file.text
     )
     if (outcome.kind === 'rejected') return `Rejected: ${outcome.reason}`
 
@@ -692,8 +707,7 @@ export function registerEditTools(
 ): void {
   const resolvedDeps = (): EditToolDeps => ({
     findGrant: deps.findGrant ?? defaultReadToolDeps.findGrant,
-    store: deps.store ?? getEditProposalStore(),
-    scanSensitive: deps.scanSensitive ?? defaultScanSensitive
+    store: deps.store ?? getEditProposalStore()
   })
 
   registry.registerBuiltIn(
@@ -702,9 +716,9 @@ export function registerEditTools(
       description:
         'Propose a change to a text file inside the granted project directory. This does NOT ' +
         'write: it records a proposal that the user reviews as a diff and applies or discards. ' +
-        '`old` must occur EXACTLY ONCE in the file (otherwise the proposal is rejected and says ' +
-        'how often it occurs); include enough surrounding text to make it unique. ' +
-        'At most one proposal per file per step. `path` is relative to the project root.',
+        '`old` must occur EXACTLY ONCE in the file, otherwise the proposal is rejected; include ' +
+        'enough surrounding text to make it unique. At most one pending proposal per file: ' +
+        'combine all changes to a file into one call. `path` is relative to the project root.',
       inputSchema: {
         type: 'object',
         properties: {

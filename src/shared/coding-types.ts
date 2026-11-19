@@ -130,4 +130,12 @@ export interface ProposedEdit {
    * displayed diff shows them escaped, the write is byte-exact.
    */
   introducesHiddenCharacters: boolean;
+  /**
+   * SHA-256 (hex) of the file content the diff was computed against, and the
+   * position (UTF-16 index into that content decoded as UTF-8) where `oldText`
+   * matched. The apply step verifies both before writing, so the approved diff
+   * is provably what gets written.
+   */
+  baseSha256: string;
+  matchIndex: number;
 }

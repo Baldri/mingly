@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
+import { createHash } from 'crypto'
 import { ToolRegistry, type ToolContext } from '../../src/main/agent/tool-registry'
 import { registerReadTools } from '../../src/main/coding/read-tools'
 import {
@@ -19,6 +20,7 @@ import {
   EDIT_MAX_FAILED_ATTEMPTS_PER_PATH,
   EDIT_MAX_RETAINED_RUNS,
   EDIT_PENDING_BYTES_BUDGET,
+  editStillMatches,
   type EditProposalStore
 } from '../../src/main/coding/edit-proposals'
 import { ensureProjectWorkspace } from '../../src/main/coding/project-workspace'
@@ -100,21 +102,32 @@ afterEach(() => {
 describe('EditProposalStore.propose', () => {
   const base = { path: 'a.ts', oldText: 'return x', newText: 'return y' }
 
-  it('rejects an old text that occurs twice and says how often', () => {
+  const NOT_ONCE = /exactly once/i
+
+  it('rejects an old text that occurs twice, with a reason that does not depend on the content', () => {
     const out = store.propose(RUN, 1, base, 'function a(){ return x }\nfunction b(){ return x }')
-    expect(out).toEqual({ kind: 'rejected', reason: expect.stringContaining('2') })
+    expect(out).toEqual({ kind: 'rejected', reason: expect.stringMatching(NOT_ONCE) })
     expect(store.pending(RUN)).toHaveLength(0)
   })
 
   it('rejects an old text that does not occur', () => {
     const out = store.propose(RUN, 1, base, 'nothing to see here')
-    expect(out).toEqual({ kind: 'rejected', reason: expect.stringContaining('0') })
+    expect(out).toEqual({ kind: 'rejected', reason: expect.stringMatching(NOT_ONCE) })
     expect(store.pending(RUN)).toHaveLength(0)
+  })
+
+  it('the reason is IDENTICAL for zero matches and for several, carries no number and says what to do', () => {
+    const none = store.propose(RUN, 1, base, 'nothing')
+    const many = store.propose(RUN, 2, base, 'return x return x return x')
+    if (none.kind !== 'rejected' || many.kind !== 'rejected') throw new Error('expected rejections')
+    expect(none.reason).toBe(many.reason)
+    expect(none.reason).not.toMatch(/[0-9]|occurs|times/i)
+    expect(none.reason).toMatch(/longer/i)
   })
 
   it('counts overlapping occurrences: "aa" in "aaa" is ambiguous', () => {
     const out = store.propose(RUN, 1, { path: 'a.ts', oldText: 'aa', newText: 'b' }, 'aaa')
-    expect(out).toEqual({ kind: 'rejected', reason: expect.stringContaining('2') })
+    expect(out).toEqual({ kind: 'rejected', reason: expect.stringMatching(NOT_ONCE) })
   })
 
   it('rejects an empty old text', () => {
@@ -321,18 +334,23 @@ describe('end of a run: abandoned versus finished', () => {
     expect(store.auditRecords(RUN).records.length).toBeGreaterThan(0)
   })
 
-  it('retention is bounded: only the newest EDIT_MAX_RETAINED_RUNS finished runs keep proposals', () => {
-    const total = EDIT_MAX_RETAINED_RUNS + 5
-    for (let i = 0; i < total; i++) {
+  it('retention is bounded by REFUSING a new run, never by dropping a package under review', () => {
+    for (let i = 0; i < EDIT_MAX_RETAINED_RUNS; i++) {
       store.propose(`run-${i}`, 1, one, 'a')
       store.endRun(`run-${i}`, 'finished')
     }
-    const kept = Array.from({ length: total }, (_, i) => store.pending(`run-${i}`).length > 0)
-    expect(kept.filter(Boolean)).toHaveLength(EDIT_MAX_RETAINED_RUNS)
-    // the OLDEST are the ones dropped, and the drop is recorded
-    expect(kept.slice(0, 5).every((k) => !k)).toBe(true)
-    expect(kept.slice(5).every((k) => k)).toBe(true)
-    expect(store.auditRecords('run-0').records.some((r) => r.outcome === 'package-abandoned')).toBe(true)
+    const refused = store.propose('one-too-many', 1, one, 'a')
+    expect(refused).toEqual({ kind: 'rejected', reason: expect.stringMatching(/awaiting review|resolve/i) })
+    for (let i = 0; i < EDIT_MAX_RETAINED_RUNS; i++) {
+      expect(store.pending(`run-${i}`)).toHaveLength(1)
+    }
+    expect(store.pending('one-too-many')).toEqual([])
+    expect(store.auditRecords('one-too-many').records.some((r) => r.outcome === 'rejected-capacity')).toBe(true)
+    // refused every time, not only the first (a refused run must not slip in on its second try)
+    expect(store.propose('one-too-many', 2, { path: 'b.ts', oldText: 'a', newText: 'b' }, 'a').kind).toBe('rejected')
+    // endRun of a run that already holds a package never drops anything
+    store.endRun('one-too-many', 'finished')
+    expect(store.pending('run-0')).toHaveLength(1)
   })
 
   it('resolving a retained run frees its slot', () => {
@@ -386,7 +404,7 @@ describe('global byte budget over everything pending', () => {
     expect(store.pendingBytes()).toBe(0)
   })
 
-  it('one oversized run pushes the store past the budget: the OLDEST retained run is evicted and the store stays under', () => {
+  it('a proposal that would pass the budget is REFUSED; nothing retained is evicted', () => {
     const per = measure(2000)
     const small = createEditProposalStore({ byteBudget: Math.floor(per * 2.5) })
     propose(small, 'old', 'a.ts', 2000)
@@ -395,85 +413,70 @@ describe('global byte budget over everything pending', () => {
     finish(small, 'newer')
     expect(small.pendingBytes()).toBe(per * 2)
 
-    expect(propose(small, 'active', 'a.ts', 2000).kind).toBe('proposed')
+    const out = propose(small, 'active', 'a.ts', 2000)
 
-    expect(small.pending('old')).toEqual([])
+    expect(out).toEqual({ kind: 'rejected', reason: expect.stringMatching(/budget|resolve/i) })
+    expect(small.pending('old')).toHaveLength(1)
     expect(small.pending('newer')).toHaveLength(1)
-    expect(small.pending('active')).toHaveLength(1)
-    expect(small.pendingBytes()).toBeLessThanOrEqual(Math.floor(per * 2.5))
+    expect(small.pending('active')).toEqual([])
+    expect(small.pendingBytes()).toBe(per * 2)
   })
 
-  it('eviction prefers the oldest retained run, one at a time, and stops as soon as it fits', () => {
+  it('a review that is waiting can never disappear: even a maximal-size runaway cannot wipe retained packages', () => {
     const per = measure(2000)
-    const small = createEditProposalStore({ byteBudget: per * 3 })
+    const small = createEditProposalStore({ byteBudget: per * 4 })
     for (const id of ['r1', 'r2', 'r3']) {
       propose(small, id, 'a.ts', 2000)
       finish(small, id)
     }
-    propose(small, 'r4', 'a.ts', 2000)
-    expect(small.pending('r1')).toEqual([])
-    expect(small.pending('r2')).toHaveLength(1)
-    expect(small.pending('r3')).toHaveLength(1)
-    expect(small.pending('r4')).toHaveLength(1)
-    // a proposal needing two slots evicts the two oldest remaining
-    propose(small, 'r5', 'a.ts', 4000)
-    expect(small.pending('r2')).toEqual([])
-    expect(small.pending('r3')).toEqual([])
-    expect(small.pending('r4')).toHaveLength(1)
-    expect(small.pendingBytes()).toBeLessThanOrEqual(per * 3)
+    for (let i = 0; i < 20; i++) propose(small, 'runaway', `f${i}.ts`, 2000)
+    for (const id of ['r1', 'r2', 'r3']) expect(small.pending(id)).toHaveLength(1)
+    expect(small.pendingBytes()).toBeLessThanOrEqual(per * 4)
   })
 
-  it('a run under review is evicted like any other retained run: no special protection', () => {
-    // Policy: retained means "awaiting review", and that is exactly the set that
-    // is evictable. Only runs that are still running are protected.
+  it('resolving a pending package frees the space, and the refused proposal then succeeds', () => {
     const per = measure(2000)
-    const small = createEditProposalStore({ byteBudget: per * 1.5 })
-    propose(small, 'reviewing', 'a.ts', 2000)
-    finish(small, 'reviewing')
-    propose(small, 'active', 'a.ts', 2000)
-    expect(small.pending('reviewing')).toEqual([])
-    expect(small.pending('active')).toHaveLength(1)
-  })
-
-  it('records each eviction for the audit, naming the budget', () => {
-    const per = measure(2000)
-    const small = createEditProposalStore({ byteBudget: per * 1.5 })
+    const small = createEditProposalStore({ byteBudget: Math.floor(per * 1.5) })
     propose(small, 'old', 'a.ts', 2000)
     finish(small, 'old')
-    propose(small, 'active', 'a.ts', 2000)
-    const rec = small.auditRecords('old').records.find((r) => r.outcome === 'package-abandoned')
-    expect(rec).toMatchObject({ edits: 1 })
+    expect(propose(small, 'active', 'a.ts', 2000).kind).toBe('rejected')
+    small.resolve('old', false, 'discarded')
+    expect(propose(small, 'active', 'a.ts', 2000).kind).toBe('proposed')
+  })
+
+  it('records the refusal for the audit as a capacity event, with the path', () => {
+    const per = measure(2000)
+    const small = createEditProposalStore({ byteBudget: Math.floor(per * 1.5) })
+    propose(small, 'old', 'a.ts', 2000)
+    finish(small, 'old')
+    propose(small, 'active', 'b.ts', 2000)
+    const rec = small.auditRecords('active').records.find((r) => r.outcome === 'rejected-capacity')
+    expect(rec).toMatchObject({ path: 'b.ts', stepNumber: 1 })
     expect(rec?.reason).toMatch(/budget/i)
   })
 
-  it('never evicts a run that is still running: the new proposal is refused instead', () => {
-    const per = measure(2000)
-    const small = createEditProposalStore({ byteBudget: per * 1.5 })
-    expect(propose(small, 'active', 'a.ts', 2000).kind).toBe('proposed')
-    const second = propose(small, 'active', 'b.ts', 2000)
-    expect(second).toEqual({ kind: 'rejected', reason: expect.stringMatching(/budget|too much/i) })
-    expect(small.pending('active')).toHaveLength(1)
-    expect(small.pendingBytes()).toBeLessThanOrEqual(per * 1.5)
-  })
-
-  it('a single proposal larger than the whole budget is refused and nothing is evicted for it', () => {
+  it('a single proposal larger than the whole budget is refused', () => {
     const per = measure(2000)
     const small = createEditProposalStore({ byteBudget: per * 2 })
-    propose(small, 'old', 'a.ts', 2000)
-    finish(small, 'old')
-    const huge = propose(small, 'active', 'a.ts', 20000)
-    expect(huge.kind).toBe('rejected')
-    expect(small.pending('old')).toHaveLength(1)
+    expect(propose(small, 'active', 'a.ts', 20000).kind).toBe('rejected')
     expect(small.pending('active')).toEqual([])
   })
 
-  it('a refused (budget) proposal is not recorded as stored and leaves the byte count unchanged', () => {
+  it('a refused (budget) proposal leaves the byte count unchanged', () => {
     const per = measure(2000)
     const small = createEditProposalStore({ byteBudget: per })
     propose(small, 'active', 'a.ts', 2000)
     const before = small.pendingBytes()
     propose(small, 'active', 'b.ts', 2000)
     expect(small.pendingBytes()).toBe(before)
+  })
+
+  it('counts the DIFF too: small old/new text with large context is large', () => {
+    const line = 'c'.repeat(1000)
+    const content = `${line}\n${line}\n${line}\ntarget\n${line}\n${line}\n${line}\n`
+    store.propose(RUN, 1, { path: 'a.ts', oldText: 'target', newText: 'T' }, content)
+    // old + new + path are a few bytes; the context lines in the diff are ~6000
+    expect(store.pendingBytes()).toBeGreaterThanOrEqual(6000)
   })
 })
 
@@ -544,91 +547,193 @@ describe('rendering: the diff must not lie to the reviewer', () => {
   })
 })
 
-describe('content that trips the sensitive-data scan: no content-dependent detail', () => {
-  const SECRET = 'SENSITIVE_MARKER'
-  const scan = async (text: string): Promise<boolean> => text.includes(SECRET)
-  let scanned: string[]
-
-  beforeEach(() => {
-    scanned = []
-    registry = new ToolRegistry({ toolTimeoutMs: 5000, maxResultChars: 1_000_000 })
-    const deps = { findGrant: async (id: string) => grants.find((g) => g.id === id) }
-    registerReadTools(registry, deps)
-    registerEditTools(registry, {
-      ...deps,
-      store,
-      scanSensitive: async (t: string) => {
-        scanned.push(t)
-        return scan(t)
+describe('the refusal never varies with file content (no scan verdict, no count)', () => {
+  it('zero matches and several matches give the SAME tool result, on any file', async () => {
+    write('plain.ts', 'foo\nfoo\n')
+    write('pw.ts', 'const cfg = { password: "hunter22secret" }\nfoo\nfoo\n')
+    const results: string[] = []
+    for (const file of ['plain.ts', 'pw.ts']) {
+      for (const old of ['absent', 'foo']) {
+        results.push(await edit({ path: file, old, new: 'y' }, await ctxFor()))
       }
-    })
+    }
+    expect(new Set(results).size).toBe(1)
+    expect(results[0]).toMatch(/exactly once/i)
+    expect(results[0]).toMatch(/longer/i)
+    expect(results[0]).not.toMatch(/[0-9]|occurs|times/i)
   })
 
-  it('gives the SAME refusal for zero matches and for several matches', async () => {
-    write('s.ts', `${SECRET}\nfoo\nfoo\n`)
-    const none = await edit({ path: 's.ts', old: 'absent', new: 'y' }, await ctxFor())
-    const many = await edit({ path: 's.ts', old: 'foo', new: 'y' }, await ctxFor())
-    expect(none).toBe(many)
-    expect(none).not.toMatch(/occurs|\b[0-9]+ times\b/i)
-    expect(store.pending(RUN)).toHaveLength(0)
-  })
-
-  it('control: an ordinary file still reports its count', async () => {
-    write('o.ts', 'foo\nfoo\n')
-    expect(await edit({ path: 'o.ts', old: 'foo', new: 'y' }, await ctxFor())).toMatch(/occurs 2 times/)
-    expect(await edit({ path: 'o.ts', old: 'absent', new: 'y' }, await ctxFor())).toMatch(/occurs 0 times/)
-  })
-
-  it('scans the content it read (the content the agent collected), not the model arguments', async () => {
-    write('o.ts', 'plain\n')
-    await edit({ path: 'o.ts', old: 'plain', new: 'y' }, await ctxFor())
-    expect(scanned).toEqual(['plain\n'])
-  })
-
-  it('audits the event: sensitive flag and the real count stay available to the audit only', async () => {
-    write('s.ts', `${SECRET}\nfoo\nfoo\n`)
+  it('audits the real figure (0, or 2 for "two or more") without showing it to the model', async () => {
+    write('s.ts', 'foo\nfoo\n')
     await edit({ path: 's.ts', old: 'foo', new: 'y' }, await ctxFor())
-    const { records } = store.auditRecords(RUN)
-    expect(records).toHaveLength(1)
-    expect(records[0]).toMatchObject({
-      outcome: 'rejected-ambiguous',
-      path: 's.ts',
-      occurrences: 2,
-      contentSensitive: true
-    })
+    await edit({ path: 's.ts', old: 'absent', new: 'y' }, await ctxFor())
+    const recs = store.auditRecords(RUN).records
+    expect(recs[0]).toMatchObject({ outcome: 'rejected-ambiguous', path: 's.ts', occurrences: 2 })
+    expect(recs[1]).toMatchObject({ outcome: 'rejected-not-found', path: 's.ts', occurrences: 0 })
   })
 
-  it('fails closed: a scan that throws gives the uniform refusal', async () => {
-    registry = new ToolRegistry({ toolTimeoutMs: 5000, maxResultChars: 1_000_000 })
-    const deps = { findGrant: async (id: string) => grants.find((g) => g.id === id) }
-    registerReadTools(registry, deps)
-    registerEditTools(registry, {
-      ...deps,
-      store,
-      scanSensitive: async () => {
-        throw new Error('detector down')
-      }
-    })
-    write('o.ts', 'foo\nfoo\n')
-    const out = await edit({ path: 'o.ts', old: 'foo', new: 'y' }, await ctxFor())
-    expect(out).not.toMatch(/occurs/i)
-    expect(out).toMatch(/rejected|refused/i)
-  })
-
-  it('the default scan is the real detector: a file with a password-shaped string is uniform', async () => {
-    registry = new ToolRegistry({ toolTimeoutMs: 5000, maxResultChars: 1_000_000 })
-    const deps = { findGrant: async (id: string) => grants.find((g) => g.id === id) }
-    registerReadTools(registry, deps)
-    registerEditTools(registry, { ...deps, store })
-    write('k.ts', 'const cfg = { password: "hunter22secret" }\nfoo\nfoo\n')
-    const many = await edit({ path: 'k.ts', old: 'foo', new: 'y' }, await ctxFor())
-    const none = await edit({ path: 'k.ts', old: 'absent', new: 'y' }, await ctxFor())
-    expect(many).toBe(none)
-    expect(many).not.toMatch(/occurs/i)
+  it('does not take a scan dependency any more: registering without one still works', async () => {
+    write('o.ts', 'plain\n')
+    expect(await edit({ path: 'o.ts', old: 'plain', new: 'y' }, await ctxFor())).toMatch(/proposed/i)
   })
 })
 
-describe('failed-attempt cap per path (bounds the count oracle; does not close it)', () => {
+describe('rendering: what counts as invisible or confusable', () => {
+  // Each of these is a valid identifier character or a blank in some editor
+  // and invisible or look-alike in a diff view. Escaped, and flagged if added.
+  it.each([
+    ['Hangul filler U+3164', '\u3164'],
+    ['halfwidth Hangul filler U+FFA0', '\uFFA0'],
+    ['Hangul choseong filler U+115F', '\u115F'],
+    ['Hangul jungseong filler U+1160', '\u1160'],
+    ['braille blank U+2800', '\u2800'],
+    ['combining grapheme joiner U+034F', '\u034F'],
+    ['variation selector U+FE0F', '\uFE0F'],
+    ['Mongolian variation selector U+180B', '\u180B'],
+    ['variation selector supplement U+E0100', '\u{E0100}'],
+    ['no-break space U+00A0', '\u00A0'],
+    ['ideographic space U+3000', '\u3000'],
+    ['en space U+2002', '\u2002'],
+    ['narrow no-break space U+202F', '\u202F'],
+    ['soft hyphen U+00AD', '\u00AD'],
+    ['Khmer inherent vowel U+17B4', '\u17B4'],
+    ['private use U+E000', '\uE000']
+  ])('escapes %s and flags a proposal that adds it', (_n, ch) => {
+    store.propose(RUN, 1, { path: 'a.ts', oldText: 'x', newText: `x${ch}y` }, 'x\n')
+    const [p] = store.pending(RUN)
+    const hex = ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')
+    expect(p.diff).toContain(`<U+${hex}>`)
+    expect(p.diff).not.toContain(ch)
+    expect(p.introducesHiddenCharacters).toBe(true)
+    expect(p.newText).toBe(`x${ch}y`)
+  })
+
+  it('an invisible variable name: the Hangul filler as an identifier is flagged', () => {
+    store.propose(RUN, 1, { path: 'a.ts', oldText: 'let a = 1', newText: 'let a = 1\nlet \u3164 = 2' }, 'let a = 1\n')
+    const [p] = store.pending(RUN)
+    expect(p.introducesHiddenCharacters).toBe(true)
+    expect(p.diff).toContain('+let <U+3164> = 2')
+  })
+
+  it('leaves plain space and tab alone', () => {
+    store.propose(RUN, 1, { path: 'a.ts', oldText: 'x', newText: ' \tx' }, 'x\n')
+    const [p] = store.pending(RUN)
+    expect(p.diff).toContain('+ \tx')
+    expect(p.diff).not.toContain('<U+')
+    expect(p.introducesHiddenCharacters).toBe(false)
+  })
+
+  it('does not treat a normal multi-line replacement as hidden characters', () => {
+    store.propose(RUN, 1, { path: 'a.ts', oldText: 'x', newText: 'a\nb\nc' }, 'x\n')
+    expect(store.pending(RUN)[0].introducesHiddenCharacters).toBe(false)
+  })
+
+  it('stores a plain old text that CONTAINS a hidden character exactly (the write must not write the escaping)', () => {
+    const old = `if (a${'\u202E'}b)`
+    store.propose(RUN, 1, { path: 'a.ts', oldText: old, newText: 'if (ab)' }, `${old}\n`)
+    const [p] = store.pending(RUN)
+    expect(p.oldText).toBe(old)
+    expect(p.oldText).not.toContain('<U+')
+    expect(p.newText).toBe('if (ab)')
+    expect(p.diff).toContain('-if (a<U+202E>b)')
+  })
+
+  it('escapes REMOVED lines too, not only added and context lines', () => {
+    store.propose(RUN, 1, { path: 'a.ts', oldText: `a\u3164b`, newText: 'ab' }, 'a\u3164b\n')
+    const [p] = store.pending(RUN)
+    const removed = p.diff.split('\n').filter((l) => l.startsWith('-') && !l.startsWith('---'))
+    expect(removed).toEqual(['-a<U+3164>b'])
+  })
+
+  it('escapes the path in the diff header, including a line break that would forge diff lines', () => {
+    store.propose(RUN, 1, { path: 'src/a\u202E.ts', oldText: 'x', newText: 'y' }, 'x\n')
+    store.propose(RUN, 1, { path: 'b\n+++ forged.ts', oldText: 'x', newText: 'y' }, 'x\n')
+    const [one, two] = store.pending(RUN)
+    expect(one.diff).toContain('--- a/src/a<U+202E>.ts')
+    expect(one.diff).toContain('+++ b/src/a<U+202E>.ts')
+    expect(two.diff.split('\n').filter((l) => l.startsWith('+++ '))).toHaveLength(1)
+    expect(two.diff).toContain('<U+000A>')
+  })
+})
+
+describe('file identity: the approved diff is provably the one that gets written', () => {
+  const sha = (t: string) => createHash('sha256').update(Buffer.from(t, 'utf-8')).digest('hex')
+
+  it('stores the hash of the content as read, and the match offset', () => {
+    const content = 'let a = 1\nlet b = 2\n'
+    store.propose(RUN, 1, { path: 'a.ts', oldText: 'let b = 2', newText: 'let b = 3' }, content)
+    const [p] = store.pending(RUN)
+    expect(p.baseSha256).toBe(sha(content))
+    expect(p.matchIndex).toBe(content.indexOf('let b = 2'))
+  })
+
+  it('editStillMatches: true for the file the diff was computed against', () => {
+    const content = 'let a = 1\nlet b = 2\n'
+    store.propose(RUN, 1, { path: 'a.ts', oldText: 'let b = 2', newText: 'let b = 3' }, content)
+    expect(editStillMatches(store.pending(RUN)[0], content)).toBe(true)
+  })
+
+  it('editStillMatches: false when the user edited ELSEWHERE in the file (old text still occurs once)', () => {
+    const content = 'let a = 1\nlet b = 2\n'
+    store.propose(RUN, 1, { path: 'a.ts', oldText: 'let b = 2', newText: 'let b = 3' }, content)
+    const changed = 'let a = 100\nlet b = 2\n'
+    expect(changed.split('let b = 2').length - 1).toBe(1)
+    expect(editStillMatches(store.pending(RUN)[0], changed)).toBe(false)
+  })
+
+  it('editStillMatches: false when the user edited AFTER the match (same position, old text still there once)', () => {
+    // Only the hash can tell this: the old text sits at the stored index in both versions.
+    const content = 'let a = 1\nlet b = 2\nlet c = 3\n'
+    store.propose(RUN, 1, { path: 'a.ts', oldText: 'let b = 2', newText: 'let b = 9' }, content)
+    const changed = 'let a = 1\nlet b = 2\nlet c = 300\n'
+    expect(changed.startsWith('let b = 2', store.pending(RUN)[0].matchIndex)).toBe(true)
+    expect(editStillMatches(store.pending(RUN)[0], changed)).toBe(false)
+  })
+
+  it('editStillMatches: false when a second run changed the file (two runs may hold proposals on one file)', () => {
+    const content = 'let a = 1\n'
+    store.propose('runA', 1, { path: 'a.ts', oldText: 'let a = 1', newText: 'let a = 2' }, content)
+    store.propose('runB', 1, { path: 'a.ts', oldText: 'let a = 1', newText: 'let a = 3' }, content)
+    const afterA = 'let a = 2\n'
+    expect(editStillMatches(store.pending('runB')[0], afterA)).toBe(false)
+  })
+
+  it('editStillMatches: false when the file is unchanged but the stored fields were altered', () => {
+    const content = 'let a = 1\n'
+    store.propose(RUN, 1, { path: 'a.ts', oldText: 'let a = 1', newText: 'let a = 2' }, content)
+    const forged = { ...store.pending(RUN)[0], matchIndex: 3 }
+    expect(editStillMatches(forged, content)).toBe(false)
+  })
+
+  it('the handler stores the hash of the bytes on disk (multi-byte text included)', async () => {
+    const abs = write('a.ts', 'const s = "caf\u00e9"\nlet b = 2\n')
+    await edit({ path: 'a.ts', old: 'let b = 2', new: 'let b = 3' }, await ctxFor())
+    const onDisk = createHash('sha256').update(fs.readFileSync(abs)).digest('hex')
+    expect(store.pending(RUN)[0].baseSha256).toBe(onDisk)
+  })
+})
+
+describe('the counting work is bounded', () => {
+  it('adversarial overlap (a^200000, a^100000) is decided without scanning every match', () => {
+    const content = 'a'.repeat(200_000)
+    const started = performance.now()
+    const out = store.propose(RUN, 1, { path: 'a.ts', oldText: 'a'.repeat(100_000), newText: 'b' }, content)
+    const elapsed = performance.now() - started
+    expect(out.kind).toBe('rejected')
+    // Measured: the unbounded overlapping loop took 2.65 s on the review machine
+    // for this shape (about 100000 matches, each compared over 100000 characters);
+    // the bounded version stops after the second match and took a few ms here.
+    // The bound is 500 ms, i.e. over 50x the bounded measurement and over 5x
+    // under the unbounded one, so it separates the two without being flaky.
+    expect(elapsed).toBeLessThan(500)
+  })
+
+  it('a longer old text than the file can never match and is refused at once', () => {
+    expect(store.propose(RUN, 1, { path: 'a.ts', oldText: 'abcd', newText: 'x' }, 'abc').kind).toBe('rejected')
+  })
+})
+
+describe('failed-attempt cap per path (belt and braces: the refusal text itself no longer varies)', () => {
   const CAP = EDIT_MAX_FAILED_ATTEMPTS_PER_PATH
   const miss = (s: EditProposalStore, step = 1, p = 'a.ts', runId = RUN) =>
     s.propose(runId, step, { path: p, oldText: 'zzz', newText: 'y' }, 'abc')
@@ -642,7 +747,7 @@ describe('failed-attempt cap per path (bounds the count oracle; does not close i
 
   it('refuses further attempts on the path once the cap is reached, even a correct one', () => {
     for (let i = 0; i < CAP; i++) {
-      expect(miss(store, i + 1)).toEqual({ kind: 'rejected', reason: expect.stringContaining('occurs 0 times') })
+      expect(miss(store, i + 1)).toEqual({ kind: 'rejected', reason: expect.stringMatching(/exactly once/i) })
     }
     const capped = miss(store, CAP + 1)
     expect(capped.kind).toBe('rejected')
@@ -672,7 +777,7 @@ describe('failed-attempt cap per path (bounds the count oracle; does not close i
       expect(hit(store, i).kind).toBe('proposed')
       store.resolve(RUN, true)
     }
-    expect(miss(store, CAP * 3 + 1)).toEqual({ kind: 'rejected', reason: expect.stringContaining('occurs 0 times') })
+    expect(miss(store, CAP * 3 + 1)).toEqual({ kind: 'rejected', reason: expect.stringMatching(/exactly once/i) })
   })
 
   it('does not count refusals that depend only on the model string (no-op, same step)', () => {
@@ -682,7 +787,7 @@ describe('failed-attempt cap per path (bounds the count oracle; does not close i
     expect(hit(store, 1).kind).toBe('proposed')
     for (let i = 0; i < CAP * 2; i++) hit(store, 1)
     store.resolve(RUN, true)
-    expect(miss(store, 2)).toEqual({ kind: 'rejected', reason: expect.stringContaining('occurs 0 times') })
+    expect(miss(store, 2)).toEqual({ kind: 'rejected', reason: expect.stringMatching(/exactly once/i) })
   })
 
   it('is per path and per run', () => {
@@ -708,7 +813,7 @@ describe('failed-attempt cap per path (bounds the count oracle; does not close i
     write('a.ts', 'abc')
     const ctx = await ctxFor()
     for (let i = 0; i < CAP; i++) {
-      expect(await edit({ path: 'a.ts', old: 'zzz', new: 'y' }, { ...ctx, stepNumber: i + 1 })).toMatch(/occurs 0 times/)
+      expect(await edit({ path: 'a.ts', old: 'zzz', new: 'y' }, { ...ctx, stepNumber: i + 1 })).toMatch(/exactly once/i)
     }
     const out = await edit({ path: 'a.ts', old: 'abc', new: 'y' }, { ...ctx, stepNumber: CAP + 1 })
     expect(out).toMatch(/limit/i)
@@ -730,7 +835,7 @@ describe('audit records (for the audit task to wire; not an audit itself)', () =
     const by = (o: string) => records.filter((r) => r.outcome === o)
     expect(by('proposed')).toHaveLength(1)
     expect(by('proposed')[0]).toMatchObject({ runId: RUN, stepNumber: 1, path: 'a.ts' })
-    expect(by('rejected-ambiguous')[0]).toMatchObject({ path: 'b.ts', stepNumber: 2, occurrences: 3, failedAttempts: 1 })
+    expect(by('rejected-ambiguous')[0]).toMatchObject({ path: 'b.ts', stepNumber: 2, occurrences: 2, failedAttempts: 1 })
     expect(by('rejected-not-found')[0]).toMatchObject({ path: 'b.ts', stepNumber: 3, occurrences: 0, failedAttempts: 2 })
     expect(by('limit-reached')).toHaveLength(1)
     expect(by('limit-reached')[0]).toMatchObject({ path: 'c.ts', stepNumber: 99 })
@@ -818,14 +923,16 @@ describe('edit_file handler: proposes, never writes', () => {
   it('returns the rejection reason to the agent as a tool result', async () => {
     write('a.ts', 'function a(){ return x }\nfunction b(){ return x }')
     const out = await edit({ path: 'a.ts', old: 'return x', new: 'return y' }, await ctxFor())
-    expect(out).toMatch(/occurs 2 times/i)
+    expect(out).toMatch(/exactly once/i)
     expect(store.pending(RUN)).toHaveLength(0)
   })
 
-  it('says "occurs 0 times" for a text that is not in the file', async () => {
-    write('a.ts', 'abc')
-    const out = await edit({ path: 'a.ts', old: 'zzz', new: 'y' }, await ctxFor())
-    expect(out).toMatch(/occurs 0 times/i)
+  it('gives the same result for a text that is not in the file', async () => {
+    write('a.ts', 'function a(){ return x }\nfunction b(){ return x }')
+    write('b.ts', 'abc')
+    const twice = await edit({ path: 'a.ts', old: 'return x', new: 'y' }, await ctxFor())
+    const none = await edit({ path: 'b.ts', old: 'zzz', new: 'y' }, await ctxFor())
+    expect(none).toBe(twice)
   })
 
   it('returns no file content: neither neighbouring lines nor the line number', async () => {
