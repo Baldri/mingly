@@ -52,6 +52,17 @@ export interface CodingRunOptions {
 // ── Consent mid-run ─────────────────────────────────────────
 
 /**
+ * What the renderer sends to start a coding run: the directory id, nothing else.
+ * There is no path and no mode here on purpose (R35): the main process derives
+ * the path from the grant and reads the mode from its own store. The IPC
+ * handler still treats the argument as untrusted and refuses a `projectPath` or
+ * `mode` that disagrees with what it derived.
+ */
+export interface CodingRunRequest {
+  directoryId: string;
+}
+
+/**
  * What the user may decide about ONE tool result the guard flagged.
  *
  * `drop-file` is the third option the loop lacked: the run neither dies nor
@@ -139,3 +150,92 @@ export interface ProposedEdit {
   baseSha256: string;
   matchIndex: number;
 }
+
+// -- What the renderer may see and send --------------------------
+
+/**
+ * One proposal as the approval dialog sees it. No `oldText` / `newText`: the
+ * renderer gets what it must show (path, diff, counts, the hidden-character
+ * flag), never the file text the proposal was computed from.
+ */
+export interface PendingEditView {
+  path: string;
+  diff: string;
+  addedLines: number;
+  removedLines: number;
+  introducesHiddenCharacters: boolean;
+}
+
+/**
+ * The package a run proposes. `digest` is computed in the main process over the
+ * FULL proposals and sent back with the accept, so what is written is provably
+ * the package the human was shown.
+ */
+export interface PendingPackageView {
+  directoryId?: string;
+  digest: string;
+  edits: PendingEditView[];
+}
+
+/** The undo answer as it crosses into the renderer (mirrors the main process's outcome). */
+export interface CodingSkippedFile {
+  path: string;
+  reason: string;
+}
+
+export type CodingUndoOutcome =
+  | {
+      kind: "restored";
+      restored: string[];
+      skipped: CodingSkippedFile[];
+      interrupted?: true;
+    }
+  | { kind: "refused"; reason: string; skipped?: CodingSkippedFile[] };
+
+/**
+ * One level of the mode picker. `auto` is not here and cannot be added by
+ * accident: the picker is built from this list, and so is the main process's
+ * check of what may be stored.
+ *
+ * R36: `scopeNote` is part of the level, shown with it, not behind a help text.
+ * The wording follows the README ("die Stufen gelten nur für Minglys eigene
+ * Werkzeuge, nicht für Ihre MCP-Server").
+ */
+export interface CodingModeChoice {
+  mode: CodingMode;
+  label: string;
+  description: string;
+  scopeNote: string;
+}
+
+export const CODING_SCOPE_NOTE =
+  "Betrifft nur Minglys eigene Werkzeuge. Ihre MCP-Server bleiben in jedem Modus erreichbar, auch mit Schreibzugriff.";
+
+export const CODING_MODE_CHOICES: readonly CodingModeChoice[] = [
+  {
+    mode: "off",
+    label: "Aus",
+    description: "Normaler Chat. Minglys Coding-Werkzeuge sehen das Projekt nicht.",
+    scopeNote: CODING_SCOPE_NOTE,
+  },
+  {
+    mode: "read-only",
+    label: "Nur lesen",
+    description: "Minglys Coding-Werkzeuge dürfen im Projekt lesen und suchen, aber nichts ändern.",
+    scopeNote: CODING_SCOPE_NOTE,
+  },
+  {
+    mode: "propose",
+    label: "Vorschlagen",
+    description:
+      "Lesen und Änderungen vorschlagen. Geschrieben wird erst, wenn Sie den Vorschlag im Diff annehmen.",
+    scopeNote: CODING_SCOPE_NOTE,
+  },
+  {
+    mode: "propose-run",
+    label: "Vorschlagen und ausführen",
+    description:
+      "Wie «Vorschlagen», dazu wenige freigegebene Befehle. Jede Änderung braucht weiterhin Ihre Annahme.",
+    scopeNote: CODING_SCOPE_NOTE,
+  },
+];

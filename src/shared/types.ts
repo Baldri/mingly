@@ -726,6 +726,14 @@ export const IPC_CHANNELS = {
   CODING_ACCEPT_EDITS: 'coding:accept-edits',
   CODING_REJECT_EDITS: 'coding:reject-edits',
   CODING_UNDO_RUN: 'coding:undo-run',
+  // The package a finished run proposes, as the renderer may see it: paths,
+  // diffs and counts, never file text. Takes a run id, never a path.
+  CODING_GET_PENDING: 'coding:get-pending',
+
+  // Coding mode per project grant. Reading it is open; setting it grants a
+  // capability and is gated like starting a run.
+  CODING_GET_MODE: 'coding:get-mode',
+  CODING_SET_MODE: 'coding:set-mode',
 
   // Coding audit: the export a compliance officer receives (CSV text). Reads
   // audit rows, starts nothing, so it is not gated like the channels above.

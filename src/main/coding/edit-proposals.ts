@@ -54,6 +54,12 @@ import {
   type Scope
 } from './read-tools'
 import { resolvePathSegments } from './path-policy'
+import {
+  HIDDEN_CHAR,
+  escapeHiddenCharacters,
+  isHiddenCharacter,
+  stripHiddenCharacters
+} from '../../shared/hidden-characters'
 
 // ---------------------------------------------------------------------------
 // Limits and messages
@@ -288,7 +294,7 @@ function toLines(text: string): string[] {
 }
 
 function displayLine(prefix: string, line: string): string {
-  const body = escapeHidden(line.endsWith('\n') ? line.slice(0, -1) : line)
+  const body = escapeHiddenCharacters(line.endsWith('\n') ? line.slice(0, -1) : line)
   return line.endsWith('\n')
     ? `${prefix}${body}`
     : `${prefix}${body}\n\\ No newline at end of file`
@@ -300,49 +306,11 @@ interface BuiltDiff {
   removedLines: number
 }
 
-/**
- * Characters that render invisibly or confusably, built from that property and
- * not from one Unicode category: controls, format characters (bidi, zero-width,
- * soft hyphen, tags), lone surrogates, private use and unassigned code points,
- * line and paragraph separators, EVERY space separator (the plain space is
- * exempted below), and the letters and marks that draw nothing yet are valid in
- * identifiers: Hangul fillers (U+115F, U+1160, U+3164, U+FFA0), the blank
- * braille pattern U+2800, the combining grapheme joiner U+034F, the Khmer
- * inherent vowels, Mongolian and general variation selectors. Err towards
- * escaping: a visibly escaped harmless character costs the reviewer one glance,
- * a missed one costs the review. Tab and plain space stay as they are; a
- * newline never occurs inside one displayed line. Rendered visibly in the diff,
- * never removed from what is stored.
- *
- * REVISIT THIS LIST when the Unicode tables move (a new Unicode version adds
- * Default_Ignorable, variation-selector and join-control points). U+180F, the
- * Mongolian free variation selector four, slipped through an earlier version
- * because the range stopped one point short. The tests enumerate the points.
- */
-const HIDDEN_SET =
-  '\\p{Cc}\\p{Cf}\\p{Cs}\\p{Co}\\p{Cn}\\p{Zl}\\p{Zp}\\p{Zs}' +
-  '\\u034F\\u115F\\u1160\\u17B4\\u17B5\\u180B-\\u180F\\u2800\\u3164\\uFE00-\\uFE0F\\uFFA0' +
-  '\\u{E0100}-\\u{E01EF}'
-const HIDDEN_CHAR = new RegExp(`[${HIDDEN_SET}]`, 'gu')
-const HIDDEN_ONE = new RegExp(`[${HIDDEN_SET}]`, 'u')
-
-function isHidden(ch: string): boolean {
-  return ch !== ' ' && ch !== '\t' && ch !== '\n' && HIDDEN_ONE.test(ch)
-}
-
-function escapeHidden(text: string): string {
-  return text.replace(HIDDEN_CHAR, (ch) => {
-    if (ch === ' ' || ch === '\t') return ch
-    const hex = (ch.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')
-    return `<U+${hex}>`
-  })
-}
-
 /** True when `after` has more of some hidden code point than `before`. */
 function introducesHidden(before: string, after: string): boolean {
   const tally = (t: string): Map<string, number> => {
     const m = new Map<string, number>()
-    for (const ch of t) if (isHidden(ch)) m.set(ch, (m.get(ch) ?? 0) + 1)
+    for (const ch of t) if (isHiddenCharacter(ch)) m.set(ch, (m.get(ch) ?? 0) + 1)
     return m
   }
   const b = tally(before)
@@ -378,7 +346,7 @@ function buildDiff(
   const oldCount = ctxBefore.length + removed.length + ctxAfter.length
   const newCount = ctxBefore.length + added.length + ctxAfter.length
   // A file name may carry anything; a line break in it would forge diff lines.
-  const safePath = escapeHidden(displayPath)
+  const safePath = escapeHiddenCharacters(displayPath)
   const lines = [
     ...(hiddenWarning
       ? [
@@ -452,14 +420,8 @@ interface RunState {
   ended?: 'finished'
 }
 
-/**
- * Invisible, direction-changing and control characters replaced by a space: the
- * one definition of "hidden" for text that ends in front of a human in an audit
- * record. The audit export reuses it rather than keeping a second list.
- */
-export function stripHiddenCharacters(text: string): string {
-  return text.replace(HIDDEN_CHAR, ' ')
-}
+/** Re-exported from the one shared definition of "hidden"; there is no second list. */
+export { stripHiddenCharacters }
 
 function cleanReason(reason: unknown): string | undefined {
   if (typeof reason !== 'string') return undefined

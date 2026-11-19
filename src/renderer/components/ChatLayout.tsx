@@ -10,6 +10,7 @@ import { PrivacyIndicator } from './PrivacyIndicator'
 import { RoutingModeToggle } from './RoutingModeToggle'
 import { useChatStore } from '../stores/chat-store'
 import { useOrchestratorStore } from '../stores/orchestrator-store'
+import { useCodingStore } from '../stores/coding-store'
 
 const ComparisonView = lazy(() => import('./ComparisonView').then(m => ({ default: m.ComparisonView })))
 const AgentComparisonView = lazy(() => import('./AgentComparisonView').then(m => ({ default: m.AgentComparisonView })))
@@ -20,6 +21,8 @@ type ViewMode = 'chat' | 'comparison' | 'agent_comparison' | 'subagent'
 
 /** Lazy-loaded dialogs — only fetched when triggered */
 const SensitiveDataConsentDialog = lazy(() => import('./SensitiveDataConsentDialog').then(m => ({ default: m.SensitiveDataConsentDialog })))
+const CodingConsentDialog = lazy(() => import('./SensitiveDataConsentDialog').then(m => ({ default: m.CodingConsentDialog })))
+const CodingDiffDialog = lazy(() => import('./CodingDiffDialog').then(m => ({ default: m.CodingDiffDialog })))
 const DelegationProposalDialog = lazy(() => import('./DelegationProposalDialog').then(m => ({ default: m.DelegationProposalDialog })))
 const UpgradeDialog = lazy(() => import('./UpgradeDialog'))
 const LicenseKeyDialog = lazy(() => import('./LicenseKeyDialog'))
@@ -38,6 +41,10 @@ export function ChatLayout() {
   const approveProposal = useOrchestratorStore((state) => state.approveProposal)
   const denyProposal = useOrchestratorStore((state) => state.denyProposal)
   const dismissProposal = useOrchestratorStore((state) => state.dismissProposal)
+
+  const codingConsent = useCodingStore((state) => state.consent)
+  const respondCodingConsent = useCodingStore((state) => state.respondConsent)
+  const codingPending = useCodingStore((state) => state.pending)
 
   const [viewMode, setViewMode] = useState<ViewMode>('chat')
 
@@ -148,7 +155,7 @@ export function ChatLayout() {
             <MessageList />
             <RAGStatusBar />
             <OrchestrationStatusBar />
-            <MessageInput />
+            <MessageInput viewMode={viewMode} />
           </>
         )}
       </div>
@@ -164,6 +171,20 @@ export function ChatLayout() {
             onSendAnyway={handleConsentGranted}
             onUseLocalLLM={handleUseLocalLLM}
           />
+        </Suspense>
+      )}
+
+      {/* Coding run: consent question for one flagged tool result — lazy loaded */}
+      {codingConsent && (
+        <Suspense fallback={<LoadingSpinner />}>
+          <CodingConsentDialog request={codingConsent} onChoose={(choice) => void respondCodingConsent(choice)} />
+        </Suspense>
+      )}
+
+      {/* Coding run: approval of the proposed package — lazy loaded */}
+      {codingPending && (
+        <Suspense fallback={<LoadingSpinner />}>
+          <CodingDiffDialog />
         </Suspense>
       )}
 

@@ -86,7 +86,7 @@ const MANIFEST_NAME = 'manifest.json'
  */
 const MARKER_NAME = 'IN-PROGRESS'
 const STALE_TEMP = /^\.mingly-tmp-[0-9a-f]{16}$/
-const SAFE_RUN_ID = /^[A-Za-z0-9_-]{1,128}$/
+export const SAFE_RUN_ID = /^[A-Za-z0-9_-]{1,128}$/
 const BATCH_NAME = /^batch-(\d{1,9})$/
 const SNAPSHOT_FILE = /^\d{1,6}\.bak$/
 const SHA256_HEX = /^[0-9a-f]{64}$/

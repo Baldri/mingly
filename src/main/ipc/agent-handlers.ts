@@ -12,7 +12,14 @@ import { getSubagentOrchestrator } from '../agent/subagent-orchestrator'
 import { getConsentBroker } from '../coding/consent-broker'
 import { exportCodingAudit } from '../coding/coding-audit'
 import { acceptEditsForRun, rejectEditsForRun, undoRunForDirectory } from '../coding/apply-edits'
+import {
+  resolveCodingRun,
+  setCodingModeForDirectory,
+  getPendingPackage
+} from '../coding/coding-run-request'
+import { parseCodingMode } from '../../shared/coding-types'
 import { wrapHandler, requireFeature } from './ipc-utils'
+import type { CodingRunOptions } from '../../shared/coding-types'
 import type {
   AgentConfig,
   AgentModelSlot,
@@ -36,9 +43,21 @@ export function registerAgentHandlers(): void {
       model: string,
       conversationId?: string,
       conversationHistory?: Message[],
-      systemPrompt?: string
+      systemPrompt?: string,
+      codingRequest?: unknown
     ) => {
       requireFeature('agentic_mode')
+
+      // R35: a coding run's project path comes from the GRANT for the directory
+      // id, derived here. Whatever the renderer sent as `codingRequest` is an
+      // input: a path that is not the grant's is refused, not corrected, and
+      // nothing has started yet when it is. `undefined` is a plain run.
+      let coding: CodingRunOptions | undefined
+      if (codingRequest !== undefined) {
+        const resolved = await resolveCodingRun(codingRequest)
+        if (resolved.kind === 'refused') return { success: false, error: resolved.reason }
+        coding = resolved.coding
+      }
 
       // Set up event forwarding to renderer
       const mainWindow = BrowserWindow.getAllWindows()[0]
@@ -54,7 +73,8 @@ export function registerAgentHandlers(): void {
           provider,
           model,
           conversationHistory ?? [],
-          systemPrompt
+          systemPrompt,
+          coding
         )
 
         return { success: true, run }
@@ -133,6 +153,48 @@ export function registerAgentHandlers(): void {
       requireFeature('agentic_mode')
       const outcome = await undoRunForDirectory(runId, directoryId)
       return { success: outcome.kind === 'restored', outcome }
+    }
+  )
+
+  // ========================================
+  // Coding UI: the pending package and the mode per project
+  // ========================================
+  //
+  // The package is what the human is asked to approve. It is read by run id
+  // and carries paths, diffs and counts, never file text, plus the digest the
+  // accept must quote. Gated like the other coding channels: it exposes the
+  // content of proposed changes.
+
+  wrapHandler(
+    IPC_CHANNELS.CODING_GET_PENDING,
+    (runId: unknown) => {
+      requireFeature('agentic_mode')
+      const outcome = getPendingPackage(runId)
+      if (outcome.kind === 'refused') return { success: false, error: outcome.reason }
+      return { success: true, ...outcome }
+    }
+  )
+
+  // Reading a mode is not a capability. An unknown stored value reads as `off`.
+  wrapHandler(
+    IPC_CHANNELS.CODING_GET_MODE,
+    async (directoryId: unknown) => {
+      if (typeof directoryId !== 'string' || directoryId === '') {
+        return { success: false, error: 'No project directory was named.' }
+      }
+      const { getCodingModeStore } = await import('../coding/coding-mode-store')
+      return { success: true, mode: parseCodingMode(getCodingModeStore().getMode(directoryId)) }
+    }
+  )
+
+  // Setting a mode widens what the agent may do in a project: gated.
+  wrapHandler(
+    IPC_CHANNELS.CODING_SET_MODE,
+    async (directoryId: unknown, mode: unknown) => {
+      requireFeature('agentic_mode')
+      const outcome = await setCodingModeForDirectory(directoryId, mode)
+      if (outcome.kind === 'refused') return { success: false, error: outcome.reason }
+      return { success: true, mode: outcome.mode }
     }
   )
 

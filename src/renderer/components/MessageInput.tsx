@@ -1,10 +1,17 @@
 import React, { useState, useRef, useEffect, useCallback, memo } from 'react'
 import { Send, Paperclip, X, Image as ImageIcon } from 'lucide-react'
 import { useChatStore } from '../stores/chat-store'
+import { useCodingStore, isCodingRunStartable } from '../stores/coding-store'
+import { CodingModePicker } from './CodingModePicker'
 import { PrivacyShield } from './PrivacyShield'
 import type { MessageAttachment } from '../../shared/types'
 
-export const MessageInput = memo(function MessageInput() {
+interface MessageInputProps {
+  /** The active view of ChatLayout. A coding run starts in 'chat' only. */
+  viewMode: string
+}
+
+export const MessageInput = memo(function MessageInput({ viewMode }: MessageInputProps) {
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<MessageAttachment[]>([])
   const [isDragOver, setIsDragOver] = useState(false)
@@ -12,6 +19,15 @@ export const MessageInput = memo(function MessageInput() {
   const currentConversation = useChatStore((state) => state.currentConversation)
   const isStreaming = useChatStore((state) => state.isStreaming)
   const sendMessage = useChatStore((state) => state.sendMessage)
+  const selectedDirectoryId = useCodingStore((state) => state.selectedDirectoryId)
+  const codingMode = useCodingStore((state) =>
+    state.selectedDirectoryId ? (state.modes[state.selectedDirectoryId] ?? 'off') : 'off'
+  )
+  const codingRunInFlight = useCodingStore((state) => state.runInFlight)
+  const startCodingRun = useCodingStore((state) => state.startRun)
+  // The switch: with a project selected and a mode above `off`, the input goes
+  // to a coding run instead of the chat path.
+  const codingActive = selectedDirectoryId !== null && isCodingRunStartable(viewMode, codingMode)
 
   // Auto-resize textarea
   useEffect(() => {
@@ -22,12 +38,30 @@ export const MessageInput = memo(function MessageInput() {
   }, [input])
 
   const handleSend = useCallback(async () => {
-    if (!input.trim() || isStreaming || !currentConversation) return
+    if (!input.trim() || isStreaming || codingRunInFlight || !currentConversation) return
+
+    if (codingActive) {
+      // A coding run carries text only. Dropping an attachment silently would
+      // send something other than what the user composed, so refuse instead.
+      if (attachments.length > 0) {
+        useCodingStore.setState({ error: 'Bilder werden in einem Coding-Lauf nicht mitgeschickt. Bitte entfernen Sie die Anhänge.' })
+        return
+      }
+      const started = await startCodingRun({
+        viewMode,
+        task: input.trim(),
+        provider: currentConversation.provider,
+        model: currentConversation.model,
+        conversationId: currentConversation.id
+      })
+      if (started.started) setInput('')
+      return
+    }
 
     await sendMessage(input.trim(), attachments.length > 0 ? attachments : undefined)
     setInput('')
     setAttachments([])
-  }, [input, attachments, isStreaming, currentConversation, sendMessage])
+  }, [input, attachments, isStreaming, codingRunInFlight, codingActive, viewMode, startCodingRun, currentConversation, sendMessage])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -142,7 +176,7 @@ export const MessageInput = memo(function MessageInput() {
     }
   }, [attachments.length])
 
-  const isDisabled = isStreaming || !currentConversation
+  const isDisabled = isStreaming || codingRunInFlight || !currentConversation
 
   return (
     <div
@@ -193,6 +227,8 @@ export const MessageInput = memo(function MessageInput() {
         </div>
       )}
 
+      <CodingModePicker />
+
       {/* PII Detection Preview */}
       <PrivacyShield inputText={input} />
 
@@ -213,7 +249,9 @@ export const MessageInput = memo(function MessageInput() {
           onPaste={handlePaste}
           placeholder={
             currentConversation
-              ? 'Type a message... (Cmd+Enter to send)'
+              ? codingActive
+                ? 'Coding-Aufgabe beschreiben... (Cmd+Enter startet den Lauf)'
+                : 'Type a message... (Cmd+Enter to send)'
               : 'Select or create a conversation to start'
           }
           disabled={isDisabled}
