@@ -127,7 +127,7 @@ export const CODING_READ_BASENAMES: readonly string[] = [
 // Case: the development and target platform is macOS, where APFS is
 // case-insensitive by default. `.ENV` and `.Env` open the same file as `.env`,
 // so the rule is case-INSENSITIVE. Measured on APFS: even the Kelvin sign
-// ("a.Key") opens `a.key`, so folding is NFKC followed by lower-casing,
+// ("a.\u212aey") opens `a.key`, so folding is NFKC followed by lower-casing,
 // not an ASCII-only lower-case. The price is a false positive on Linux, where
 // `.ENV` is a different file; for a secrets blocklist that is the right side
 // to err on.
