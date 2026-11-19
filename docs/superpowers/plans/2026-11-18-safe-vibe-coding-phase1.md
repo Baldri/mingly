@@ -1047,6 +1047,20 @@ git commit -m "feat(coding): edit_file proposes a diff instead of writing"
   Kanäle: `CODING_ACCEPT_EDITS: 'coding:accept-edits'`, `CODING_REJECT_EDITS: 'coding:reject-edits'`, `CODING_UNDO_RUN: 'coding:undo-run'`.
 - Produces für Task 14: die drei Kanäle.
 
+**Wie der Aufruf aussehen muss (Entscheid R69, aus dem Task-10-Re-Review).** Drei
+Bedingungen, jede aus einem konkreten Umgehungsweg:
+
+1. **Je Datei pruefen UND schreiben, sequenziell** — nicht erst alle pruefen und dann
+   alle schreiben. Zwei **Hardlink**-Namen derselben Datei bekommen verschiedene
+   Schluessel und bestehen beide die Vorpruefung; schreibt man danach beide, ist die
+   zweite Schreibung gegen einen Inhalt gerechnet, den die erste schon veraendert hat.
+   Sequenziell pruefen-und-schreiben faengt das, weil der Hash der zweiten Datei nach der
+   ersten Schreibung nicht mehr passt.
+2. **Den Pfad erneut aufloesen**, nicht den gespeicherten verwenden. Zwischen Vorschlag
+   und Abnahme kann ein Symlink getauscht worden sein.
+3. **Durch den geoeffneten Deskriptor schreiben**, nicht ueber den Pfad erneut oeffnen —
+   sonst liegt zwischen Pruefung und Schreibung ein weiteres Zeitfenster.
+
 **Pflicht, nicht optional (Entscheid R67): `editStillMatches` muss gerufen werden.**
 Task 10 speichert zu jedem Vorschlag einen `baseSha256` des gelesenen Dateiinhalts und
 den `matchIndex`, und exportiert `editStillMatches(edit, currentContent)`. Dieser Task
