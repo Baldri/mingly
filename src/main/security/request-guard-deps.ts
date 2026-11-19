@@ -14,8 +14,7 @@ import { DEFAULT_POLICY } from '../policy/policy-engine'
 import { applyResidencyPolicy, DATA_SENSITIVITY_TO_PII } from '../policy/residency-guard'
 import { logRoutingDecision } from '../policy/audit-writer'
 import { trustForProvider, knownProviderIds } from './provider-trust'
-
-const CLOUD_PROVIDERS = new Set(['anthropic', 'openai', 'google'])
+import { residencyIsCloud } from '../../shared/provider-types'
 
 export function getGuardDeps(): GuardDeps {
   return {
@@ -80,7 +79,7 @@ export function getGuardDeps(): GuardDeps {
 
       return decision
     },
-    isCloudProvider: (provider) => CLOUD_PROVIDERS.has(provider),
+    isCloudProvider: (provider) => residencyIsCloud(getProviderRegistry().get(provider)?.origin.residency),
     scanOutput: (output, systemPrompt) => getOutputGuardrails().scan(output, systemPrompt),
   }
 }

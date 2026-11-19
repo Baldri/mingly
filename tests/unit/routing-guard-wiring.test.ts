@@ -16,6 +16,7 @@ vi.mock('../../src/main/database/index', () => ({
 }))
 
 import { getGuardDeps } from '../../src/main/security/request-guard-deps'
+import { guardInput, type GuardDeps, type SensitiveScan } from '../../src/main/security/request-guard'
 import { ProviderRegistry, setProviderRegistry } from '../../src/main/routing/provider-registry'
 
 const CONFIDENTIAL = 'Der Patient hat Diagnose X und braucht eine Therapie.'
@@ -34,6 +35,11 @@ describe('residency policy is wired into the request guard', () => {
       { id: 'ollama', name: 'O', type: 'ollama', apiKeyRequired: false, supportsStreaming: true, models: [] },
       { residency: 'on-device', operator: 'on-device', weightsLicense: 'open', hostingMode: 'local', dpaStatus: 'not-applicable' },
       { code: 0.6, creative: 0.6, analysis: 0.6, conversation: 0.65 }
+    )
+    registry.registerVerified(
+      { id: 'infomaniak', name: 'I', type: 'custom', apiBase: 'https://x.invalid/v1', apiKeyRequired: true, supportsStreaming: true, models: [] },
+      { residency: 'CH', operator: 'Infomaniak Network SA, Genf', weightsLicense: 'open', hostingMode: 'rented', dpaStatus: 'signed' },
+      { code: 0.5, creative: 0.5, analysis: 0.5, conversation: 0.5 }
     )
     setProviderRegistry(registry)
   })
@@ -107,5 +113,76 @@ describe('residency policy is wired into the request guard', () => {
 
     expect(decision.allowed).toBe(false)
     expect(decision.reason).toMatch(/residency/i)
+  })
+})
+
+describe('cloud classification is wired into the input guard', () => {
+  const IBAN_TEXT = 'IBAN CH93 0076 2011 6238 5295 7'
+  const SCAN_HIT: SensitiveScan = {
+    hasSensitiveData: true,
+    matches: [{ type: 'iban', value: 'CH93 0076 2011 6238 5295 7', riskLevel: 'high' }],
+    overallRiskLevel: 'high'
+  }
+
+  /**
+   * Real getGuardDeps() — so isCloudProvider is the production wiring — with
+   * only the scan and the permission check replaced by spies, so the test can
+   * see whether the consent branch ran.
+   */
+  function depsWithSpies(): GuardDeps & {
+    scanSensitive: ReturnType<typeof vi.fn>
+    checkUploadPermission: ReturnType<typeof vi.fn>
+  } {
+    return {
+      ...getGuardDeps(),
+      scanSensitive: vi.fn(() => SCAN_HIT),
+      checkUploadPermission: vi.fn(async () => ({ decision: 'ask', requiresUserConsent: true }))
+    }
+  }
+
+  beforeEach(() => {
+    const registry = new ProviderRegistry()
+    registry.registerVerified(
+      { id: 'ollama', name: 'O', type: 'ollama', apiKeyRequired: false, supportsStreaming: true, models: [] },
+      { residency: 'on-device', operator: 'on-device', weightsLicense: 'open', hostingMode: 'local', dpaStatus: 'not-applicable' },
+      { code: 0.6, creative: 0.6, analysis: 0.6, conversation: 0.65 }
+    )
+    registry.registerVerified(
+      { id: 'infomaniak', name: 'I', type: 'custom', apiBase: 'https://x.invalid/v1', apiKeyRequired: true, supportsStreaming: true, models: [] },
+      { residency: 'CH', operator: 'Infomaniak Network SA, Genf', weightsLicense: 'open', hostingMode: 'rented', dpaStatus: 'signed' },
+      { code: 0.5, creative: 0.5, analysis: 0.5, conversation: 0.5 }
+    )
+    setProviderRegistry(registry)
+  })
+
+  afterEach(() => {
+    setProviderRegistry(null)
+  })
+
+  it('a CH provider reaches the sensitive-data consent branch', async () => {
+    const deps = depsWithSpies()
+
+    const out = await guardInput({ texts: [IBAN_TEXT], provider: 'infomaniak', model: 'm' }, deps)
+
+    expect(out.kind).toBe('consent')
+    expect(deps.scanSensitive).toHaveBeenCalled()
+    expect(deps.checkUploadPermission).toHaveBeenCalled()
+  })
+
+  it('positive control: an on-device provider still skips the scan', async () => {
+    const deps = depsWithSpies()
+
+    const out = await guardInput({ texts: [IBAN_TEXT], provider: 'ollama', model: 'm' }, deps)
+
+    expect(out.kind).toBe('ok')
+    expect(deps.scanSensitive).not.toHaveBeenCalled()
+  })
+
+  it('a provider absent from the registry is treated as cloud', async () => {
+    const deps = depsWithSpies()
+
+    const out = await guardInput({ texts: [IBAN_TEXT], provider: 'not-registered', model: 'm' }, deps)
+
+    expect(out.kind).toBe('consent')
   })
 })
