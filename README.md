@@ -16,7 +16,7 @@ Mingly is a privacy-first multi-LLM desktop app from Switzerland. Use Claude, Ch
 - **Parallel Subagents** — Master LLM decomposes a task → N parallel agents execute subtasks → Master synthesizes final answer (Pro+)
 - **Tool-Use for Local Models** — Ollama + LM Studio + OpenRouter get full function calling via OpenAI-compatible endpoints
 - **MCP Tools** — Extend functionality with Model Context Protocol tools + auto-tool-selection
-- **Built-in Tools** — `web_search`, `read_file`, `write_file`, `execute_command` available to all agents
+- **Built-in Tools** — `echo` und `decompose_task` stehen allen Agenten zur Verfügung. Die Coding-Werkzeuge `list_files`, `read_file`, `edit_file` und `run_command` gibt es nur im Coding-Modus (siehe unten) und nur für ein Projektverzeichnis, das Sie freigegeben haben; welches Werkzeug angeboten wird, hängt vom Modus des Verzeichnisses ab. Es gibt keine Werkzeuge `web_search` und `write_file`.
 
 ### Multi-Provider Chat
 - **Multi-Provider** — Claude, GPT-4, Gemini, Ollama (local) in one interface
@@ -51,6 +51,52 @@ Mingly is a privacy-first multi-LLM desktop app from Switzerland. Use Claude, Ch
 - **Enterprise Ready** — RBAC, audit logging, budget controls, GDPR/nDSG compliance, license activation
 - **Activity Tracking** — Token/cost analytics per provider, daily summaries, budget alerts
 - **Secure** — AES-256-GCM encrypted API keys, IPC input validation, CSP, rate limiting, sensitive data detection
+
+## Coding-Modus: was geschützt ist und was nicht
+
+Der Coding-Modus (Phase 1) lässt einen Agenten in einem von Ihnen freigegebenen Projektverzeichnis arbeiten. Er ist abgestuft. Pro Verzeichnis gilt genau ein Modus:
+
+| Modus | Angebotene Werkzeuge |
+|-------|----------------------|
+| `off` | keine Coding-Werkzeuge |
+| `read-only` | `list_files`, `read_file` |
+| `propose` | zusätzlich `edit_file`: legt einen Änderungsvorschlag an, schreibt nichts; Sie prüfen den Diff und übernehmen oder verwerfen |
+| `propose-run` | zusätzlich `run_command`: führt einzelne Befehle aus einer festen Liste aus |
+
+Ein Werkzeug, das der Modus nicht erlaubt, wird dem Modell nicht angeboten und vor der Ausführung ein zweites Mal geprüft.
+
+### Wichtig: die Stufen gelten nur für Minglys eigene Werkzeuge, nicht für Ihre MCP-Server
+
+Der Modus stuft **Minglys eigene** Werkzeuge ab. Die MCP-Server, die Sie selbst eingerichtet haben, bleiben **in jedem Modus verfügbar, auch in `read-only`**. Dazu gehören auch MCP-Server mit Schreibzugriff.
+
+Beide Hälften davon gehören zusammen:
+
+- **Die Ergebnisse** jedes MCP-Werkzeugs laufen durch denselben Schutz wie alle anderen Werkzeugergebnisse (Klassifikation, Datenresidenz, Erkennung personenbezogener Daten, Zustimmung).
+- **Die Fähigkeit** eines MCP-Servers mit Schreibzugriff wird davon **nicht** erfasst. Ein solcher Server kann auch im Modus `read-only` Dateien ändern oder Befehle auslösen. Der Modus `read-only` beschreibt Minglys eigene Werkzeuge, nicht Ihren gesamten Rechner.
+
+Wer das nicht will, schaltet die betreffenden MCP-Server ab, bevor er einen Coding-Lauf startet. Die Entscheidung, eigene MCP-Server erreichbar zu lassen, fiel am 2026-11-19; die Begründung, warum eine Abstufung für MCP-Server keine belastbare Grundlage hat, steht im Design-Dokument.
+
+### Was der Schutz leistet
+
+- **Sperrliste, absolut.** Dateien wie `.env*`, `*.pem`, `*.key`, `id_rsa*`, `.npmrc`, `.netrc`, `credentials.json`, `*.sqlite`, `*.db` und das ganze Verzeichnis `.git` sind für die Coding-Werkzeuge nie lesbar. Kein Modus und kein Dialog hebt das auf. Die Sperrliste wird zweimal geprüft: auf dem Pfad, wie ihn das Modell schreibt, und auf dem tatsächlichen Pfad nach Auflösung von Symlinks.
+- **Verzeichnisgrenze.** Lesen, Vorschläge und Befehle bleiben im freigegebenen Projektverzeichnis.
+- **Jedes Werkzeugergebnis läuft durch den Schutz** (Prompt-Injection, sensible Inhalte, Datenresidenz, Zustimmung), bevor es an einen Anbieter geht. Das gilt auch für die Ausgabe von `run_command`.
+
+### Was der Schutz nicht leistet
+
+- **Der Inhaltsdetektor ist schmaler, als er aussieht.** Er erkennt unter anderem **keine** PEM-Kopfzeilen (`-----BEGIN ... PRIVATE KEY-----`), **keine** JWTs, **keine** Stripe-Schlüssel der Form `sk_live_`, **keine** base64-kodierten Docker-Zugangsdaten und **keine** npm-Token. Ein Geheimnis dieser Art, das in einer lesbaren Datei oder in der Ausgabe eines Befehls steht, wird nicht angehalten. Die Sperrliste nach Dateinamen ist die stärkere Barriere, aber sie kennt nur Dateinamen: ein Geheimnis in einer Datei mit harmlosem Namen ist nicht gesperrt.
+- **`run_command` ist keine Sandbox.** Ein erlaubter Befehl führt Projektcode mit Ihren Benutzerrechten aus: ein Test, ein `npm`-Skript aus der `package.json`, eine `conftest.py`. Dieser Code kann alles lesen, was Sie lesen können, und das Netz erreichen. Die Befehlsliste begrenzt, **welcher Befehl** gestartet wird, nicht, **was der Projektcode dann tut**. Öffnen Sie im Modus `propose-run` nur Projekte, deren Code Sie ausführen würden.
+
+### `run_command` im Detail
+
+- **Keine Shell.** Die Befehlszeile wird an Leerzeichen in eine Argumentliste zerlegt; jedes Zeichen mit Shell-Bedeutung (`& | ; < > $` Backtick `( ) { }`, Anführungszeichen, Backslash, Steuerzeichen) führt zur Ablehnung. Gestartet wird ohne Shell.
+- **Erlaubt sind nur diese Befehle:** `npm test`, `npm run <skript>` (das Skript muss in der `package.json` stehen), `vitest run [pfade]`, `tsc --noEmit` (auch als `npx tsc --noEmit`, es wird dann das `tsc` des Projekts gestartet, nie `npx`), `pytest [pfade]`, `git status [--short]`, `git diff --stat` und `git diff --name-only`. Pfadargumente müssen relative Projektpfade sein, dürfen nicht gesperrt sein und dürfen per Symlink nicht aus dem Projekt hinausführen.
+- **`git diff` ohne `--stat` oder `--name-only` ist absichtlich nicht erlaubt.** Es würde Dateiinhalte ausgeben, auch von Dateien auf der Sperrliste, die Git verfolgt. Bei `git` sind ausserdem Konfigurationseinträge abgeschaltet, die ein externes Programm starten könnten (`core.fsmonitor`, externe Diff- und Textconv-Treiber).
+- **Programme kommen nie aus dem `PATH`.** Ein Programm ist entweder `<projekt>/node_modules/.bin/<name>` oder ein absoluter Pfad, den Sie für `npm`, `git` oder `pytest` hinterlegt haben. Diese Pfade stehen in der Datei `coding-interpreters.json` im Benutzerdatenverzeichnis von Mingly (Schlüssel `paths`). **Stand heute gibt es dafür noch keine Einstellungsoberfläche und keinen Vorschlag durch Mingly:** ohne hinterlegten Pfad ist `npm`, `git` und `pytest` nicht ausführbar, und `run_command` lehnt den Befehl ab.
+- **`vitest` und `tsc` brauchen `node`.** Als `PATH` erhält der Befehl die Verzeichnisse der hinterlegten Programme plus `/usr/bin:/bin`. Liegt `node` in keinem davon (typisch ist das Verzeichnis von `npm`), startet ein Projektprogramm nicht.
+- **Umgebung.** Der Befehl erbt die Umgebung von Mingly nicht. Er erhält `PATH`, `CI=1`, `NO_COLOR=1`, `FORCE_COLOR=0` sowie `HOME` und `TMPDIR`, falls gesetzt. API-Schlüssel aus Minglys Prozess erreichen ihn nicht.
+- **Begrenzungen für den ganzen Lauf, nicht nur pro Befehl:** höchstens 20 Befehle und 300 Sekunden Gesamtzeit pro Lauf (die Zeit wird beim Start reserviert, parallele Aufrufe teilen sich also dasselbe Budget), höchstens 60 Sekunden pro Befehl und zusätzlich unterhalb des Werkzeug-Timeouts des Agenten (standardmässig 15 Sekunden: längere Testläufe werden abgebrochen). Bei Zeitüberschreitung oder übermässiger Ausgabe wird die ganze Prozessgruppe beendet. Von der Ausgabe kommen Anfang und Ende zurück, mit einem Hinweis auf das Ausgelassene.
+- **Abgelehnte Befehle.** Ein Befehl, der aus sich selbst heraus unzulässig ist, wird mit Begründung abgelehnt. Alles, was von Ihrem Rechner abhängt (kein Pfad hinterlegt, Programm fehlt, Skript nicht in der `package.json`, kein Projekt-Grant), erhält denselben Text, damit die Antwort nichts über Ihr Dateisystem verrät.
 
 ## Pricing
 

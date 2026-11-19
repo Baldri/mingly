@@ -24,6 +24,7 @@ import type { ProjectWorkspace } from '../coding/project-workspace'
 import type { StepPaths } from './step-paths'
 import { registerReadTools } from '../coding/read-tools'
 import { registerEditTools } from '../coding/edit-proposals'
+import { registerRunCommand } from '../coding/run-command'
 
 // ── Built-in tool handler type ─────────────────────────────────
 
@@ -133,6 +134,14 @@ export class ToolRegistry {
    */
   getMaxResultChars(): number {
     return this.config.maxResultChars
+  }
+
+  /**
+   * The per-tool timeout in ms. A tool that starts a process must stop it
+   * before this fires: the registry's rejection does not kill anything.
+   */
+  getToolTimeoutMs(): number {
+    return this.config.toolTimeoutMs
   }
 
   // ── Registration ────────────────────────────────────────────
@@ -448,6 +457,8 @@ function registerDefaultBuiltIns(registry: ToolRegistry): void {
   registerReadTools(registry)
   // Coding edit tool (gated: offered only in mode propose or above; it records a proposal, it never writes)
   registerEditTools(registry)
+  // Coding command tool (gated: offered only in mode propose-run; runs an allowlisted command without a shell)
+  registerRunCommand(registry)
 
   // Echo tool — useful for testing and debugging the agent loop
   registry.registerBuiltIn(
