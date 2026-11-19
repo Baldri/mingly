@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   CODING_BLOCKED_PATTERNS,
   CODING_BLOCKED_DATA_BASENAMES,
+  CODING_BLOCKED_CREDENTIAL_BASENAMES,
   CODING_CODE_EXTENSIONS,
   CODING_DOC_EXTENSIONS,
   compileBlockedPattern,
@@ -31,7 +32,6 @@ describe("coding path policy: blocklist", () => {
       ".netrc",
       "*.db",
       ".git",
-      "service-account*.json",
       ".docker/config.json",
       ".yarnrc.yml",
     ]);
@@ -395,6 +395,47 @@ describe("coding path policy: fix round 3 (secrets is a data file, not a code fi
     expect(isReadableExtension("migrations/001_init.sql")).toBe(true);
     expect(CODING_CODE_EXTENSIONS).not.toContain("sql");
     expect(CODING_READ_EXTENSIONS).toContain("sql");
+  });
+
+  it("treats credential basenames separator-insensitively", () => {
+    for (const p of [
+      "service-account.json",
+      "service_account.json",
+      "serviceAccount.json",
+      "serviceAccountKey.json",
+      "service-account-prod.json",
+      "keys/SERVICE_ACCOUNT.JSON",
+      "client_secret.json",
+      "client-secret.json",
+      "clientSecret.json",
+      "client_secret_123.json",
+      "client_secrets.json",
+    ]) {
+      expect(isBlockedPath(p), p).toBe(true);
+    }
+    for (const p of [
+      "src/service-account-helper.ts",
+      "src/serviceAccount.ts",
+      "src/client_secret.ts",
+      "docs/service-account.md",
+      "service.json",
+      "account.json",
+      "client.json",
+      "src/clients.json",
+    ]) {
+      expect(isBlockedPath(p), p).toBe(false);
+    }
+  });
+
+  it("keeps the separator fold scoped to the credential family", () => {
+    // npm-rc and id-rsa are not real filenames; widening the fold to every
+    // pattern would only add false alarms.
+    expect([...CODING_BLOCKED_CREDENTIAL_BASENAMES]).toEqual(["service-account", "client-secret"]);
+    for (const p of ["npm-rc", "id-rsa", "net-rc", "id_ed_25519", "n_p_m_r_c"]) {
+      expect(isBlockedPath(p), p).toBe(false);
+    }
+    expect(isBlockedPath(".npmrc")).toBe(true);
+    expect(isBlockedPath("id_rsa")).toBe(true);
   });
 
   it("applies the code/prose exemption to the file name only, never to a directory", () => {

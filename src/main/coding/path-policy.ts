@@ -46,7 +46,6 @@ export const CODING_BLOCKED_PATTERNS: readonly string[] = [
   // contains `.git` as written. A path shape nobody writes by hand; not a bug. It does not touch
   // `.gitignore` or `.gitattributes`: the match is on the whole segment.
   ".git",
-  "service-account*.json",
   ".docker/config.json",
   ".yarnrc.yml",
 ];
@@ -91,6 +90,32 @@ const CODING_DATA_EXTENSIONS: readonly string[] = [
  * format nobody has thought of yet is refused.
  */
 export const CODING_BLOCKED_DATA_BASENAMES: readonly string[] = ["secrets"];
+
+/**
+ * Credential basenames, matched separator-insensitively and only against
+ * `.json` files: hyphen and underscore are folded out (camel-case boundaries
+ * already vanish in the lower-casing), so `service-account`, `service_account`
+ * and `serviceAccountKey` are one key, and `client_secret.json`,
+ * `client_secret_123.json` and `client_secrets.json` are another. The match is
+ * a prefix on the folded stem. Scoped to this family on purpose: `npm-rc` and
+ * `id-rsa` are not real filenames, so folding every pattern would only add
+ * false alarms. Keys are written with hyphens and compared folded.
+ */
+export const CODING_BLOCKED_CREDENTIAL_BASENAMES: readonly string[] = [
+  "service-account",
+  "client-secret",
+];
+
+const SEPARATORS = /[-_]/g;
+const CREDENTIAL_KEYS = CODING_BLOCKED_CREDENTIAL_BASENAMES.map((k) =>
+  k.replace(SEPARATORS, ""),
+);
+
+function isBlockedCredentialName(segment: string): boolean {
+  if (!segment.endsWith(".json")) return false;
+  const stem = segment.slice(0, -".json".length).replace(SEPARATORS, "");
+  return CREDENTIAL_KEYS.some((key) => stem.startsWith(key));
+}
 
 /** Extensions (lower-case, no dot) the coding tools may read. */
 export const CODING_READ_EXTENSIONS: readonly string[] = [
@@ -268,6 +293,7 @@ function isBlockedDataName(segment: string, isFileName: boolean): boolean {
 function segmentIsBlocked(segment: string, isFileName: boolean): boolean {
   return (
     isBlockedDataName(segment, isFileName) ||
+    isBlockedCredentialName(segment) ||
     COMPILED_PATTERNS.some(
       (pattern) => pattern.length === 1 && pattern[0].test(segment),
     )
