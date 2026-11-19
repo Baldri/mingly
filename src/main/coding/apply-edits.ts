@@ -726,8 +726,9 @@ async function applyInner(
  * A failing audit store must not turn a finished apply into a refusal: the
  * files ARE written, and "nothing was written" would be false. The store's own
  * logger reports the failure.
- * DEBT: a lost audit row is only logged -> block the apply on a failed audit
- * write once the audit store is durable enough to make that refusal rare.
+ * DEBT: a lost audit row leaves no trace the apply can see (ActivityLogger.log
+ * returns void and swallows its own errors) -> when ActivityLogger.log reports
+ * success or failure to its caller, surface a failed row in ApplyOutcome.
  */
 function auditAppliedChanges(
   runId: string,
@@ -748,7 +749,8 @@ function auditAppliedChanges(
         model: run.model,
         policyVersion,
         guardRedirected: run.guardRedirected,
-        guardBlocked: run.guardBlocked
+        guardBlocked: run.guardBlocked,
+        runContextKnown: run.known
       })
     })
   } catch {

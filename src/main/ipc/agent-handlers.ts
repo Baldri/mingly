@@ -140,13 +140,22 @@ export function registerAgentHandlers(): void {
   // Coding audit export — the one coding channel WITHOUT requireFeature, on purpose
   // ========================================
   //
-  // The gate guards channels that START or CONTINUE coding work. This one only
-  // reads rows this app wrote about work that already happened, and returns
-  // paths and numbers (never content, see coding-audit.ts). Gating it would lock
-  // a customer out of their own records exactly when a plan lapses or the
-  // feature is switched off, which is when a compliance officer asks for them.
+  // The constraint behind requireFeature binds channels that TRIGGER coding;
+  // this one triggers nothing. An entitlement gate grants a capability, and
+  // reading back the records of actions already taken is not a capability, it
+  // is access to one's own data.
+  //
+  // A considered divergence from the transcription export (see the note above
+  // TRANSCRIPTION_DELETE in transcription-handlers.ts, where exporting lets
+  // data leave the app and belongs behind the gate): that export carries
+  // CONTENT, this one carries METADATA about actions (paths, counts, flags,
+  // never content, see coding-audit.ts). "Data leaves the app" is far weaker
+  // for a record of what the app did. And a compliance officer asks for these
+  // records after something went wrong, which is when a plan may have lapsed:
+  // an audit trail that disappears with the subscription is not an audit trail.
+  //
   // The renderer's `since` and `limit` are inputs: exportCodingAudit refuses a
-  // `since` it cannot read (it never widens the export) and bounds the size.
+  // `since` that is not strict ISO 8601 and bounds the size.
 
   wrapHandler(
     IPC_CHANNELS.CODING_EXPORT_AUDIT,

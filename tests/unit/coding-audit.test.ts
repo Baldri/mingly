@@ -135,9 +135,16 @@ describe('logCodingChange', () => {
         model: 'claude-opus-5',
         policyVersion: '2026-08-26.1',
         guardRedirected: false,
-        guardBlocked: false
+        runContextKnown: false
       }
     })
+  })
+
+  it('does not store guardBlocked on a change entry: it could only mean "context lost", and says runContextKnown instead', () => {
+    logCodingChange('run1', details({ guardBlocked: true, runContextKnown: true }))
+    const entry = logged()[0].details as Record<string, unknown>
+    expect('guardBlocked' in entry).toBe(false)
+    expect(entry.runContextKnown).toBe(true)
   })
 
   it('never writes file content into the audit entry', () => {
@@ -160,13 +167,13 @@ describe('logCodingChange', () => {
       [
         'addedLines',
         'filePath',
-        'guardBlocked',
         'guardRedirected',
         'model',
         'policyVersion',
         'projectPath',
         'provider',
-        'removedLines'
+        'removedLines',
+        'runContextKnown'
       ].sort()
     )
   })
@@ -191,6 +198,27 @@ describe('logCodingChange', () => {
     expect(entry.removedLines).toBe(0)
     // A flag that is not a boolean takes the stricter side: assume the guard acted.
     expect(entry.guardRedirected).toBe(true)
+  })
+
+  it('records a path outside what the callers hold as unknown instead of free text', () => {
+    for (const project of ['project', SECRET_LINE, '', '=cmd']) {
+      store.rows.length = 0
+      logCodingChange('run1', details({ projectPath: project }))
+      expect((logged()[0].details as Record<string, string>).projectPath).toBe(UNKNOWN)
+    }
+    for (const file of ['/etc/passwd', '../outside.ts', '..', 'src//a.ts', 'src/../a.ts', '', '=HYPERLINK("http://x","y")']) {
+      store.rows.length = 0
+      logCodingChange('run1', details({ filePath: file }))
+      expect((logged()[0].details as Record<string, string>).filePath).toBe(UNKNOWN)
+    }
+    store.rows.length = 0
+    logCodingChange('run1', details({ filePath: 'src/-dash/a.ts', projectPath: '/abs/ok' }))
+    expect(logged()[0].details).toMatchObject({ filePath: 'src/-dash/a.ts', projectPath: '/abs/ok' })
+  })
+
+  it('strips hidden and direction-changing characters from a stored path', () => {
+    logCodingChange('run1', details({ filePath: 'src/\u202Eevil\u200B.ts' }))
+    expect((logged()[0].details as Record<string, string>).filePath).toBe('src/ evil .ts')
   })
 
   it('bounds a path and says so in the entry', () => {
@@ -278,8 +306,11 @@ describe('run audit context', () => {
       provider: UNKNOWN,
       model: UNKNOWN,
       guardRedirected: true,
-      guardBlocked: true
+      guardBlocked: true,
+      known: false
     })
+    recordRunAuditContext('known-run', { provider: 'p', model: 'm' })
+    expect(resolveRunAuditContext('known-run').known).toBe(true)
   })
 
   it('is bounded: the oldest run drops when the table is full', () => {
@@ -309,6 +340,7 @@ describe('exportCodingAudit', () => {
       'policyVersion',
       'guardRedirected',
       'guardBlocked',
+      'runContextKnown',
       'restoredCount',
       'skippedCount',
       'interrupted',
@@ -323,7 +355,7 @@ describe('exportCodingAudit', () => {
     expect(a[col('runId')]).toBe('run1')
     expect(a[col('addedLines')]).toBe('3')
     expect(a[col('policyVersion')]).toBe('2026-08-26.1')
-    expect(a[col('guardBlocked')]).toBe('false')
+    expect(a[col('runContextKnown')]).toBe('false')
   })
 
   it('has only the header when nothing was logged, and only coding entries are exported', () => {
@@ -343,11 +375,22 @@ describe('exportCodingAudit', () => {
     expect(parseCsv(csv)[1]).toHaveLength(CODING_AUDIT_COLUMNS.length)
   })
 
-  it('keeps a newline in a path inside its cell', () => {
+  it('replaces a newline in a path by a space, so a row is one line', () => {
     logCodingChange('run1', details({ filePath: 'src/a\nb.ts' }))
     const rows = parseCsv(exportCodingAudit({}))
     expect(rows).toHaveLength(2)
-    expect(rows[1][col('filePath')]).toBe('src/a\nb.ts')
+    expect(rows[1][col('filePath')]).toBe('src/a b.ts')
+  })
+
+  it('strips a right-to-left override and zero-width characters from a row written by someone else', () => {
+    store.rows.push({
+      id: 'bidi', createdAt: '2026-11-18T00:00:00.000Z', actorType: 'user', actorId: 'l',
+      action: 'coding.change_applied', entityType: 'coding_run', entityId: 'run1',
+      details: { filePath: 'src/\u202Egpj.ts\u200B\u2066x', provider: 'a\u202Eb' }
+    })
+    const csv = exportCodingAudit({})
+    expect(csv).not.toMatch(/[\u202A-\u202E\u2066-\u2069\u200B-\u200F]/)
+    expect(parseCsv(csv)[1][col('filePath')]).toBe('src/ gpj.ts  x')
   })
 
   describe('formula injection: a spreadsheet must not execute a path', () => {
@@ -363,17 +406,28 @@ describe('exportCodingAudit', () => {
     ]
     for (const [name, payload] of payloads) {
       it(`neutralises a cell that starts with ${name}`, () => {
+        // Raw rows: the writer refuses such a path, but the table may hold rows
+        // from any writer, and the export is the last line before the spreadsheet.
         store.rows.length = 0
-        logCodingChange('run1', details({ filePath: payload, projectPath: payload }))
+        store.rows.push({
+          id: 'inj', createdAt: '2026-11-18T00:00:00.000Z', actorType: 'user', actorId: 'l',
+          action: 'coding.change_applied', entityType: 'coding_run', entityId: 'run1',
+          details: { filePath: payload, projectPath: payload }
+        })
         const rows = parseCsv(exportCodingAudit({}))
         for (const cell of rows.slice(1)[0]) {
           // No cell may begin (after whitespace) with a formula trigger.
           expect(cell).not.toMatch(/^\s*[=+\-@]/)
         }
         // The text is kept, only marked as text: the audit loses nothing.
-        expect(rows[1][col('filePath')]).toBe(`'${payload}`)
+        expect(rows[1][col('filePath')]).toBe(`'${payload.replace(/[\t\r\n]/g, ' ')}`)
       })
     }
+
+    it('the writer refuses such a path before it ever reaches the table', () => {
+      logCodingChange('run1', details({ filePath: '=HYPERLINK("http://evil.example","x")' }))
+      expect((logged()[0].details as Record<string, string>).filePath).toBe(UNKNOWN)
+    })
 
     it('also neutralises the run id and an unknown action coming from the database', () => {
       store.rows.push({
@@ -397,24 +451,31 @@ describe('exportCodingAudit', () => {
   })
 
   describe('the whole is bounded, not just the rows', () => {
-    it('stops at the byte limit and marks the truncation in the output', () => {
+    it('stops at the byte limit, keeps the NEWEST entries, and says which are missing', () => {
       // 4 000 rows of long paths exceed the cap although the row count is fine.
-      for (let i = 0; i < 4000; i++) logCodingChange('run1', details({ filePath: `src/${'x'.repeat(900)}${i}.ts` }))
+      for (let i = 0; i < 4000; i++) logCodingChange('run1', details({ filePath: `src/${'x'.repeat(900)}-n${i}.ts` }))
       const csv = exportCodingAudit({ limit: 10000 })
       expect(Buffer.byteLength(csv, 'utf8')).toBeLessThanOrEqual(CODING_EXPORT_MAX_BYTES)
       const rows = parseCsv(csv)
-      const last = rows[rows.length - 1]
-      expect(last[col('action')]).toBe('export.truncated')
-      expect(last[col('note')]).toMatch(/size limit/i)
-      expect(rows.length).toBeLessThan(4001)
+      expect(rows[1][col('action')]).toBe('export.truncated')
+      expect(rows[1][col('note')]).toMatch(/size limit/i)
+      expect(rows[1][col('note')]).toMatch(/older entries[^.]*missing/i)
+      const indexes = rows.slice(2).map((r) => Number(/-n(\d+)\.ts$/.exec(r[col('filePath')])?.[1]))
+      expect(indexes.length).toBeGreaterThan(0)
+      expect(indexes.length).toBeLessThan(4000)
+      // The newest entry is in, the kept ones are one unbroken run ending at it, in order.
+      expect(indexes[indexes.length - 1]).toBe(3999)
+      expect(indexes).toEqual(indexes.map((_, k) => 3999 - indexes.length + 1 + k))
     })
 
     it('marks a cut by the row limit too', () => {
       for (let i = 0; i < 5; i++) logCodingChange('run1', details({ filePath: `f${i}.ts` }))
       const rows = parseCsv(exportCodingAudit({ limit: 3 }))
-      expect(rows).toHaveLength(1 + 3 + 1)
-      expect(rows[rows.length - 1][col('action')]).toBe('export.truncated')
-      expect(rows[rows.length - 1][col('note')]).toMatch(/row limit/i)
+      expect(rows).toHaveLength(1 + 1 + 3)
+      expect(rows[1][col('action')]).toBe('export.truncated')
+      expect(rows[1][col('note')]).toMatch(/row limit/i)
+      // The newest three, oldest first.
+      expect(rows.slice(2).map((r) => r[col('filePath')])).toEqual(['f2.ts', 'f3.ts', 'f4.ts'])
     })
 
     it('does not mark an export that is complete', () => {
@@ -445,6 +506,17 @@ describe('exportCodingAudit', () => {
     it('refuses a since that is not a date instead of widening the export', () => {
       expect(() => exportCodingAudit({ since: 'yesterday-ish' })).toThrow(/since/)
       expect(() => exportCodingAudit({ since: 5 as unknown as string })).toThrow(/since/)
+    })
+
+    it('refuses text that Date.parse would read as some date: only strict ISO 8601 is a since', () => {
+      for (const bad of ['5', 'Dec 1', '2026-02-31', '2026-13-01', '2026-11-18 10:00', '11/18/2026', '2026', '', '2026-11-18T10:00']) {
+        expect(() => exportCodingAudit({ since: bad })).toThrow(/since/)
+      }
+      store.queries.length = 0
+      exportCodingAudit({ since: '2026-11-18' })
+      exportCodingAudit({ since: '2026-11-18T10:00+01:00' })
+      expect((store.queries[0] as { since: string }).since).toBe('2026-11-18T00:00:00.000Z')
+      expect((store.queries[1] as { since: string }).since).toBe('2026-11-18T09:00:00.000Z')
     })
 
     it('passes a valid since to the query as an ISO string', () => {

@@ -24,7 +24,9 @@
  */
 
 import { getActivityLogger } from '../audit/activity-logger'
+import * as nodePath from 'path'
 import { DEFAULT_POLICY } from '../policy/policy-engine'
+import { stripHiddenCharacters } from './edit-proposals'
 
 /** The marker for a value that could not be vouched for. Never a guess. */
 export const UNKNOWN = 'unknown'
@@ -47,7 +49,16 @@ export interface CodingAuditDetails {
   model: string
   policyVersion: string
   guardRedirected: boolean
+  /**
+   * NOT stored on a change entry. A run whose guard blocked ends abandoned and
+   * is never applied, so `true` on an applied-change row could only ever mean
+   * "the run context was lost", which a reader would misread as "the guard
+   * blocked something". The row records `runContextKnown` instead; the block
+   * itself is the separate `coding.guard_blocked` entry.
+   */
   guardBlocked: boolean
+  /** Whether provider, model and guard outcome come from the run's own record. Absent means no. */
+  runContextKnown?: boolean
 }
 
 /** What a blocked guard records: where and under whom, never why (a reason can quote the content). */
@@ -76,9 +87,23 @@ function name(value: unknown): string {
   return typeof value === 'string' && NAME.test(value) ? value : UNKNOWN
 }
 
-function path(value: unknown): string {
-  if (typeof value !== 'string') return UNKNOWN
-  return value.length > MAX_PATH_CHARS ? value.slice(0, MAX_PATH_CHARS) + TRUNCATED : value
+function clip(text: string): string {
+  const clean = stripHiddenCharacters(text)
+  return clean.length > MAX_PATH_CHARS ? clean.slice(0, MAX_PATH_CHARS) + TRUNCATED : clean
+}
+
+/** The project root: an absolute path. Anything else is not what the callers hold, so it is UNKNOWN. */
+function projectRoot(value: unknown): string {
+  return typeof value === 'string' && nodePath.isAbsolute(value) ? clip(value) : UNKNOWN
+}
+
+/** A file inside the project: relative, normalised, never leaving it. Free text does not qualify. */
+function projectFile(value: unknown): string {
+  if (typeof value !== 'string' || value === '') return UNKNOWN
+  const posix = nodePath.posix
+  if (posix.isAbsolute(value) || nodePath.isAbsolute(value)) return UNKNOWN
+  if (posix.normalize(value) !== value || value === '..' || value.startsWith('../')) return UNKNOWN
+  return clip(value)
 }
 
 function count(value: unknown): number {
@@ -95,17 +120,20 @@ export function currentPolicyVersion(): string {
   return name(DEFAULT_POLICY?.version)
 }
 
-function changeDetails(d: CodingAuditDetails): CodingAuditDetails {
+type StoredChange = Omit<CodingAuditDetails, 'guardBlocked'> & { runContextKnown: boolean }
+
+function changeDetails(d: CodingAuditDetails): StoredChange {
   return {
-    projectPath: path(d?.projectPath),
-    filePath: path(d?.filePath),
+    projectPath: projectRoot(d?.projectPath),
+    filePath: projectFile(d?.filePath),
     addedLines: count(d?.addedLines),
     removedLines: count(d?.removedLines),
     provider: name(d?.provider),
     model: name(d?.model),
     policyVersion: name(d?.policyVersion),
     guardRedirected: flag(d?.guardRedirected),
-    guardBlocked: flag(d?.guardBlocked)
+    // guardBlocked is deliberately not copied (see CodingAuditDetails).
+    runContextKnown: d?.runContextKnown === true
   }
 }
 
@@ -137,7 +165,7 @@ export function logCodingGuardBlocked(runId: string, details: CodingGuardBlocked
     entityType: ENTITY_TYPE,
     entityId: runId,
     details: {
-      projectPath: path(details?.projectPath),
+      projectPath: projectRoot(details?.projectPath),
       provider: name(details?.provider),
       model: name(details?.model),
       policyVersion: name(details?.policyVersion),
@@ -160,7 +188,7 @@ export function logCodingRunUndone(runId: string, details: CodingUndoDetails): v
     entityType: ENTITY_TYPE,
     entityId: runId,
     details: {
-      projectPath: path(details?.projectPath),
+      projectPath: projectRoot(details?.projectPath),
       restoredCount: Array.isArray(details?.restored) ? details.restored.length : 0,
       skippedCount: skipped.length,
       interrupted: flag(details?.interrupted),
@@ -230,8 +258,11 @@ export function getRunAuditContext(runId: string): RunAuditContext | undefined {
  * names and the guard assumed to have acted: a reviewer looks at it, instead of
  * reading an invented "clean" record.
  */
-export function resolveRunAuditContext(runId: string): RunAuditContext {
-  return getRunAuditContext(runId) ?? { provider: UNKNOWN, model: UNKNOWN, guardRedirected: true, guardBlocked: true }
+export function resolveRunAuditContext(runId: string): RunAuditContext & { known: boolean } {
+  const ctx = getRunAuditContext(runId)
+  return ctx
+    ? { ...ctx, known: true }
+    : { provider: UNKNOWN, model: UNKNOWN, guardRedirected: true, guardBlocked: true, known: false }
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +284,7 @@ export const CODING_AUDIT_COLUMNS = [
   'policyVersion',
   'guardRedirected',
   'guardBlocked',
+  'runContextKnown',
   'restoredCount',
   'skippedCount',
   'interrupted',
@@ -273,12 +305,15 @@ const MAX_CELL_CHARS = MAX_PATH_CHARS + TRUNCATED.length
  * One cell, ready for the file. A cell that starts (after white space) with
  * `=`, `+`, `-` or `@` is executable in Excel and LibreOffice: it gets a
  * leading apostrophe, which marks it as text and keeps it readable. Tab and
- * carriage return are white space and covered by the same test. Quoting follows
+ * carriage return are replaced by spaces first (hidden characters) and the
+ * leading-white-space test covers what remains. Quoting follows
  * RFC 4180.
  */
 function cell(value: unknown): string {
   let text = typeof value === 'string' ? value : typeof value === 'number' || typeof value === 'boolean' ? String(value) : ''
   if (text.length > MAX_CELL_CHARS) text = text.slice(0, MAX_PATH_CHARS) + TRUNCATED
+  // Whoever wrote the row: hidden and direction-changing characters never reach the file.
+  text = stripHiddenCharacters(text)
   if (/^\s*[=+\-@]/.test(text)) text = `'${text}`
   if (/[",\r\n]/.test(text)) text = `"${text.replace(/"/g, '""')}"`
   return text
@@ -319,6 +354,7 @@ function rowFor(entry: {
     d.policyVersion,
     d.guardRedirected,
     d.guardBlocked,
+    d.runContextKnown,
     d.restoredCount,
     d.skippedCount,
     d.interrupted,
@@ -335,12 +371,26 @@ function truncationRow(note: string): string {
   return line(cells)
 }
 
+/** Strict ISO 8601: a date, optionally with a time and an offset. Free text is not a date. */
+const ISO_SINCE = /^(\d{4})-(\d{2})-(\d{2})(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2}))?$/
+
 function parseSince(since: unknown): string | undefined {
   if (since === undefined || since === null) return undefined
-  const time = typeof since === 'string' ? Date.parse(since) : Number.NaN
-  // A filter that cannot be read is refused: ignoring it would widen the export
-  // beyond what was asked for.
-  if (!Number.isFinite(time)) throw new Error('Invalid "since": expected an ISO 8601 date')
+  const match = typeof since === 'string' ? ISO_SINCE.exec(since) : null
+  // A filter that cannot be read is refused: ignoring it, or reading "5" as a
+  // year, would hand over a range nobody asked for.
+  const refuse = (): never => {
+    throw new Error('Invalid "since": expected an ISO 8601 date, e.g. 2026-11-18 or 2026-11-18T09:00:00Z')
+  }
+  if (!match) return refuse()
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])]
+  const calendar = new Date(Date.UTC(year, month - 1, day))
+  // "2026-02-31" parses to 3 March; a date that does not exist is refused.
+  if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day) {
+    return refuse()
+  }
+  const time = Date.parse(since as string)
+  if (!Number.isFinite(time)) return refuse()
   return new Date(time).toISOString()
 }
 
@@ -361,27 +411,36 @@ export function exportCodingAudit(filter: { since?: string; limit?: number }): s
   // One more than asked for, to know whether the limit cut anything.
   const found = getActivityLogger().query({ entityType: ENTITY_TYPE, since, limit: limit + 1 })
   const cutByRows = found.length > limit
-  const chronological = found.slice(0, limit).reverse()
 
-  let out = line(CODING_AUDIT_COLUMNS)
-  let bytes = Buffer.byteLength(out, 'utf8')
+  // Both bounds drop the OLDEST entries. `found` is newest first; take rows from
+  // the front under the byte bound, then put what was kept in chronological
+  // order. An auditor asking about recent activity must never receive old
+  // activity in its place.
+  const header = line(CODING_AUDIT_COLUMNS)
+  let bytes = Buffer.byteLength(header, 'utf8')
+  const kept: string[] = []
   let cutBySize = false
-  let written = 0
-  for (const entry of chronological) {
+  for (const entry of found.slice(0, limit)) {
     const row = rowFor(entry)
     const size = Buffer.byteLength(row, 'utf8')
     if (bytes + size + TRUNCATION_RESERVE > CODING_EXPORT_MAX_BYTES) {
       cutBySize = true
       break
     }
-    out += row
+    kept.push(row)
     bytes += size
-    written++
   }
+  kept.reverse()
+
+  // The marker comes first: it describes entries BEFORE the first row shown.
+  let out = header
   if (cutBySize) {
-    out += truncationRow(`Export stopped at the size limit of ${CODING_EXPORT_MAX_BYTES} bytes after ${written} of ${chronological.length} rows`)
+    out += truncationRow(
+      `Incomplete: size limit of ${CODING_EXPORT_MAX_BYTES} bytes reached. The ${kept.length} newest entries are shown; ` +
+        `all older entries${cutByRows ? ' (and those beyond the row limit)' : ''} are missing`
+    )
   } else if (cutByRows) {
-    out += truncationRow(`Export stopped at the row limit of ${limit}; older entries exist`)
+    out += truncationRow(`Incomplete: row limit of ${limit} reached. The ${kept.length} newest entries are shown; all older entries are missing`)
   }
-  return out
+  return out + kept.join('')
 }

@@ -452,6 +452,15 @@ interface RunState {
   ended?: 'finished'
 }
 
+/**
+ * Invisible, direction-changing and control characters replaced by a space: the
+ * one definition of "hidden" for text that ends in front of a human in an audit
+ * record. The audit export reuses it rather than keeping a second list.
+ */
+export function stripHiddenCharacters(text: string): string {
+  return text.replace(HIDDEN_CHAR, ' ')
+}
+
 function cleanReason(reason: unknown): string | undefined {
   if (typeof reason !== 'string') return undefined
   return reason.replace(HIDDEN_CHAR, ' ').slice(0, AUDIT_REASON_MAX_CHARS)

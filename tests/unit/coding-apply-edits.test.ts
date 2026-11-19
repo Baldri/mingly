@@ -1505,8 +1505,9 @@ describe('audit: one entry per accepted change, none for anything that was not w
       model: 'claude-opus-5',
       policyVersion: DEFAULT_POLICY.version,
       guardRedirected: true,
-      guardBlocked: false
+      runContextKnown: true
     })
+    expect('guardBlocked' in (audit.rows[0].details ?? {})).toBe(false)
     expect(audit.rows[1].details).toMatchObject({ filePath: 'b.ts', addedLines: 1, removedLines: 1 })
   })
 
@@ -1519,7 +1520,7 @@ describe('audit: one entry per accepted change, none for anything that was not w
       provider: 'unknown',
       model: 'unknown',
       guardRedirected: true,
-      guardBlocked: true
+      runContextKnown: false
     })
   })
 
