@@ -270,6 +270,15 @@ export interface ConsentBroker {
    * offered and a request that could not even be delivered all land on
    * `drop-file`. A promise that never settles would turn a cancelled run into
    * a leaked dialog, and the run timeout is suspended while one is open.
+   *
+   * @deprecated Use `askWithSource`. This form drops `decidedBy`, and
+   * `resolveConsentChoice` needs it: a caller who only has the choice has to
+   * invent one, and inventing `'user'` puts the untrue
+   * "withheld by user" notice back for an expiry or an abort. No production
+   * code calls this; the tests are its only consumers.
+   * DEBT: kept because 15 test call sites read better without the wrapper
+   * object -> delete it, and rewrite those call sites, as soon as any
+   * production code needs to ask.
    */
   ask(req: CodingConsentRequest): Promise<CodingConsentChoice>;
   /** Like `ask`, and says whether a person or the system settled it. */
@@ -386,6 +395,8 @@ export function createConsentBroker(deps: ConsentBrokerDeps): ConsentBroker {
       });
     },
 
+    // Depends on `this`, so it breaks if destructured off the broker. One more
+    // reason production asks through `askWithSource` directly.
     ask(req: CodingConsentRequest): Promise<CodingConsentChoice> {
       return this.askWithSource(req).then((d) => d.choice);
     },
