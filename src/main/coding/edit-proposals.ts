@@ -49,8 +49,11 @@ import {
   readHeadAndBody,
   resolveReadableFile,
   resolveScope,
-  type ReadToolDeps
+  toRequestedRelative,
+  type ReadToolDeps,
+  type Scope
 } from './read-tools'
+import { resolvePathSegments } from './path-policy'
 
 // ---------------------------------------------------------------------------
 // Limits and messages
@@ -100,6 +103,8 @@ const REFUSED = 'Refused: this file cannot be edited by the coding tools.'
 const BAD_ARGS =
   'Refused: edit_file needs the string arguments "path", "old" (not empty) and "new".'
 const BAD_TYPE = 'Refused: this file type is not on the coding edit list.'
+const WORKSPACE_READ_ONLY =
+  'Refused: the .mingly workspace is read-only for edit_file; propose changes to project files instead.'
 const BINARY = 'Refused: the file looks binary and cannot be edited.'
 const NOT_UTF8 = 'Refused: the file is not valid UTF-8 and cannot be edited.'
 const TOO_LARGE = 'Refused: the file is too large to edit.'
@@ -755,6 +760,27 @@ export interface EditToolDeps extends ReadToolDeps {
   store: EditProposalStore
 }
 
+/**
+ * Is this project-relative path inside the project's `.mingly/` workspace? The
+ * segments come from the same folding as the blocklist (NFKC, case, `.` and `..`
+ * resolved), so spellings of one directory agree.
+ *
+ * WHY THIS IS A WRITE-SIDE RULE IN THIS TOOL AND NOT A BLOCKLIST ENTRY: the
+ * blocklist answers one question for every caller, and `read_file` must keep
+ * reading `.mingly/`. Context compaction externalises large tool results into
+ * `.mingly/context/<run>/` and then tells the model to read them back with
+ * `read_file`; a blocklist entry would break that read-back. The workspace is
+ * read yes, write no, an asymmetry only a rule on the write side can express.
+ * Do not "simplify" this onto the blocklist. (It matters here because the
+ * workspace holds the undo path: snapshots and their manifests.)
+ */
+function isInsideWorkspace(relPath: string, scope: Scope): boolean {
+  const segments = resolvePathSegments(relPath)
+  const workspace = resolvePathSegments(scope.workspaceRel)
+  if (!segments || !workspace || workspace.length === 0) return false
+  return workspace.every((seg, i) => segments[i] === seg)
+}
+
 const proposeGate: ToolGate = (ctx) => {
   if (!ctx || !ctx.coding) return false
   // Re-parsed: an unknown mode string must read as `off`, never as "high".
@@ -782,10 +808,23 @@ async function editFile(
     if (typeof args.path !== 'string' || args.path === '') return BAD_ARGS
     if (typeof oldText !== 'string' || oldText === '' || typeof newText !== 'string') return BAD_ARGS
 
+    // Write-side rule, first pass: the path as given. It depends only on the
+    // model's string and the workspace root, never on the file system, so it
+    // may say why, needs no file, and never reaches the store (no failed attempt
+    // is counted for it).
+    const requested = toRequestedRelative(args.path, scope)
+    if (requested !== null && isInsideWorkspace(requested, scope)) return WORKSPACE_READ_ONLY
+
     // The same discipline as read_file, one implementation.
     const resolved = await resolveReadableFile(args.path, scope)
     if (resolved.kind === 'bad-type') return BAD_TYPE
     if (resolved.kind !== 'ok') return REFUSED
+
+    // Second pass, on the resolved real path: a link inside the project that
+    // points into the workspace passes the name check above and reading it is
+    // allowed by design. This answer depends on the file system, so it is the
+    // uniform refusal and not a distinct message.
+    if (isInsideWorkspace(resolved.realRelPosix, scope)) return REFUSED
 
     // Everything that needs nothing from the file is decided before it is read.
     const realRelEarly = resolved.realRel.split(path.sep).join('/')

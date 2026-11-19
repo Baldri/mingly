@@ -1390,6 +1390,103 @@ describe('edit_file handler: path discipline (same order as read_file)', () => {
   })
 })
 
+describe('edit_file handler: the .mingly workspace is read yes, write no', () => {
+  const WS_FILE = '.mingly/context/run1/result.json'
+
+  it('refuses a proposal inside .mingly/ and leaves the file untouched', async () => {
+    const abs = write(WS_FILE, '{"k": 1}\n')
+    const out = await edit({ path: WS_FILE, old: '"k": 1', new: '"k": 2' }, await ctxFor())
+    expect(out).toMatch(/refused/i)
+    expect(out).toMatch(/\.mingly|workspace/i)
+    expect(fs.readFileSync(abs, 'utf8')).toBe('{"k": 1}\n')
+    expect(store.pending(RUN)).toHaveLength(0)
+  })
+
+  it('refuses the snapshot area, which holds the undo path itself', async () => {
+    write('.mingly/snapshots/run1/batch-1/manifest.json', '{"files": []}\n')
+    const out = await edit(
+      { path: '.mingly/snapshots/run1/batch-1/manifest.json', old: '"files": []', new: '"files": ["x"]' },
+      await ctxFor()
+    )
+    expect(out).toMatch(/refused/i)
+    expect(store.pending(RUN)).toHaveLength(0)
+  })
+
+  it.each([
+    ['dot segment', './.mingly/context/run1/result.json'],
+    ['parent segment', 'src/../.mingly/context/run1/result.json'],
+    ['upper case', '.MINGLY/context/run1/result.json'],
+    ['absolute inside the project', '__ABS__/.mingly/context/run1/result.json']
+  ])('refuses the same file by a different spelling: %s', async (_n, spelling) => {
+    write(WS_FILE, '{"k": 1}\n')
+    const p = spelling.replace('__ABS__', project)
+    const out = await edit({ path: p, old: '"k": 1', new: '"k": 2' }, await ctxFor())
+    expect(out).toMatch(/refused/i)
+    expect(store.pending(RUN)).toHaveLength(0)
+  })
+
+  it('refuses a link inside the project that RESOLVES into .mingly/ (only the second pass sees it)', async () => {
+    const abs = write(WS_FILE, '{"k": 1}\n')
+    fs.symlinkSync(abs, path.join(project, 'innocent.json'))
+    const out = await edit({ path: 'innocent.json', old: '"k": 1', new: '"k": 2' }, await ctxFor())
+    expect(out).toMatch(/refused/i)
+    expect(fs.readFileSync(abs, 'utf8')).toBe('{"k": 1}\n')
+    expect(store.pending(RUN)).toHaveLength(0)
+  })
+
+  it('the resolved-path refusal is the uniform one: same text as a missing file (no probe for link targets)', async () => {
+    const abs = write(WS_FILE, '{"k": 1}\n')
+    fs.symlinkSync(abs, path.join(project, 'innocent.json'))
+    const viaLink = await edit({ path: 'innocent.json', old: 'a', new: 'b' }, await ctxFor())
+    const missing = await edit({ path: 'nothing.json', old: 'a', new: 'b' }, await ctxFor())
+    expect(viaLink).toBe(missing)
+  })
+
+  it('leaves ordinary files alone, including names that only start like the workspace', async () => {
+    write('src/a.ts', 'let a = 1\n')
+    write('.minglyx/a.ts', 'let a = 1\n')
+    write('.mingly-notes.ts', 'let a = 1\n')
+    write('src/.mingly/a.ts', 'let a = 1\n') // not at the project root: not the workspace
+    for (const f of ['src/a.ts', '.minglyx/a.ts', '.mingly-notes.ts', 'src/.mingly/a.ts']) {
+      const ctx = await ctxFor()
+      const out = await edit({ path: f, old: 'let a = 1', new: 'let a = 2' }, ctx)
+      expect(out, f).toMatch(/proposed/i)
+    }
+  })
+
+  it('neither refusal consumes the per-path failure cap or leaves an audit record', async () => {
+    const abs = write(WS_FILE, '{"k": 1}\n')
+    fs.symlinkSync(abs, path.join(project, 'innocent.json'))
+    const ctx = await ctxFor()
+    for (let i = 0; i < EDIT_MAX_FAILED_ATTEMPTS_PER_PATH * 3; i++) {
+      await edit({ path: WS_FILE, old: '"k": 1', new: 'x' }, ctx)
+      await edit({ path: 'innocent.json', old: '"k": 1', new: 'x' }, ctx)
+    }
+    expect(store.auditRecords(RUN).records).toEqual([])
+    // and no lockout happened: an ordinary proposal still works
+    write('ok.json', '{"k": 1}\n')
+    expect(await edit({ path: 'ok.json', old: '"k": 1', new: 'x' }, ctx)).toMatch(/proposed/i)
+  })
+
+  it('does not reach the store at all (decided before the file is read)', async () => {
+    write(WS_FILE, '{"k": 1}\n')
+    const spy = vi.spyOn(store, 'propose')
+    const pre = vi.spyOn(store, 'precheck')
+    await edit({ path: WS_FILE, old: '"k": 1', new: 'x' }, await ctxFor())
+    expect(spy).not.toHaveBeenCalled()
+    expect(pre).not.toHaveBeenCalled()
+  })
+
+  it('read_file STILL reads the workspace: compaction externalises results there and tells the model to read them back', async () => {
+    write(WS_FILE, '{"externalized": true}\n')
+    const result = await registry.executeTool(
+      { id: 'r1', name: 'read_file', arguments: { path: WS_FILE } },
+      await ctxFor('read-only')
+    )
+    expect(result.content).toContain('externalized')
+  })
+})
+
 describe('edit_file handler: arguments fail closed', () => {
   it.each([
     ['missing path', { old: 'a', new: 'b' }],
