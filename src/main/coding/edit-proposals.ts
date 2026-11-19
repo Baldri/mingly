@@ -227,17 +227,48 @@ function pathKey(p: string): string {
 }
 
 /**
- * 0, 1, or 2 meaning "two or more", with the first index. At most two searches:
- * the decision needs nothing more, and counting every (overlapping) match cost
- * 2.65 s for a^200000 vs a^100000 (measured in review) because each of the
- * ~100000 matches is compared over 100000 characters. Overlap still counts:
- * "aa" in "aaa" is two.
+ * 0, 1, or 2 meaning "two or more", with the first index, in O(haystack +
+ * needle) time: Knuth-Morris-Pratt, which never moves back in the haystack.
+ * Stopping at the second match bounds the NUMBER of searches, not the cost of
+ * one, and the engine's indexOf is quadratic on a long near-match everywhere
+ * (one call on a^400000 vs a^100000 b a^99999 took 4743 ms, about 106 s at the
+ * 2 MiB cap), so the search itself is linear and the class is gone. Overlap
+ * still counts: "aa" in "aaa" is two. `steps`, when given, receives the number
+ * of character comparisons, so a test can assert the work and not the clock.
  */
-function countUpToTwo(haystack: string, needle: string): { count: 0 | 1 | 2; first: number } {
-  if (needle.length > haystack.length) return { count: 0, first: -1 }
-  const first = haystack.indexOf(needle)
-  if (first === -1) return { count: 0, first: -1 }
-  return { count: haystack.indexOf(needle, first + 1) === -1 ? 1 : 2, first }
+export function findUpToTwo(
+  haystack: string,
+  needle: string,
+  steps?: { n: number }
+): { count: 0 | 1 | 2; first: number } {
+  const m = needle.length
+  const n = haystack.length
+  if (m === 0 || m > n) return { count: 0, first: -1 }
+  const fail = new Int32Array(m)
+  for (let i = 1, k = 0; i < m; i++) {
+    while (k > 0 && needle.charCodeAt(i) !== needle.charCodeAt(k)) {
+      k = fail[k - 1]
+      if (steps) steps.n++
+    }
+    if (steps) steps.n++
+    if (needle.charCodeAt(i) === needle.charCodeAt(k)) k++
+    fail[i] = k
+  }
+  let first = -1
+  for (let i = 0, k = 0; i < n; i++) {
+    while (k > 0 && haystack.charCodeAt(i) !== needle.charCodeAt(k)) {
+      k = fail[k - 1]
+      if (steps) steps.n++
+    }
+    if (steps) steps.n++
+    if (haystack.charCodeAt(i) === needle.charCodeAt(k)) k++
+    if (k === m) {
+      if (first !== -1) return { count: 2, first }
+      first = i - m + 1
+      k = fail[k - 1]
+    }
+  }
+  return first === -1 ? { count: 0, first: -1 } : { count: 1, first }
 }
 
 /** Lines with their terminators kept, so "x\n" and "x" at the end differ. */
@@ -271,10 +302,15 @@ interface BuiltDiff {
  * a missed one costs the review. Tab and plain space stay as they are; a
  * newline never occurs inside one displayed line. Rendered visibly in the diff,
  * never removed from what is stored.
+ *
+ * REVISIT THIS LIST when the Unicode tables move (a new Unicode version adds
+ * Default_Ignorable, variation-selector and join-control points). U+180F, the
+ * Mongolian free variation selector four, slipped through an earlier version
+ * because the range stopped one point short. The tests enumerate the points.
  */
 const HIDDEN_SET =
   '\\p{Cc}\\p{Cf}\\p{Cs}\\p{Co}\\p{Cn}\\p{Zl}\\p{Zp}\\p{Zs}' +
-  '\\u034F\\u115F\\u1160\\u17B4\\u17B5\\u180B-\\u180D\\u2800\\u3164\\uFE00-\\uFE0F\\uFFA0' +
+  '\\u034F\\u115F\\u1160\\u17B4\\u17B5\\u180B-\\u180F\\u2800\\u3164\\uFE00-\\uFE0F\\uFFA0' +
   '\\u{E0100}-\\u{E01EF}'
 const HIDDEN_CHAR = new RegExp(`[${HIDDEN_SET}]`, 'gu')
 const HIDDEN_ONE = new RegExp(`[${HIDDEN_SET}]`, 'u')
@@ -353,6 +389,8 @@ function buildDiff(
 function reject(reason: string): ProposeOutcome {
   return { kind: 'rejected', reason }
 }
+
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
 
 function sha256(text: string): string {
   return createHash('sha256').update(Buffer.from(text, 'utf-8')).digest('hex')
@@ -491,6 +529,11 @@ export function createEditProposalStore(
     if (edit.oldText.includes('\u0000') || edit.newText.includes('\u0000')) {
       return reject('the old or new text contains a NUL character.')
     }
+    // A lone surrogate would be displayed as <U+D800> but written as U+FFFD:
+    // display and stored form must not diverge, and it cannot be written faithfully.
+    if (LONE_SURROGATE.test(edit.oldText) || LONE_SURROGATE.test(edit.newText)) {
+      return reject('the old or new text contains a lone surrogate, which cannot be written as UTF-8.')
+    }
 
     // A run that has ended adds nothing: a straggler tool call must not
     // grow a package a human is about to review (or revive an abandoned one).
@@ -591,7 +634,7 @@ export function createEditProposalStore(
         const key = pathKey(edit.path)
         const failedBefore = st.failures.get(key) ?? 0
 
-        const { count, first } = countUpToTwo(fileContent, edit.oldText)
+        const { count, first } = findUpToTwo(fileContent, edit.oldText)
         if (count !== 1) {
           failPath(st, key, runId, stepNumber, edit.path, {
             outcome: count === 0 ? 'rejected-not-found' : 'rejected-ambiguous',
@@ -771,10 +814,12 @@ async function editFile(
     )
     if (outcome.kind === 'rejected') return `Rejected: ${outcome.reason}`
 
-    const [latest] = deps.store.pending(runId).filter((e) => e.path === realRel).slice(-1)
-    const counts = latest ? ` (-${latest.removedLines}/+${latest.addedLines} lines)` : ''
+    // No line counts here: they vary with what surrounds the match (end of file,
+    // a following newline, a line start), and the model wrote old and new text
+    // itself, so the only thing counts would add is that context. The counts
+    // live in the stored proposal and the audit, for the human.
     return (
-      `Proposed${counts}. Nothing was written and the file is unchanged. The change is applied ` +
+      'Proposed. Nothing was written and the file is unchanged. The change is applied ' +
       'only if the user accepts it.'
     )
   } catch {

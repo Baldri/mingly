@@ -22,6 +22,7 @@ import {
   EDIT_PENDING_BYTES_BUDGET,
   EDIT_MAX_PENDING_PER_RUN,
   editStillMatches,
+  findUpToTwo,
   type EditProposalStore
 } from '../../src/main/coding/edit-proposals'
 import { ensureProjectWorkspace } from '../../src/main/coding/project-workspace'
@@ -592,6 +593,7 @@ describe('rendering: what counts as invisible or confusable', () => {
     ['combining grapheme joiner U+034F', '\u034F'],
     ['variation selector U+FE0F', '\uFE0F'],
     ['Mongolian variation selector U+180B', '\u180B'],
+    ['Mongolian free variation selector four U+180F', '\u180F'],
     ['variation selector supplement U+E0100', '\u{E0100}'],
     ['no-break space U+00A0', '\u00A0'],
     ['ideographic space U+3000', '\u3000'],
@@ -712,6 +714,100 @@ describe('file identity: the approved diff is provably the one that gets written
     await edit({ path: 'a.ts', old: 'let b = 2', new: 'let b = 3' }, await ctxFor())
     const onDisk = createHash('sha256').update(fs.readFileSync(abs)).digest('hex')
     expect(store.pending(RUN)[0].baseSha256).toBe(onDisk)
+  })
+})
+
+describe('the search is linear, not just limited to two calls', () => {
+  /** The shape that makes a naive or engine indexOf quadratic: a long near-match everywhere. */
+  const adversarial = (h: number, k: number) => ({
+    haystack: 'a'.repeat(h),
+    needle: 'a'.repeat(k) + 'b' + 'a'.repeat(k - 1)
+  })
+
+  it('does O(haystack + needle) work on the adversarial needle, asserted as work, not as time', () => {
+    // One indexOf call on a^400000 vs a^100000 b a^99999 took 4743 ms (and 106 s
+    // at the 2 MiB cap), scaling 356 ms, 1271 ms, 4743 ms per doubling.
+    const { haystack, needle } = adversarial(400_000, 100_000)
+    const steps = { n: 0 }
+    const r = findUpToTwo(haystack, needle, steps)
+    expect(r).toEqual({ count: 0, first: -1 })
+    expect(steps.n).toBeLessThanOrEqual(2 * (haystack.length + needle.length))
+  })
+
+  it('stays linear when the work doubles', () => {
+    const small = { n: 0 }
+    const big = { n: 0 }
+    const a = adversarial(100_000, 25_000)
+    const b = adversarial(200_000, 50_000)
+    findUpToTwo(a.haystack, a.needle, small)
+    findUpToTwo(b.haystack, b.needle, big)
+    expect(big.n).toBeLessThanOrEqual(small.n * 2 + 10)
+  })
+
+  it('the store decides the adversarial proposal without hanging (it took minutes before)', () => {
+    const { haystack, needle } = adversarial(400_000, 100_000)
+    const out = store.propose(RUN, 1, { path: 'a.ts', oldText: needle, newText: 'x' }, haystack)
+    expect(out.kind).toBe('rejected')
+  })
+
+  it('agrees with indexOf on 6000 random small inputs (needles up to 9, so the failure table matters), overlaps included', () => {
+    let seed = 12345
+    const rnd = (n: number) => {
+      seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff
+      return (seed >>> 16) % n
+    }
+    const str = (len: number) => Array.from({ length: len }, () => 'ab'[rnd(2)]).join('')
+    for (let i = 0; i < 6000; i++) {
+      const hay = str(rnd(30))
+      const needle = str(1 + rnd(9))
+      const first = hay.indexOf(needle)
+      const second = first === -1 ? -1 : hay.indexOf(needle, first + 1)
+      const expected = first === -1 ? { count: 0, first: -1 } : { count: second === -1 ? 1 : 2, first }
+      expect(findUpToTwo(hay, needle)).toEqual(expected)
+    }
+  })
+
+  it('finds a match that needs the longest proper border of the needle (a table built with a wrong fallback misses it)', () => {
+    const hay = 'aabaaabaaaa'
+    const needle = 'aabaaaa'
+    expect(hay.indexOf(needle)).toBe(4)
+    expect(findUpToTwo(hay, needle)).toEqual({ count: 1, first: 4 })
+  })
+
+  it('counts "aa" in "aaa" as two (overlap) and finds the first index', () => {
+    expect(findUpToTwo('xaaa', 'aa')).toEqual({ count: 2, first: 1 })
+    expect(findUpToTwo('xaay', 'aa')).toEqual({ count: 1, first: 1 })
+  })
+
+  it('handles a needle as long as the haystack and a longer one', () => {
+    expect(findUpToTwo('abc', 'abc')).toEqual({ count: 1, first: 0 })
+    expect(findUpToTwo('abc', 'abcd')).toEqual({ count: 0, first: -1 })
+  })
+})
+
+describe('a lone surrogate cannot be written, so it is not proposed', () => {
+  it.each([
+    ['lone high surrogate in the new text', 'x', 'a\uD800b'],
+    ['lone low surrogate in the new text', 'x', 'a\uDC00b'],
+    ['lone high surrogate at the end of the new text', 'x', 'a\uD83D'],
+    ['lone surrogate in the old text', 'a\uD800b', 'x']
+  ])('rejects %s', (_n, oldText, newText) => {
+    const out = store.propose(RUN, 1, { path: 'a.ts', oldText, newText }, `${oldText}\n`)
+    expect(out).toEqual({ kind: 'rejected', reason: expect.stringMatching(/surrogate/i) })
+    expect(store.pending(RUN)).toHaveLength(0)
+  })
+
+  it('accepts a well-formed surrogate pair (an emoji)', () => {
+    const out = store.propose(RUN, 1, { path: 'a.ts', oldText: 'x', newText: 'a\uD83D\uDE00b' }, 'x\n')
+    expect(out.kind).toBe('proposed')
+    expect(store.pending(RUN)[0].newText).toBe('a\uD83D\uDE00b')
+  })
+
+  it('does not count as a failed attempt (it depends only on the model text)', () => {
+    for (let i = 0; i < 10; i++) {
+      store.propose(RUN, 1, { path: 'a.ts', oldText: 'x', newText: 'a\uD800' }, 'x\n')
+    }
+    expect(store.propose(RUN, 1, { path: 'a.ts', oldText: 'x', newText: 'y' }, 'x\n').kind).toBe('proposed')
   })
 })
 
@@ -1077,11 +1173,26 @@ describe('edit_file handler: proposes, never writes', () => {
     expect(store.pending(RUN)[0].diff).toContain('SECRET_BEFORE')
   })
 
-  it('reports the line counts of the proposal', async () => {
+  it('keeps the line counts in the stored proposal and out of the model-visible text', async () => {
     write('a.ts', 'a\nb\nc\n')
     const out = await edit({ path: 'a.ts', old: 'b', new: 'b1\nb2' }, await ctxFor())
-    expect(out).toMatch(/-1/)
-    expect(out).toMatch(/\+2/)
+    expect(out).not.toMatch(/[0-9]/)
+    expect(out).toMatch(/proposed/i)
+    const [p] = store.pending(RUN)
+    expect(p.removedLines).toBe(1)
+    expect(p.addedLines).toBe(2)
+  })
+
+  it('the success text is identical whatever surrounds the match (end of file, before a newline, line start)', async () => {
+    // Counts used to come out -1/+1, -0/+1 or -1/+2 depending on the structure around the match.
+    write('end.ts', 'KEY=')
+    write('nl.ts', 'KEY=\nrest\n')
+    write('start.ts', 'x\nKEY=\nrest\n')
+    const outs: string[] = []
+    for (const f of ['end.ts', 'nl.ts', 'start.ts']) {
+      outs.push(await edit({ path: f, old: 'KEY=', new: 'KEY=\n' }, await ctxFor()))
+    }
+    expect(new Set(outs).size).toBe(1)
   })
 
   it('stores the resolved real path, not the model spelling (alias link inside the project)', async () => {
