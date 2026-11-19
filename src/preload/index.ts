@@ -579,8 +579,10 @@ const api = {
         ipcRenderer.removeListener(IPC_CHANNELS.CODING_CONSENT_REQUEST, listener)
     },
 
-    respond: (runId: string, choice: CodingConsentChoice) =>
-      ipcRenderer.invoke(IPC_CHANNELS.CODING_CONSENT_RESPOND, runId, choice)
+    // `requestId` is the one the request carried; the main process refuses an
+    // answer that quotes any other.
+    respond: (runId: string, requestId: string, choice: CodingConsentChoice) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CODING_CONSENT_RESPOND, runId, requestId, choice)
   },
 
   // Agent Comparison (Parallel Model Comparison with tool-use)

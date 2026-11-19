@@ -75,6 +75,12 @@ export const CODING_CONSENT_CHOICES: readonly CodingConsentChoice[] = [
  * possibly a screenshot.
  */
 export interface CodingConsentRequest {
+  /**
+   * Identity of THIS question, generated in the main process. An answer must
+   * quote it: the run id alone cannot tell a late answer to file A from an
+   * answer to file B asked a moment later.
+   */
+  requestId: string;
   runId: string;
   stepNumber: number;
   toolName: string;

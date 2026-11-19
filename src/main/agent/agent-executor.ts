@@ -25,8 +25,9 @@ import {
   getConsentBroker,
   resolveConsentChoice,
   type ConsentBroker,
+  type ConsentDecision,
 } from '../coding/consent-broker'
-import type { CodingConsentChoice, CodingRunOptions } from '../../shared/coding-types'
+import type { CodingRunOptions } from '../../shared/coding-types'
 import { getToolRegistry, type ToolRegistry } from './tool-registry'
 import { getAgentContextManager } from './agent-context-manager'
 import { getClientManager } from '../llm-clients/client-manager'
@@ -379,9 +380,9 @@ export class AgentExecutor {
           abortController.signal.addEventListener('abort', onAbort, { once: true })
 
           // The fail-closed default, in place before anything can throw.
-          let choice: CodingConsentChoice = 'drop-file'
+          let decision: ConsentDecision = { choice: 'drop-file', decidedBy: 'system' }
           try {
-            choice = await this.consentBroker.ask(request)
+            decision = await this.consentBroker.askWithSource(request)
           } finally {
             abortController.signal.removeEventListener('abort', onAbort)
             consentWaitMs += Date.now() - askedAt
@@ -394,7 +395,8 @@ export class AgentExecutor {
           }
 
           const resolution = await resolveConsentChoice({
-            choice,
+            choice: decision.choice,
+            decidedBy: decision.decidedBy,
             runId,
             origin: loopGuard.origin,
             content: rawToolResults[index].content,

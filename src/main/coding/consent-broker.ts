@@ -16,6 +16,7 @@
  * anonymizer and the sensitive-data detector arrive as deps, which keeps the
  * privacy/NER module graph out of the agent executor's static graph.
  */
+import { randomUUID } from "node:crypto";
 import {
   parseCodingConsentChoice,
   type CodingConsentChoice,
@@ -58,14 +59,28 @@ export const ANONYMIZABLE_SENSITIVE_TYPES: readonly string[] = [
   "ip-address",
 ];
 
-/** The notice that replaces withheld content, for the agent to read. */
-function withheldNotice(origin: ToolResultOrigin, reason?: string): string {
+/** Who withheld the content. Decides what the notice may truthfully say. */
+export type ConsentDecidedBy = "user" | "system";
+
+/**
+ * The notice that replaces withheld content, for the agent to read.
+ *
+ * It names who withheld, because it travels on in the conversation the provider
+ * sees: "by user" on a question nobody answered would be a false statement. It
+ * carries no value derived from the content — only tool, path and a fixed reason.
+ */
+function withheldNotice(
+  origin: ToolResultOrigin,
+  decidedBy: ConsentDecidedBy,
+  reason?: string,
+): string {
   const where = origin.filePath
     ? `${origin.toolName} ${origin.filePath}`
     : origin.toolName;
+  const who = decidedBy === "user" ? "by user" : "by the system";
   return reason
-    ? `[Content withheld by user: ${where} (${reason})]`
-    : `[Content withheld by user: ${where}]`;
+    ? `[Content withheld ${who}: ${where} (${reason})]`
+    : `[Content withheld ${who}: ${where}]`;
 }
 
 /** May every finding in this scan be anonymized away? */
@@ -94,6 +109,7 @@ export function buildConsentRequest(args: {
     : ["send", "drop-file"];
 
   return {
+    requestId: randomUUID(),
     runId: args.runId,
     stepNumber: args.stepNumber,
     toolName: args.origin.toolName,
@@ -142,6 +158,12 @@ export async function resolveConsentChoice(
     runId: string;
     origin: ToolResultOrigin;
     content: string;
+    /**
+     * Who made the choice. `system` when the question settled itself (timeout,
+     * aborted run, undeliverable request): the notice must not say a user
+     * withheld what nobody decided.
+     */
+    decidedBy: ConsentDecidedBy;
   },
   deps: ConsentResolutionDeps = defaultResolutionDeps(),
 ): Promise<ConsentResolution> {
@@ -165,7 +187,7 @@ export async function resolveConsentChoice(
         );
         return {
           effect: "withheld",
-          content: withheldNotice(args.origin, "anonymisation failed"),
+          content: withheldNotice(args.origin, "system", "anonymisation failed"),
         };
       }
 
@@ -174,6 +196,7 @@ export async function resolveConsentChoice(
           effect: "withheld",
           content: withheldNotice(
             args.origin,
+            "system",
             "anonymisation still left sensitive data",
           ),
         };
@@ -183,7 +206,7 @@ export async function resolveConsentChoice(
 
     case "drop-file":
     default:
-      return { effect: "withheld", content: withheldNotice(args.origin) };
+      return { effect: "withheld", content: withheldNotice(args.origin, args.decidedBy) };
   }
 }
 
@@ -232,6 +255,12 @@ export function defaultResolutionDeps(): ConsentResolutionDeps {
 
 // ── The untrusted edge ──────────────────────────────────────
 
+/** A settled question: the choice, and who made it. */
+export interface ConsentDecision {
+  choice: CodingConsentChoice;
+  decidedBy: ConsentDecidedBy;
+}
+
 export interface ConsentBroker {
   /**
    * Put the question and wait for the answer.
@@ -243,8 +272,15 @@ export interface ConsentBroker {
    * a leaked dialog, and the run timeout is suspended while one is open.
    */
   ask(req: CodingConsentRequest): Promise<CodingConsentChoice>;
-  /** Settle the pending request of `runId`. Returns false if there is none. */
-  respond(runId: string, choice: unknown): boolean;
+  /** Like `ask`, and says whether a person or the system settled it. */
+  askWithSource(req: CodingConsentRequest): Promise<ConsentDecision>;
+  /**
+   * Settle the pending request of `runId`, if `requestId` is the one open.
+   * Returns false when there is no open question, or the id is missing,
+   * malformed or belongs to another question: such an answer is refused, and
+   * the open question stays open.
+   */
+  respond(runId: string, requestId: unknown, choice: unknown): boolean;
   /** Settle the pending request of `runId` to `drop-file` (run aborted). */
   cancel(runId: string): void;
 }
@@ -275,9 +311,11 @@ export interface ConsentBrokerDeps {
 }
 
 interface PendingRequest {
+  /** The only id an incoming answer may carry. */
+  requestId: string;
   /** The offers actually made — what an incoming answer is validated against. */
   offers: readonly CodingConsentChoice[];
-  settle: (choice: CodingConsentChoice) => void;
+  settle: (decision: ConsentDecision) => void;
   /** Cleared on settle, so an answered question leaves no live deadline. */
   timer?: ReturnType<typeof setTimeout>;
 }
@@ -294,6 +332,7 @@ export function createConsentBroker(deps: ConsentBrokerDeps): ConsentBroker {
   const settle = (
     runId: string,
     choice: CodingConsentChoice,
+    decidedBy: ConsentDecidedBy,
     expected?: PendingRequest,
   ): boolean => {
     const entry = pending.get(runId);
@@ -301,19 +340,23 @@ export function createConsentBroker(deps: ConsentBrokerDeps): ConsentBroker {
     if (expected && entry !== expected) return false;
     pending.delete(runId);
     if (entry.timer !== undefined) clearTimeout(entry.timer);
-    entry.settle(choice);
+    entry.settle({ choice, decidedBy });
     return true;
   };
 
   return {
-    ask(req: CodingConsentRequest): Promise<CodingConsentChoice> {
+    askWithSource(req: CodingConsentRequest): Promise<ConsentDecision> {
       // The loop asks one question per run at a time. If an older entry is
       // still there, it belongs to a question nobody is going to answer any
       // more: settle it closed rather than leave a promise hanging.
-      settle(req.runId, "drop-file");
+      settle(req.runId, "drop-file", "system");
 
-      return new Promise<CodingConsentChoice>((resolve) => {
-        const entry: PendingRequest = { offers: req.offers, settle: resolve };
+      return new Promise<ConsentDecision>((resolve) => {
+        const entry: PendingRequest = {
+          requestId: req.requestId,
+          offers: req.offers,
+          settle: resolve,
+        };
         pending.set(req.runId, entry);
 
         // Armed BEFORE publishing: a publish that fails synchronously settles
@@ -324,7 +367,7 @@ export function createConsentBroker(deps: ConsentBrokerDeps): ConsentBroker {
           console.warn(
             `[Consent] no answer for run ${req.runId}, withholding the file`,
           );
-          settle(req.runId, "drop-file", entry);
+          settle(req.runId, "drop-file", "system", entry);
         }, deps.answerTimeoutMs ?? DEFAULT_CONSENT_ANSWER_TIMEOUT_MS);
 
         const failClosed = (error: Error): void => {
@@ -332,7 +375,7 @@ export function createConsentBroker(deps: ConsentBrokerDeps): ConsentBroker {
             `[Consent] could not publish the request for run ${req.runId}:`,
             error.message,
           );
-          settle(req.runId, "drop-file", entry);
+          settle(req.runId, "drop-file", "system", entry);
         };
 
         try {
@@ -343,22 +386,33 @@ export function createConsentBroker(deps: ConsentBrokerDeps): ConsentBroker {
       });
     },
 
-    respond(runId: string, choice: unknown): boolean {
+    ask(req: CodingConsentRequest): Promise<CodingConsentChoice> {
+      return this.askWithSource(req).then((d) => d.choice);
+    },
+
+    respond(runId: string, requestId: unknown, choice: unknown): boolean {
       const entry = pending.get(runId);
       // An answer for a run with no open question is ignored, not applied to
       // whatever else may be pending.
       if (!entry) return false;
+      // The answer must quote the identity of the question that is open NOW.
+      // A missing, malformed or stale id is refused and the question stays
+      // open: a late answer for file A must never decide file B.
+      if (typeof requestId !== "string" || requestId !== entry.requestId) {
+        return false;
+      }
 
       const parsed = parseCodingConsentChoice(choice);
       // The renderer is an input. A choice that was never offered for THIS
       // request is refused, however well-formed it is — the offers list is the
-      // rule, not the choice's name.
-      const allowed = entry.offers.includes(parsed) ? parsed : "drop-file";
-      return settle(runId, allowed);
+      // rule, not the choice's name. That refusal is the system's decision.
+      return entry.offers.includes(parsed)
+        ? settle(runId, parsed, "user")
+        : settle(runId, "drop-file", "system");
     },
 
     cancel(runId: string): void {
-      settle(runId, "drop-file");
+      settle(runId, "drop-file", "system");
     },
   };
 }

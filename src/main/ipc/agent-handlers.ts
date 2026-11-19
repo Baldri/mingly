@@ -82,15 +82,16 @@ export function registerAgentHandlers(): void {
   // broker itself. Only the answer needs a handler.
   //
   // Everything arriving here is an input: the broker refuses a choice that was
-  // never offered for that request and ignores a runId with no open question,
-  // so this handler neither parses nor interprets the value.
+  // never offered for that request, an answer whose requestId is not the open
+  // question's, and ignores a runId with no open question — so this handler
+  // neither parses nor interprets the values.
 
   wrapHandler(
     IPC_CHANNELS.CODING_CONSENT_RESPOND,
-    (runId: string, choice: unknown) => {
+    (runId: string, requestId: unknown, choice: unknown) => {
       // Answering resumes agent work, so it is gated like starting it.
       requireFeature('agentic_mode')
-      const settled = getConsentBroker().respond(runId, choice)
+      const settled = getConsentBroker().respond(runId, requestId, choice)
       return { success: true, settled }
     }
   )

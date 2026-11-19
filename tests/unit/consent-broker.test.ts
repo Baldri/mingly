@@ -107,7 +107,7 @@ describe('buildConsentRequest', () => {
 // ── What happens to the content ─────────────────────────────
 
 describe('resolveConsentChoice', () => {
-  const base = { runId: 'run-1', origin: ORIGIN, content: CREDENTIAL }
+  const base = { runId: 'run-1', origin: ORIGIN, content: CREDENTIAL, decidedBy: 'user' as const }
 
   it('send keeps the content as it is', async () => {
     const res = await resolveConsentChoice({ ...base, choice: 'send' }, makeResolutionDeps())
@@ -122,6 +122,34 @@ describe('resolveConsentChoice', () => {
     expect(res.content).toContain('read_file')
     expect(res.content).toContain('src/config.ts')
     expect(res.content).not.toContain(SECRET)
+  })
+
+  it('says the system withheld the content when nobody answered', async () => {
+    // A question that settles itself (timeout, aborted run, undeliverable
+    // request) is withheld by the system. "by user" would be a false statement
+    // that travels on to the provider.
+    const res = await resolveConsentChoice(
+      { ...base, choice: 'drop-file', decidedBy: 'system' },
+      makeResolutionDeps(),
+    )
+    expect(res.effect).toBe('withheld')
+    expect(res.content).not.toContain('by user')
+    expect(res.content).toContain('by the system')
+    expect(res.content).toContain('read_file')
+    expect(res.content).toContain('src/config.ts')
+    expect(res.content).not.toContain(SECRET)
+  })
+
+  it('says the system withheld the content when anonymising failed', async () => {
+    // The user chose "anonymize"; withholding is then the system's decision.
+    const deps = makeResolutionDeps({
+      anonymize: async () => {
+        throw new Error('NER model missing')
+      },
+    })
+    const res = await resolveConsentChoice({ ...base, choice: 'anonymize' }, deps)
+    expect(res.content).not.toContain('by user')
+    expect(res.content).toContain('by the system')
   })
 
   it('falls back to drop-file when a re-scan still finds the match after anonymizing', async () => {
@@ -139,7 +167,7 @@ describe('resolveConsentChoice', () => {
     const res = await resolveConsentChoice({ ...base, choice: 'anonymize' }, deps)
 
     expect(res.effect).toBe('withheld')
-    expect(res.content).toContain('Content withheld by user')
+    expect(res.content).toContain('Content withheld by the system')
     expect(res.content).not.toContain(SECRET)
   })
 
@@ -197,7 +225,7 @@ describe('createConsentBroker', () => {
 
     const pending = broker.ask(req)
     expect(published).toEqual([req])
-    expect(broker.respond('run-1', 'anonymize')).toBe(true)
+    expect(broker.respond('run-1', req.requestId, 'anonymize')).toBe(true)
 
     await expect(pending).resolves.toBe('anonymize')
   })
@@ -206,9 +234,10 @@ describe('createConsentBroker', () => {
     // A credential finding offers send and drop-file only. A renderer that
     // answers 'anonymize' anyway must not get it.
     const broker = createConsentBroker({ publish: () => undefined })
-    const pending = broker.ask(requestFor(CREDENTIAL_SCAN))
+    const req = requestFor(CREDENTIAL_SCAN)
+    const pending = broker.ask(req)
 
-    broker.respond('run-1', 'anonymize')
+    broker.respond('run-1', req.requestId, 'anonymize')
 
     await expect(pending).resolves.toBe('drop-file')
   })
@@ -221,49 +250,54 @@ describe('createConsentBroker', () => {
     const req: CodingConsentRequest = { ...requestFor(CREDENTIAL_SCAN), offers: ['drop-file'] }
     const pending = broker.ask(req)
 
-    broker.respond('run-1', 'send')
+    broker.respond('run-1', req.requestId, 'send')
 
     await expect(pending).resolves.toBe('drop-file')
   })
 
   it('treats an unparseable answer as drop-file', async () => {
     const broker = createConsentBroker({ publish: () => undefined })
-    const pending = broker.ask(requestFor(EMAIL_SCAN))
+    const req = requestFor(EMAIL_SCAN)
+    const pending = broker.ask(req)
 
-    broker.respond('run-1', { choice: 'send' })
+    broker.respond('run-1', req.requestId, { choice: 'send' })
 
     await expect(pending).resolves.toBe('drop-file')
   })
 
   it('ignores an answer for a runId with no pending request', async () => {
     const broker = createConsentBroker({ publish: () => undefined })
-    const pending = broker.ask(requestFor(EMAIL_SCAN))
+    const req = requestFor(EMAIL_SCAN)
+    const pending = broker.ask(req)
 
-    expect(broker.respond('run-other', 'send')).toBe(false)
+    expect(broker.respond('run-other', req.requestId, 'send')).toBe(false)
     // The real request is untouched and still answerable.
-    expect(broker.respond('run-1', 'send')).toBe(true)
+    expect(broker.respond('run-1', req.requestId, 'send')).toBe(true)
     await expect(pending).resolves.toBe('send')
   })
 
   it('resolves a pending request to drop-file when the run is cancelled', async () => {
     const broker = createConsentBroker({ publish: () => undefined })
-    const pending = broker.ask(requestFor(EMAIL_SCAN))
+    const req = requestFor(EMAIL_SCAN)
+    const pending = broker.ask(req)
 
     broker.cancel('run-1')
 
     await expect(pending).resolves.toBe('drop-file')
     // The entry is gone: a late answer finds nothing to settle.
-    expect(broker.respond('run-1', 'send')).toBe(false)
+    expect(broker.respond('run-1', req.requestId, 'send')).toBe(false)
   })
 
   it('leaves no pending request behind when a run asks twice', async () => {
     const broker = createConsentBroker({ publish: () => undefined })
-    const first = broker.ask(requestFor(EMAIL_SCAN))
-    const second = broker.ask(requestFor(EMAIL_SCAN))
+    const firstReq = requestFor(EMAIL_SCAN)
+    const secondReq = requestFor(EMAIL_SCAN)
+    const first = broker.ask(firstReq)
+    const second = broker.ask(secondReq)
 
     await expect(first).resolves.toBe('drop-file')
 
-    expect(broker.respond('run-1', 'send')).toBe(true)
+    expect(broker.respond('run-1', secondReq.requestId, 'send')).toBe(true)
     await expect(second).resolves.toBe('send')
   })
 
@@ -291,7 +325,8 @@ describe('createConsentBroker', () => {
         publish: () => undefined,
         answerTimeoutMs: 60_000,
       })
-      const pending = broker.ask(requestFor(EMAIL_SCAN))
+      const req = requestFor(EMAIL_SCAN)
+    const pending = broker.ask(req)
 
       vi.advanceTimersByTime(60_000)
 
@@ -310,20 +345,120 @@ describe('createConsentBroker', () => {
         publish: () => undefined,
         answerTimeoutMs: 60_000,
       })
-      const first = broker.ask(requestFor(EMAIL_SCAN))
-      expect(broker.respond('run-1', 'send')).toBe(true)
+      const firstReq = requestFor(EMAIL_SCAN)
+      const first = broker.ask(firstReq)
+      expect(broker.respond('run-1', firstReq.requestId, 'send')).toBe(true)
       await expect(first).resolves.toBe('send')
 
       vi.advanceTimersByTime(30_000)
-      const second = broker.ask(requestFor(EMAIL_SCAN))
+      const secondReq = requestFor(EMAIL_SCAN)
+      const second = broker.ask(secondReq)
       // Past the FIRST question's deadline, while the second one is open.
       vi.advanceTimersByTime(30_001)
 
-      expect(broker.respond('run-1', 'anonymize')).toBe(true)
+      expect(broker.respond('run-1', secondReq.requestId, 'anonymize')).toBe(true)
       await expect(second).resolves.toBe('anonymize')
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('createConsentBroker - an answer belongs to ONE question', () => {
+  it('gives every request its own id, generated in the main process', () => {
+    const a = requestFor(EMAIL_SCAN)
+    const b = requestFor(EMAIL_SCAN)
+    expect(typeof a.requestId).toBe('string')
+    expect(a.requestId.length).toBeGreaterThan(0)
+    expect(a.requestId).not.toBe(b.requestId)
+  })
+
+  it('refuses a late answer to question A while question B is open', async () => {
+    // The double click: the answer to file A arrives after B was asked. It must
+    // not decide B, and B must stay open for its own answer.
+    const broker = createConsentBroker({ publish: () => undefined })
+    const reqA = requestFor(EMAIL_SCAN)
+    const pendingA = broker.ask(reqA)
+    expect(broker.respond('run-1', reqA.requestId, 'send')).toBe(true)
+    await expect(pendingA).resolves.toBe('send')
+
+    const reqB = requestFor(EMAIL_SCAN)
+    const pendingB = broker.ask(reqB)
+
+    expect(broker.respond('run-1', reqA.requestId, 'send')).toBe(false)
+
+    expect(broker.respond('run-1', reqB.requestId, 'drop-file')).toBe(true)
+    await expect(pendingB).resolves.toBe('drop-file')
+  })
+
+  it.each([
+    ['missing', undefined],
+    ['null', null],
+    ['empty', ''],
+    ['not a string', 42],
+    ['an object', { id: 'x' }],
+    ['unknown', 'not-the-request-id'],
+  ])('refuses an answer whose id is %s', async (_label, badId) => {
+    const broker = createConsentBroker({ publish: () => undefined })
+    const req = requestFor(EMAIL_SCAN)
+    const pending = broker.ask(req)
+
+    expect(broker.respond('run-1', badId, 'send')).toBe(false)
+
+    // Still open and answerable with the right id.
+    expect(broker.respond('run-1', req.requestId, 'anonymize')).toBe(true)
+    await expect(pending).resolves.toBe('anonymize')
+  })
+})
+
+describe('createConsentBroker - who decided', () => {
+  it('reports the user when the user answered', async () => {
+    const broker = createConsentBroker({ publish: () => undefined })
+    const req = requestFor(EMAIL_SCAN)
+    const pending = broker.askWithSource(req)
+    broker.respond('run-1', req.requestId, 'drop-file')
+    await expect(pending).resolves.toEqual({ choice: 'drop-file', decidedBy: 'user' })
+  })
+
+  it('reports the system when the answer timeout expired', async () => {
+    vi.useFakeTimers()
+    try {
+      const broker = createConsentBroker({ publish: () => undefined, answerTimeoutMs: 1000 })
+      const pending = broker.askWithSource(requestFor(EMAIL_SCAN))
+      vi.advanceTimersByTime(1000)
+      await expect(pending).resolves.toEqual({ choice: 'drop-file', decidedBy: 'system' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports the system when the run was cancelled', async () => {
+    const broker = createConsentBroker({ publish: () => undefined })
+    const pending = broker.askWithSource(requestFor(EMAIL_SCAN))
+    broker.cancel('run-1')
+    await expect(pending).resolves.toEqual({ choice: 'drop-file', decidedBy: 'system' })
+  })
+
+  it('reports the system when the request could not be published', async () => {
+    const broker = createConsentBroker({
+      publish: () => {
+        throw new Error('no window')
+      },
+    })
+    await expect(broker.askWithSource(requestFor(EMAIL_SCAN))).resolves.toEqual({
+      choice: 'drop-file',
+      decidedBy: 'system',
+    })
+  })
+
+  it('reports the system when the answer was a choice that was never offered', async () => {
+    // The refusal of an unoffered choice is the system overriding, not the user
+    // withholding: the user asked for something we refuse.
+    const broker = createConsentBroker({ publish: () => undefined })
+    const req = requestFor(CREDENTIAL_SCAN)
+    const pending = broker.askWithSource(req)
+    broker.respond('run-1', req.requestId, 'anonymize')
+    await expect(pending).resolves.toEqual({ choice: 'drop-file', decidedBy: 'system' })
   })
 })
 

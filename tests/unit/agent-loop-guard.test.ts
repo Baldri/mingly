@@ -155,6 +155,10 @@ function answeringBroker(choice: CodingConsentChoice): {
         requests.push(req)
         return choice
       },
+      askWithSource: async (req) => {
+        requests.push(req)
+        return { choice, decidedBy: 'user' }
+      },
       respond: () => false,
       cancel: () => undefined,
     },
@@ -183,6 +187,12 @@ function pausingBroker(): {
         onAsked?.(req)
         return new Promise<CodingConsentChoice>((resolve) => {
           settle = resolve
+        })
+      },
+      askWithSource: (req) => {
+        onAsked?.(req)
+        return new Promise((resolve) => {
+          settle = (choice) => resolve({ choice, decidedBy: 'user' })
         })
       },
       respond: () => false,
@@ -529,6 +539,77 @@ describe('A finding the user has to decide about', () => {
     expect(spies.sendMessageWithTools).toHaveBeenCalledTimes(2)
   })
 
+  /** Tool calls that each take a fixed amount of fake-clock time. */
+  function slowTools(delays: Record<string, number>): void {
+    spies.executeToolCalls.mockImplementation(async (calls: AgentToolCall[]) => {
+      await new Promise((resolve) => setTimeout(resolve, delays[calls[0].id] ?? 0))
+      return calls.map((tc) => ({
+        toolCallId: tc.id,
+        content: toolResultContents[tc.id] ?? `Result for ${tc.name}: mock data`,
+        isError: false,
+      }))
+    })
+  }
+
+  it('after the answer the run keeps the time it had left, not the time the human took', async () => {
+    // 6s of the 10s budget are the run's own work before the question; the
+    // human then takes 100s; 3s of own work follow. Own total 9s < 10s, so the
+    // run must complete. If the human's wait counted against the budget, the
+    // re-armed timer would fire at once and cancel the run.
+    vi.useFakeTimers()
+    llmResponses = [readFileStep(['tc-1']), readFileStep(['tc-2']), FINAL_STEP]
+    toolResultContents = { 'tc-1': CREDENTIAL, 'tc-2': 'export const answer = 42' }
+    slowTools({ 'tc-1': 6000, 'tc-2': 3000 })
+    const dialog = pausingBroker()
+
+    const runPromise = new AgentExecutor(RUN_CONFIG, { consentBroker: dialog.broker }).execute(
+      'read the project config',
+      'anthropic',
+      'claude-3-5-sonnet',
+      [],
+      undefined,
+      CODING,
+    )
+
+    await vi.advanceTimersByTimeAsync(6000)
+    await dialog.asked
+    await vi.advanceTimersByTimeAsync(100_000)
+    dialog.answer('drop-file')
+    await vi.advanceTimersByTimeAsync(3000)
+    const run = await runPromise
+
+    expect(run.status).toBe('completed')
+    expect(spies.sendMessageWithTools).toHaveBeenCalledTimes(3)
+  })
+
+  it('after the answer the run is re-armed with only its remaining time, not a fresh budget', async () => {
+    // The control for the test above: 6s own work before, 5s after = 11s > 10s.
+    // A re-arm with the full budget would let this run finish.
+    vi.useFakeTimers()
+    llmResponses = [readFileStep(['tc-1']), readFileStep(['tc-2']), FINAL_STEP]
+    toolResultContents = { 'tc-1': CREDENTIAL, 'tc-2': 'export const answer = 42' }
+    slowTools({ 'tc-1': 6000, 'tc-2': 5000 })
+    const dialog = pausingBroker()
+
+    const runPromise = new AgentExecutor(RUN_CONFIG, { consentBroker: dialog.broker }).execute(
+      'read the project config',
+      'anthropic',
+      'claude-3-5-sonnet',
+      [],
+      undefined,
+      CODING,
+    )
+
+    await vi.advanceTimersByTimeAsync(6000)
+    await dialog.asked
+    await vi.advanceTimersByTimeAsync(100_000)
+    dialog.answer('drop-file')
+    await vi.advanceTimersByTimeAsync(5000)
+    const run = await runPromise
+
+    expect(run.status).toBe('cancelled')
+  })
+
   it('the run timeout still ends a run that is not waiting for a human', async () => {
     // The control for the test above: a suspended timeout that is never
     // re-armed would also let the run finish, and nothing else here would say so.
@@ -582,6 +663,10 @@ describe('A finding the user has to decide about', () => {
       ask: (req) => {
         asks.push(req)
         return new Promise<CodingConsentChoice>(() => undefined)
+      },
+      askWithSource: (req) => {
+        asks.push(req)
+        return new Promise(() => undefined)
       },
       respond: () => false,
       cancel: () => undefined,
