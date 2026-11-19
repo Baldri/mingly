@@ -168,7 +168,12 @@ describe('run_command bounds', () => {
   it('kills the whole process group on timeout, including a background child', async () => {
     const pidFile = path.join(outside, 'sleep.pid')
     fake('git', `sleep 60 &\necho $! > "${pidFile}"\nwait`)
-    const out = await run(makeRegistry({ commandMs: 300 }), 'git status')
+    // Timing bound derived from a measurement (scratchpad/lat.js, 30 spawns of a
+    // shell script that writes a pid file): median 5.4 ms, max 240.7 ms. The
+    // first version used 300 ms and failed once under load because the script
+    // had not written its pid file before the timeout fired. 3000 ms is >12x
+    // the measured max; the assertion is on the kill, not on the duration.
+    const out = await run(makeRegistry({ commandMs: 3000 }), 'git status')
     expect(out).toMatch(/timed out/)
     // Positive control: the child existed.
     const pid = Number(fs.readFileSync(pidFile, 'utf8').trim())
@@ -234,7 +239,8 @@ describe('run_command bounds', () => {
   it('keeps the command time below the registry tool timeout', async () => {
     const pidFile = path.join(outside, 'reg.pid')
     fake('git', `echo $$ > "${pidFile}"\nexec sleep 60`)
-    const registry = new ToolRegistry({ toolTimeoutMs: 1500, maxResultChars: 100000 })
+    // Handler limit = tool timeout - 1000 ms = 3000 ms (same measurement as above).
+    const registry = new ToolRegistry({ toolTimeoutMs: 4000, maxResultChars: 100000 })
     registerRunCommand(registry, {
       findGrant: async (id) => grants.find((g) => g.id === id),
       getInterpreterPaths: () => interpreters
@@ -565,6 +571,49 @@ describe('run_command: the granted root must be the tool\'s own root (class fix 
       expect(await physicalPath(project, 'nope')).toBeNull()
     })
 
+    it('physicalPath: an ABSOLUTE input wins and discards the base, like path.resolve does', async () => {
+      fs.mkdirSync(path.join(outside, 'abs-target'))
+      // The decoy the exploit uses: the absolute path re-created UNDER the base.
+      fs.mkdirSync(path.join(project, outside, 'abs-target'), { recursive: true })
+      expect(path.resolve(project, path.join(outside, 'abs-target'))).toBe(path.join(outside, 'abs-target'))
+      expect(await physicalPath(project, path.join(outside, 'abs-target'))).toBe(path.join(outside, 'abs-target'))
+      // Absolute input that goes through a link and a `..`.
+      fs.mkdirSync(path.join(outside, 'p', 'q'), { recursive: true })
+      fs.mkdirSync(path.join(outside, 'z'))
+      fs.symlinkSync(path.join(outside, 'p', 'q'), path.join(outside, 'lnk'))
+      // lnk -> p/q, so lnk/.. is p (physical), not outside; p/z does not exist
+      expect(await physicalPath(project, `${outside}/lnk/../z`)).toBeNull()
+      fs.mkdirSync(path.join(outside, 'p', 'z'))
+      expect(await physicalPath(project, `${outside}/lnk/../z`)).toBe(path.join(outside, 'p', 'z'))
+    })
+
+    it('physicalPath: every other input class has a chosen answer', async () => {
+      const real = path.join(project, 'real')
+      fs.mkdirSync(path.join(real, 'sub'), { recursive: true })
+      fs.writeFileSync(path.join(real, 'file.txt'), 'x')
+      // repeated and trailing separators
+      expect(await physicalPath(project, 'real//sub/')).toBe(path.join(real, 'sub'))
+      expect(await physicalPath(project, './real/./sub')).toBe(path.join(real, 'sub'))
+      // `..` first, and `..` at the filesystem root stays at the root
+      expect(await physicalPath(path.join(real, 'sub'), '..')).toBe(real)
+      expect(await physicalPath('/', '..')).toBe('/')
+      // symlink as the final segment, a chain of links, a dangling link
+      fs.symlinkSync(path.join(real, 'sub'), path.join(project, 'last'))
+      expect(await physicalPath(project, 'last')).toBe(path.join(real, 'sub'))
+      fs.symlinkSync('last', path.join(project, 'chain1'))
+      fs.symlinkSync('chain1', path.join(project, 'chain2'))
+      expect(await physicalPath(project, 'chain2')).toBe(path.join(real, 'sub'))
+      fs.symlinkSync('does-not-exist', path.join(project, 'dangling'))
+      expect(await physicalPath(project, 'dangling')).toBeNull()
+      // a link whose target is a FILE resolves to the file; nothing can be walked below it
+      fs.symlinkSync(path.join(real, 'file.txt'), path.join(project, 'tofile'))
+      expect(await physicalPath(project, 'tofile')).toBe(path.join(real, 'file.txt'))
+      expect(await physicalPath(project, 'tofile/x')).toBeNull()
+      // a link target with `..` is applied to the link's own directory
+      fs.symlinkSync('../sub', path.join(real, 'sub', 'up'))
+      expect(await physicalPath(project, 'real/sub/up')).toBe(path.join(real, 'sub'))
+    })
+
     it('physicalPath gives up on a link loop', async () => {
       fs.symlinkSync('loop2', path.join(project, 'loop1'))
       fs.symlinkSync('loop1', path.join(project, 'loop2'))
@@ -603,6 +652,51 @@ describe('run_command: the granted root must be the tool\'s own root (class fix 
       const out = await gitRun()
       expect(out).toContain('exit code 0')
       expect(out).toContain(`GIT_DIR=${path.join(project, 'real', 'gd')}\n`)
+    })
+
+    it('EXPLOIT: an ABSOLUTE commondir to a repository outside the grant is refused, decoy or not', async () => {
+      const foreign = path.join(outside, 'foreign-repo', '.git')
+      fs.mkdirSync(foreign, { recursive: true })
+      const gd = path.join(project, '.git')
+      // The decoy: the same absolute path re-created under the git dir.
+      fs.mkdirSync(path.join(gd, foreign), { recursive: true })
+      fs.writeFileSync(path.join(gd, 'commondir'), foreign)
+      expect(await gitRun()).toBe(COMMAND_UNAVAILABLE)
+      expect(fs.existsSync(started)).toBe(false)
+    })
+
+    it('an ABSOLUTE gitdir pointer outside the grant is refused, decoy or not', async () => {
+      const foreign = path.join(outside, 'foreign-gd')
+      fs.mkdirSync(foreign)
+      fs.mkdirSync(path.join(project, foreign), { recursive: true })
+      fs.writeFileSync(path.join(project, '.git'), `gitdir: ${foreign}\n`)
+      expect(await gitRun()).toBe(COMMAND_UNAVAILABLE)
+      expect(fs.existsSync(started)).toBe(false)
+    })
+
+    it('false alarm direction: an ABSOLUTE gitdir pointer and ABSOLUTE commondir inside the grant run, pinned (as `git worktree add` writes them)', async () => {
+      const common = path.join(project, '.gitdata')
+      const wt = path.join(common, 'worktrees', 'wt')
+      fs.mkdirSync(wt, { recursive: true })
+      fs.writeFileSync(path.join(wt, 'commondir'), common)
+      fs.writeFileSync(path.join(project, '.git'), `gitdir: ${wt}\n`)
+      fake('git', 'echo "GIT_DIR=$GIT_DIR"; echo "GIT_COMMON_DIR=$GIT_COMMON_DIR"')
+      const out = await gitRun()
+      expect(out).toContain('exit code 0')
+      expect(out).toContain(`GIT_DIR=${wt}\n`)
+      expect(out).toContain(`GIT_COMMON_DIR=${common}\n`)
+    })
+
+    it('GIT_COMMON_DIR is pinned to the validated common dir; without a commondir it is not set', async () => {
+      const wt = path.join(project, '.gitdata', 'worktrees', 'wt')
+      fs.mkdirSync(wt, { recursive: true })
+      fs.writeFileSync(path.join(wt, 'commondir'), '../..')
+      fs.writeFileSync(path.join(project, '.git'), 'gitdir: .gitdata/worktrees/wt\n')
+      fake('git', 'echo "GIT_COMMON_DIR=[$GIT_COMMON_DIR]"')
+      expect(await gitRun()).toContain(`GIT_COMMON_DIR=[${path.join(project, '.gitdata')}]`)
+      fs.rmSync(path.join(project, '.git'))
+      fs.mkdirSync(path.join(project, '.git'))
+      expect(await gitRun()).toContain('GIT_COMMON_DIR=[]')
     })
 
     it('a linked worktree whose git dir and commondir are inside the grant still runs, with git pinned to them', async () => {

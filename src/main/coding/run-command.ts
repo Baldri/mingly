@@ -377,7 +377,8 @@ export async function physicalPath(start: string, input: string): Promise<string
   try {
     const separator = path.sep === '\\' ? /[\\/]+/ : /\/+/
     const pending = input.split(separator)
-    let current = start
+    // An absolute input discards the base, as path.resolve and the kernel do.
+    let current = path.isAbsolute(input) ? path.parse(input).root : start
     let hops = 0
     while (pending.length > 0) {
       const segment = pending.shift() as string
@@ -432,7 +433,7 @@ async function containedDirectory(base: string, rel: string, scope: Scope): Prom
  * Containment is path-sep based: a grant at the filesystem root never passes,
  * which fails closed.
  */
-async function resolveGitDir(scope: Scope): Promise<string | null> {
+async function resolveGitDir(scope: Scope): Promise<{ gitDir: string; commonDir: string | null } | null> {
   try {
     const entry = path.join(scope.realRoot, '.git')
     const real = await fs.promises.realpath(entry)
@@ -456,10 +457,9 @@ async function resolveGitDir(scope: Scope): Promise<string | null> {
     } catch {
       common = null
     }
-    if (common !== null && (common === '' || (await containedDirectory(gitDir, common, scope)) === null)) {
-      return null
-    }
-    return gitDir
+    if (common === null) return { gitDir, commonDir: null }
+    const commonDir = common === '' ? null : await containedDirectory(gitDir, common, scope)
+    return commonDir === null ? null : { gitDir, commonDir }
   } catch {
     return null
   }
@@ -577,9 +577,12 @@ async function runCommand(
       const pinned: Record<string, string> = {}
       if (detailed.tool === 'git') {
         // Its mark is a redirection: validate where it leads and pin git there.
-        const gitDir = await resolveGitDir(scope)
-        if (gitDir === null) return COMMAND_UNAVAILABLE
-        pinned.GIT_DIR = gitDir
+        const resolved = await resolveGitDir(scope)
+        if (resolved === null) return COMMAND_UNAVAILABLE
+        pinned.GIT_DIR = resolved.gitDir
+        // The validated common dir becomes authoritative, like GIT_DIR: git reads
+        // it from the `commondir` file otherwise, and that file is not trusted.
+        if (resolved.commonDir !== null) pinned.GIT_COMMON_DIR = resolved.commonDir
         pinned.GIT_WORK_TREE = scope.realRoot
       } else if (detailed.tool === 'npm' ? scripts === null : !(await rootHasMark(detailed.tool, scope))) {
         return COMMAND_UNAVAILABLE
