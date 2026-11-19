@@ -185,7 +185,11 @@ function killGroup(pid: number | undefined, child: { kill(signal?: NodeJS.Signal
 }
 
 /** The environment of the child: built here, `process.env` is not inherited. */
-function childEnv(file: string, interpreterPaths: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
+function childEnv(
+  file: string,
+  interpreterPaths: Readonly<Record<string, string>>,
+  pinned: Readonly<Record<string, string>>
+): NodeJS.ProcessEnv {
   const dirs = new Set<string>([path.dirname(file)])
   for (const name of INTERPRETER_NAMES) {
     if (Object.prototype.hasOwnProperty.call(interpreterPaths, name) && path.isAbsolute(interpreterPaths[name])) {
@@ -200,6 +204,7 @@ function childEnv(file: string, interpreterPaths: Readonly<Record<string, string
     NO_COLOR: '1',
     FORCE_COLOR: '0'
   }
+  Object.assign(env, pinned)
   // Locations, not secrets; npm and git need them to find their caches.
   if (process.env.HOME) env.HOME = process.env.HOME
   if (process.env.TMPDIR) env.TMPDIR = process.env.TMPDIR
@@ -332,8 +337,9 @@ async function readNpmScripts(scope: Scope): Promise<string[] | null> {
 
 /**
  * Does the granted root carry a mark of this tool's own root (ROOT_MARKS)?
- * An entry counts only if it is a file (git: file or directory) and, when it
- * is a link, only if its real target stays inside the grant.
+ * An entry counts only if it is a file and, when it is a link, only if its
+ * real target stays inside the grant. NOT used for git: a `.git` entry is a
+ * redirection, see resolveGitDir.
  */
 async function rootHasMark(tool: CommandTool, scope: Scope): Promise<boolean> {
   for (const name of ROOT_MARKS[tool]) {
@@ -342,12 +348,72 @@ async function rootHasMark(tool: CommandTool, scope: Scope): Promise<boolean> {
       const link = await fs.promises.lstat(entry)
       if (link.isSymbolicLink() && !(await isRealPathWithin(entry, scope.root))) continue
       const stat = await fs.promises.stat(entry)
-      if (stat.isFile() || (tool === 'git' && stat.isDirectory())) return true
+      if (stat.isFile()) return true
     } catch {
       // Absent or unreadable: not a mark.
     }
   }
   return false
+}
+
+const GIT_POINTER_MAX_BYTES = 4096
+
+/** A directory strictly inside the grant, symlinks resolved on both sides. */
+async function containedDirectory(candidate: string, scope: Scope): Promise<string | null> {
+  try {
+    const real = await fs.promises.realpath(candidate)
+    if (!(await fs.promises.stat(real)).isDirectory()) return null
+    // Equal to the root is refused too: a git dir that IS the work tree is not a git dir.
+    if (real === scope.realRoot || !(await isRealPathWithin(real, scope.root))) return null
+    return real
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The git dir git will actually use, or null when it is not provably inside
+ * the grant. `.git` is either a directory or a FILE `gitdir: <path>`, and the
+ * file sends git elsewhere (measured: a `.git` file naming a foreign repository
+ * made `git status` list that repository's index entries from inside the
+ * grant). So the target is resolved (relative to the directory holding the
+ * file) and must lie inside the grant; so must `commondir` when present.
+ * The caller then PINS git to the result (GIT_DIR) and to the granted root as
+ * work tree (GIT_WORK_TREE, which beats `core.worktree` from config; measured).
+ * Containment is path-sep based: a grant at the filesystem root never passes,
+ * which fails closed.
+ */
+async function resolveGitDir(scope: Scope): Promise<string | null> {
+  try {
+    const entry = path.join(scope.realRoot, '.git')
+    const real = await fs.promises.realpath(entry)
+    const stat = await fs.promises.stat(real)
+    let gitDir: string | null
+    if (stat.isDirectory()) {
+      gitDir = await containedDirectory(real, scope)
+    } else if (stat.isFile() && stat.size <= GIT_POINTER_MAX_BYTES) {
+      const firstLine = (await fs.promises.readFile(real, 'utf8')).split(/\r?\n/, 1)[0]
+      const match = /^gitdir: (.+)$/.exec(firstLine)
+      if (!match || match[1].includes('\u0000')) return null
+      gitDir = await containedDirectory(path.resolve(scope.realRoot, match[1]), scope)
+    } else {
+      return null
+    }
+    if (gitDir === null) return null
+    // A linked worktree names its main git dir in `commondir`; it must stay inside too.
+    let common: string | null = null
+    try {
+      common = (await fs.promises.readFile(path.join(gitDir, 'commondir'), 'utf8')).split(/\r?\n/, 1)[0]
+    } catch {
+      common = null
+    }
+    if (common !== null && (common === '' || (await containedDirectory(path.resolve(gitDir, common), scope)) === null)) {
+      return null
+    }
+    return gitDir
+  } catch {
+    return null
+  }
 }
 
 async function binaryIsRunnable(file: string, projectBin: boolean, scope: Scope): Promise<boolean> {
@@ -459,7 +525,14 @@ async function runCommand(
       // tool searches upward, so without its own mark it would run outside the
       // grant. For npm the package.json read above is the mark (and must be valid).
       if (detailed.tool === undefined) return COMMAND_UNAVAILABLE
-      if (detailed.tool === 'npm' ? scripts === null : !(await rootHasMark(detailed.tool, scope))) {
+      const pinned: Record<string, string> = {}
+      if (detailed.tool === 'git') {
+        // Its mark is a redirection: validate where it leads and pin git there.
+        const gitDir = await resolveGitDir(scope)
+        if (gitDir === null) return COMMAND_UNAVAILABLE
+        pinned.GIT_DIR = gitDir
+        pinned.GIT_WORK_TREE = scope.realRoot
+      } else if (detailed.tool === 'npm' ? scripts === null : !(await rootHasMark(detailed.tool, scope))) {
         return COMMAND_UNAVAILABLE
       }
 
@@ -470,7 +543,7 @@ async function runCommand(
       }
 
       started = true
-      return await execute(plan, interpreters, timeoutMs, deps, registry, budget, runId)
+      return await execute(plan, interpreters, pinned, timeoutMs, deps, registry, budget, runId)
     } finally {
       if (!started) budget.release(runId, timeoutMs)
     }
@@ -482,6 +555,7 @@ async function runCommand(
 async function execute(
   plan: Extract<CommandPlan, { kind: 'run' }>,
   interpreters: Readonly<Record<string, string>>,
+  pinned: Readonly<Record<string, string>>,
   timeoutMs: number,
   deps: RunCommandDeps,
   registry: ToolRegistry,
@@ -495,7 +569,7 @@ async function execute(
     plan.file,
     plan.args,
     plan.cwd,
-    childEnv(plan.file, interpreters),
+    childEnv(plan.file, interpreters, pinned),
     timeoutMs,
     headMax,
     resultBudget - headMax,

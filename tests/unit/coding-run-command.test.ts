@@ -509,9 +509,67 @@ describe('run_command: the granted root must be the tool\'s own root (class fix 
     expect(fs.existsSync(started)).toBe(false)
   })
 
-  it('a .git FILE (linked worktree) counts as git\'s mark', async () => {
-    fs.writeFileSync(path.join(project, '.git'), 'gitdir: ../elsewhere\n')
-    expect(await run(makeRegistry(), 'git status')).toContain('exit code 0')
+  describe('git: whatever git will use must lie inside the grant', () => {
+    const gitRun = async (): Promise<string> => run(makeRegistry(), 'git status')
+
+    it('a .git FILE pointing at a git dir OUTSIDE the grant is refused (foreign index, measured to leak names)', async () => {
+      fs.mkdirSync(path.join(outer, 'other-repo-git'))
+      fs.writeFileSync(path.join(project, '.git'), `gitdir: ${path.join(outer, 'other-repo-git')}\n`)
+      expect(await gitRun()).toBe(COMMAND_UNAVAILABLE)
+      expect(fs.existsSync(started)).toBe(false)
+    })
+
+    it('a relative gitdir that climbs out of the grant is refused', async () => {
+      fs.mkdirSync(path.join(outer, 'sibling-git'))
+      fs.writeFileSync(path.join(project, '.git'), 'gitdir: ../sibling-git\n')
+      expect(await gitRun()).toBe(COMMAND_UNAVAILABLE)
+      expect(fs.existsSync(started)).toBe(false)
+    })
+
+    it('a .git file with a missing target, a file target or unreadable content is refused', async () => {
+      for (const content of ['gitdir: nowhere\n', 'gitdir: .git-as-file\n', 'not a gitdir line\n', '', 'gitdir: \n']) {
+        fs.rmSync(path.join(project, '.git'), { recursive: true, force: true })
+        fs.writeFileSync(path.join(project, '.git-as-file'), 'x')
+        fs.writeFileSync(path.join(project, '.git'), content)
+        expect(await gitRun(), JSON.stringify(content)).toBe(COMMAND_UNAVAILABLE)
+      }
+      expect(fs.existsSync(started)).toBe(false)
+    })
+
+    it('a commondir that leads out of the grant is refused', async () => {
+      const wt = path.join(project, '.gitdata', 'wt')
+      fs.mkdirSync(wt, { recursive: true })
+      fs.writeFileSync(path.join(wt, 'commondir'), '../../../')
+      fs.writeFileSync(path.join(project, '.git'), 'gitdir: .gitdata/wt\n')
+      expect(await gitRun()).toBe(COMMAND_UNAVAILABLE)
+      expect(fs.existsSync(started)).toBe(false)
+    })
+
+    it('a linked worktree whose git dir and commondir are inside the grant still runs, with git pinned to them', async () => {
+      const wt = path.join(project, '.gitdata', 'worktrees', 'wt')
+      fs.mkdirSync(wt, { recursive: true })
+      fs.writeFileSync(path.join(wt, 'commondir'), '../..')
+      fs.writeFileSync(path.join(project, '.git'), 'gitdir: .gitdata/worktrees/wt\n')
+      fake('git', 'echo "GIT_DIR=$GIT_DIR"; echo "GIT_WORK_TREE=$GIT_WORK_TREE"')
+      const out = await gitRun()
+      expect(out).toContain('exit code 0')
+      expect(out).toContain(`GIT_DIR=${wt}\n`)
+      expect(out).toContain(`GIT_WORK_TREE=${project}\n`)
+    })
+
+    it('a .git DIRECTORY runs, pinned to itself (false-alarm direction)', async () => {
+      fs.mkdirSync(path.join(project, '.git'))
+      fake('git', 'echo "GIT_DIR=$GIT_DIR"; echo "GIT_WORK_TREE=$GIT_WORK_TREE"')
+      const out = await gitRun()
+      expect(out).toContain(`GIT_DIR=${path.join(project, '.git')}\n`)
+      expect(out).toContain(`GIT_WORK_TREE=${project}\n`)
+    })
+
+    it('other tools get no GIT_DIR or GIT_WORK_TREE', async () => {
+      fake('npm', 'echo "G=[$GIT_DIR][$GIT_WORK_TREE]"')
+      fs.writeFileSync(path.join(project, 'package.json'), '{"scripts":{"test":"x"}}')
+      expect(await run(makeRegistry(), 'npm test')).toContain('G=[][]')
+    })
   })
 })
 
