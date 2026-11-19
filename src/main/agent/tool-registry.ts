@@ -371,7 +371,11 @@ export class ToolRegistry {
     for (const [name, entry] of this.builtInTools) {
       if (gateAllows(entry, ctx)) names.push(name)
     }
-    for (const name of this.mcpToolMap.keys()) names.push(name)
+    // A built-in owns its name even while its gate is closed: listing the MCP
+    // tool of that name would put a refused name into the refusal itself.
+    for (const name of this.mcpToolMap.keys()) {
+      if (!this.builtInTools.has(name)) names.push(name)
+    }
     return names
   }
 }

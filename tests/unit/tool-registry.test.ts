@@ -446,6 +446,19 @@ describe('Context-gated built-in tools', () => {
       expect(mcpExecuteCalls().length).toBe(before)
     })
 
+    it('does not list the refused name as available in its own refusal, but lists unshadowed MCP names', async () => {
+      registry.registerBuiltIn(shadowDef, async () => 'builtin', proposeGate)
+      registry.refreshMCPTools()
+      const [res] = await registry.executeToolCalls(
+        [{ id: '1', name: 'search_docs', arguments: {} }],
+        codingCtx('read-only')
+      )
+      expect(res.isError).toBe(true)
+      const listed = /Available tools: (.*)$/.exec(res.content)?.[1] ?? ''
+      expect(listed.split(', ')).not.toContain('search_docs')
+      expect(listed.split(', ')).toContain('get_weather')
+    })
+
     it('still offers an MCP tool whose name no built-in claims', () => {
       registry.registerBuiltIn(shadowDef, async () => 'builtin', proposeGate)
       expect(registry.getAvailableTools().map((t) => t.name)).toContain('get_weather')
