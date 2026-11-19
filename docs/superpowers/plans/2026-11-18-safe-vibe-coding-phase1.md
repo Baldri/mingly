@@ -1047,6 +1047,28 @@ git commit -m "feat(coding): edit_file proposes a diff instead of writing"
   Kanäle: `CODING_ACCEPT_EDITS: 'coding:accept-edits'`, `CODING_REJECT_EDITS: 'coding:reject-edits'`, `CODING_UNDO_RUN: 'coding:undo-run'`.
 - Produces für Task 14: die drei Kanäle.
 
+**Woher der Handler den `ProjectWorkspace` nimmt (Entscheid R56).** Die Interfaces oben
+sagen, dass dieser Task einen `ProjectWorkspace` **verbraucht**, aber nicht, wer ihn
+**traegt** — zum vierten Mal dieselbe Luecke in diesem Plan (R27, R30, R33, jetzt hier).
+Hier ist sie besonders leicht zu uebersehen, weil der Fall anders liegt als bei den
+Werkzeugen: `CODING_ACCEPT_EDITS` und `CODING_UNDO_RUN` laufen **nach** dem Agent-Run,
+ausgeloest durch den Nutzer, und die Instanz, die der Executor im Lauf hielt, gibt es
+dann nicht mehr.
+
+Also: der IPC-Handler **rekonstruiert** den Arbeitsbereich mit
+`ensureProjectWorkspace(projectPath, runId)`. Das ist zulaessig und unbedenklich, weil die
+Funktion idempotent ist. **Das widerspricht R33 nicht:** dort galt «ein Handler ruft
+`ensureProjectWorkspace` nicht selbst» fuer **Werkzeug**-Handler **waehrend** eines Runs,
+wo eine zweite Instanz ein Rennen auf denselben Verzeichnissen bedeutet. Eine Regel ohne
+Geltungsbereich ist eine Falle fuer den, der sie befolgt — darum steht er hier.
+
+`projectPath` leitet der Handler im **Main-Prozess aus dem Grant** zu `directoryId` ab,
+nie aus dem Renderer (gleiche Regel wie R35 fuer Task 14). Ist der Grant inzwischen
+entzogen, wird **nicht** rekonstruiert und `refused` zurueckgegeben — auch fuer `undoRun`:
+Dateien in ein Verzeichnis zurueckschreiben, fuer das die Erlaubnis fehlt, ist dasselbe
+Schreiben ohne Erlaubnis wie jedes andere. Ein Test muss das fuer **beide** Kanaele
+belegen.
+
 **Eine Quelle der Wahrheit:** der `CODING_ACCEPT_EDITS`-Handler ruft `applyPendingEdits` und erst bei `applied` danach `EditProposalStore.resolve(runId, true)`. Der Store führt keine eigene Schreibung aus, und `applyPendingEdits` verwaltet keine Vorschläge. Bei `refused` bleibt der Vorschlag stehen, damit der Nutzer den Grund sieht und der Agent nichts Falsches gelernt bekommt.
 
 Ablauf, abschliessend:
