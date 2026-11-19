@@ -776,6 +776,12 @@ git commit -m "feat(coding): add the coding read allowlist and the absolute bloc
 **Files:**
 - Create: `src/main/coding/read-tools.ts`
 - Modify: `src/main/agent/tool-registry.ts` (Registrierung in `registerDefaultBuiltIns`)
+- Modify: `src/main/agent/agent-executor.ts:336-338` — **Pflicht, nicht optional:** der
+  Executor baut `origins` dort heute nur aus dem Werkzeugnamen, also bleibt
+  `ToolResultOrigin.filePath` leer. `originForToolCall` unten wird damit gebaut und nie
+  aufgerufen. Der Dialog aus Task 5 und die Notiz `[Content withheld …: <toolName> <filePath>]`
+  nennen die Datei sonst nie — der Nutzer entscheidet dann ueber «irgendeine Datei».
+  Befund des Task-5-Reviews, Entscheid R27.
 - Test: `tests/unit/coding-read-tools.test.ts`
 
 **Interfaces:**
@@ -791,6 +797,10 @@ git commit -m "feat(coding): add the coding read allowlist and the absolute bloc
 Jeder Pfad wird **nach** `realpath` geprüft, nicht davor — ein Symlink im Projekt, der nach draussen zeigt, ist sonst ein Ausbruch. `isRealPathWithin` löst beide Seiten auf und verträgt einen nicht existierenden Namen am Ende (`resolveRealPath` hängt die fehlenden Segmente an den tiefsten existierenden Vorfahren).
 
 Reihenfolge der Prüfungen in `read_file`, abschliessend: Grant vorhanden und `hasPermission(dir,'read')` → `isBlockedPath` → `isRealPathWithin` → `isReadableExtension` → Kopf lesen und `isProbablyBinary` → Inhalt. Blockliste vor der Pfadauflösung, damit eine Ablehnung nichts über das Dateisystem verrät.
+
+Ein Test muss belegen, dass ein `read_file`-Ergebnis beim Guard mit **gefuelltem**
+`filePath` ankommt — nicht nur, dass `originForToolCall` den Pfad zurueckgibt. Ein Test
+gegen die Funktion allein wuerde gruen bleiben, waehrend der Executor sie ignoriert.
 
 `list_files` blendet `.mingly/` aus und respektiert `.gitignore`, wenn eine existiert. Die Ausgabe wird auf eine feste Zahl Einträge begrenzt, mit einer Fusszeile, die die Kürzung **nennt** — eine stille Kürzung macht aus einer unvollständigen Liste eine falsche Aussage.
 
