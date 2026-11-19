@@ -27,6 +27,18 @@ export const CODING_BLOCKED_PATTERNS: readonly string[] = [
   "id_rsa*",
   ".git/config",
   "*.sqlite",
+  // Added in fix round 1. Siblings of the originals, plus names that carry
+  // credentials by content. Not generalised to `id_*` (id_generator.ts).
+  "*.pfx",
+  "id_ed25519*",
+  "id_ecdsa*",
+  "id_dsa*",
+  "credentials.json",
+  "secrets.yaml",
+  "secrets.yml",
+  ".npmrc",
+  ".netrc",
+  "*.db",
 ];
 
 /** Extensions (lower-case, no dot) the coding tools may read. */
@@ -153,27 +165,18 @@ const COMPILED_PATTERNS: readonly (readonly RegExp[])[] =
     pattern.split("/").map(compileSegment),
   );
 
-const SINGLE_SEGMENT_PATTERNS = COMPILED_PATTERNS.filter((p) => p.length === 1);
 const MULTI_SEGMENT_PATTERNS = COMPILED_PATTERNS.filter((p) => p.length > 1);
 
 /**
- * `.env*` is deliberately wide (.env.local, .env.production.local, .envrc).
- * The one thing it must not catch is a markdown note ABOUT env files, such as
- * `.env.example.md`: a guard that cries wolf gets switched off. The exemption
- * needs a middle part (`.env.<x>.md`), so `.env.md` itself stays blocked, and
- * it applies to that one pattern only. `.env.example` (no .md) stays blocked.
+ * `.env*` is deliberately wide (.env.local, .env.production.local, .envrc,
+ * .env.example.md) and has NO exemption: the list is absolute. A name from
+ * the .env family is refused even if it is documentation; a doc can be
+ * renamed, a secret that was read cannot be un-read.
  */
-const ENV_NOTE_EXEMPTION = /^\.env\..+\.md$/;
-const ENV_PATTERN_INDEX = CODING_BLOCKED_PATTERNS.indexOf(".env*");
-
 function segmentIsBlocked(segment: string): boolean {
-  for (let i = 0; i < COMPILED_PATTERNS.length; i++) {
-    const pattern = COMPILED_PATTERNS[i];
-    if (pattern.length !== 1 || !pattern[0].test(segment)) continue;
-    if (i === ENV_PATTERN_INDEX && ENV_NOTE_EXEMPTION.test(segment)) continue;
-    return true;
-  }
-  return false;
+  return COMPILED_PATTERNS.some(
+    (pattern) => pattern.length === 1 && pattern[0].test(segment),
+  );
 }
 
 /** True when `pattern` matches `resolved` at some position (consecutive). */

@@ -8,7 +8,7 @@ import {
 } from "../../src/main/coding/path-policy";
 
 describe("coding path policy: blocklist", () => {
-  it("exposes exactly the seven agreed patterns", () => {
+  it("exposes exactly the agreed patterns", () => {
     expect([...CODING_BLOCKED_PATTERNS]).toEqual([
       ".env*",
       "*.pem",
@@ -17,6 +17,16 @@ describe("coding path policy: blocklist", () => {
       "id_rsa*",
       ".git/config",
       "*.sqlite",
+      "*.pfx",
+      "id_ed25519*",
+      "id_ecdsa*",
+      "id_dsa*",
+      "credentials.json",
+      "secrets.yaml",
+      "secrets.yml",
+      ".npmrc",
+      ".netrc",
+      "*.db",
     ]);
   });
 
@@ -40,7 +50,6 @@ describe("coding path policy: blocklist", () => {
     for (const p of [
       "src/index.ts",
       "README.md",
-      ".env.example.md",
       "keyboard.ts",
     ]) {
       expect(isBlockedPath(p), p).toBe(false);
@@ -134,12 +143,47 @@ describe("coding path policy: blocklist", () => {
     expect(isBlockedPath("a/.git/config")).toBe(true);
   });
 
-  it("blocks every .env* variant except a documented markdown note", () => {
-    for (const p of [".env.example", ".env.development.local", ".envrc", ".env.md", ".env.example.txt"]) {
+  it("blocks the whole .env family, documentation names included", () => {
+    // The plan's own example `.env.example.md` was corrected: it belongs to
+    // the .env family and is refused. A doc can be renamed; a secret that was
+    // read cannot be un-read.
+    for (const p of [
+      ".env.example",
+      ".env.development.local",
+      ".envrc",
+      ".env.md",
+      ".env.example.txt",
+      ".env.example.md",
+      "docs/.env.local.md",
+    ]) {
       expect(isBlockedPath(p), p).toBe(true);
     }
-    expect(isBlockedPath(".env.example.md")).toBe(false);
-    expect(isBlockedPath("docs/.env.local.md")).toBe(false);
+  });
+
+  it("blocks the extended secret names and lets their neighbours through", () => {
+    const blocked = [
+      "a.pfx", "certs/A.PFX",
+      "id_ed25519", "id_ed25519.pub", ".ssh/ID_ED25519",
+      "id_ecdsa", "id_ecdsa.pub",
+      "id_dsa", "id_dsa.pub",
+      "credentials.json", "cfg/Credentials.JSON",
+      "secrets.yaml", "secrets.yml", "deploy/SECRETS.YML",
+      ".npmrc", "pkg/.NPMRC",
+      ".netrc",
+      "app.db", "data/APP.DB",
+    ];
+    for (const p of blocked) expect(isBlockedPath(p), p).toBe(true);
+    const allowed = [
+      "src/pfx.ts", "pfx-notes.md",
+      "src/id_generator.ts", "src/my_id_ed25519.ts", "src/id_ecdsa_notes".replace("id_ecdsa_", "ids_") + ".md",
+      "src/id_dsa.ts".replace("id_dsa", "ids_dsa"),
+      "src/credentials.ts", "docs/credentials.md", "credentials.json.md",
+      "src/secrets.ts", "secrets.yaml.md", "secrets.yamls.md",
+      "npmrc.md", ".npmignore",
+      "netrc.ts",
+      "src/db.ts", "db/schema.ts", "docs/mydb.md",
+    ];
+    for (const p of allowed) expect(isBlockedPath(p), p).toBe(false);
   });
 
   it("matches the whole segment, not the whole string as a substring", () => {
