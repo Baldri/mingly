@@ -151,6 +151,11 @@ export class ToolRegistry {
     const allMCPTools = mcpManager.listAllTools()
 
     for (const mcpTool of allMCPTools) {
+      // A built-in of the same name owns that name, whatever its gate says:
+      // open, it is already listed above (and wins at execution); closed, the
+      // name must not be offered through the MCP tool either, or the model
+      // would see a name it may not use.
+      if (this.builtInTools.has(mcpTool.toolName)) continue
       tools.push(this.mcpToolToDefinition(mcpTool))
     }
 

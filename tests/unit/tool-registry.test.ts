@@ -3,6 +3,7 @@
  * Validates tool registration, MCP bridging, execution, timeouts, and error handling.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { getMCPClientManager } from '../../src/main/mcp/mcp-client-manager'
 import { ToolRegistry, type ToolContext, type ToolGate } from '../../src/main/agent/tool-registry'
 import { CODING_MODE_ORDER, type CodingMode } from '../../src/shared/coding-types'
 import { atLeast } from '../../src/main/policy/policy-types'
@@ -402,6 +403,53 @@ describe('Context-gated built-in tools', () => {
     )
     expect(res.isError).toBe(true)
     expect(res.content).not.toMatch(/Available tools:.*edit_file/)
+  })
+
+  describe('a closed built-in gate versus an MCP tool of the same name', () => {
+    // The mocked MCP manager serves an MCP tool called `search_docs`.
+    const shadowDef: ToolDefinition = {
+      name: 'search_docs',
+      description: 'Gated built-in shadowing an MCP tool',
+      inputSchema: { type: 'object', properties: {}, required: [] }
+    }
+    /** Every executeTool call any manager instance the mock handed out received. */
+    const mcpExecuteCalls = (): unknown[] =>
+      vi
+        .mocked(getMCPClientManager)
+        .mock.results.flatMap((r) =>
+          r.type === 'return'
+            ? (r.value as { executeTool: { mock: { calls: unknown[] } } }).executeTool.mock.calls
+            : []
+        )
+
+    it('does not offer the MCP tool name while the built-in gate is closed', () => {
+      registry.registerBuiltIn(shadowDef, async () => 'builtin', proposeGate)
+      expect(registry.getAvailableTools().map((t) => t.name)).not.toContain('search_docs')
+      expect(registry.getAvailableTools(codingCtx('read-only')).map((t) => t.name)).not.toContain('search_docs')
+    })
+
+    it('offers the built-in, and only it, once the gate is open', () => {
+      registry.registerBuiltIn(shadowDef, async () => 'builtin', proposeGate)
+      const offered = registry.getAvailableTools(codingCtx('propose')).filter((t) => t.name === 'search_docs')
+      expect(offered).toEqual([shadowDef])
+    })
+
+    it('does not reach the MCP handler for that name while the gate is closed', async () => {
+      registry.registerBuiltIn(shadowDef, async () => 'builtin', proposeGate)
+      registry.refreshMCPTools()
+      const before = mcpExecuteCalls().length
+      const [res] = await registry.executeToolCalls(
+        [{ id: '1', name: 'search_docs', arguments: { query: 'q' } }],
+        codingCtx('read-only')
+      )
+      expect(res.isError).toBe(true)
+      expect(mcpExecuteCalls().length).toBe(before)
+    })
+
+    it('still offers an MCP tool whose name no built-in claims', () => {
+      registry.registerBuiltIn(shadowDef, async () => 'builtin', proposeGate)
+      expect(registry.getAvailableTools().map((t) => t.name)).toContain('get_weather')
+    })
   })
 
   it('leaves ungated tools unaffected', async () => {
