@@ -175,11 +175,19 @@ export async function preflightGuard(input: PreflightInput, deps: GuardDeps): Pr
 
 export interface PostflightResult {
   ok: boolean
+  /** Everything the scan returned, blocking or not. */
   violations: { type: string; severity: string; description: string }[]
+  /**
+   * The subset that made `ok` false. This is the single answer to "which
+   * severity blocks": a caller that reports WHY a run ended reads this instead
+   * of filtering `violations` by severity again, because two independent
+   * answers drift apart and then the message and the behaviour disagree.
+   */
+  blocking: { type: string; severity: string; description: string }[]
 }
 
 export function postflightGuard(output: string, systemPrompt: string, deps: GuardDeps): PostflightResult {
   const scan = deps.scanOutput(output, systemPrompt)
   const blocking = scan.violations.filter((v) => v.severity === 'critical' || v.severity === 'high')
-  return { ok: blocking.length === 0, violations: scan.violations }
+  return { ok: blocking.length === 0, violations: scan.violations, blocking }
 }

@@ -253,16 +253,13 @@ export class AgentExecutor {
         // Tokens are counted first, so a blocked turn still shows its cost.
         const postflight = postflightGuard(llmResponse.text, systemPrompt ?? '', getGuardDeps())
         if (!postflight.ok) {
-          // Name only the severities that actually blocked (request-guard.ts:183);
-          // `violations` also carries low/medium findings, and listing those as
-          // the reason the run ended would misreport why.
-          const blocking = postflight.violations.filter(
-            (v) => v.severity === 'critical' || v.severity === 'high'
-          )
+          // `blocking` is the guard's own answer to which severities blocked.
+          // Re-deriving it here would be a second answer that can drift from
+          // the one that actually ended the run.
           run.status = 'failed'
           run.error =
             'Output blocked by guardrails: ' +
-            blocking.map((v) => `${v.type} (${v.severity})`).join(', ')
+            postflight.blocking.map((v) => `${v.type} (${v.severity})`).join(', ')
           break
         }
 

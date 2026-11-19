@@ -78,6 +78,26 @@ describe('postflightGuard', () => {
   it('passes clean output', () => {
     expect(postflightGuard('fine', 'sys', deps()).ok).toBe(true)
   })
+  // `blocking` is the single answer to "which severity blocks", so the
+  // threshold belongs here, in the function that owns it — callers read the
+  // field instead of filtering by severity a second time.
+  it('separates the blocking subset from the full violation list', () => {
+    const r = postflightGuard('leaked', 'sys', deps({ scanOutput: () => ({ violations: [
+      { type: 'secret', severity: 'critical', description: 'leak' },
+      { type: 'wordy', severity: 'low', description: 'style' },
+    ] }) }))
+    expect(r.ok).toBe(false)
+    expect(r.violations).toHaveLength(2)
+    expect(r.blocking.map((v) => v.type)).toEqual(['secret'])
+  })
+  it('does not block on a low-severity violation alone', () => {
+    const r = postflightGuard('wordy', 'sys', deps({ scanOutput: () => ({ violations: [
+      { type: 'wordy', severity: 'low', description: 'style' },
+    ] }) }))
+    expect(r.ok).toBe(true)
+    expect(r.blocking).toHaveLength(0)
+    expect(r.violations).toHaveLength(1)
+  })
 })
 
 // ── Two-phase guards the chat IPC path now reuses (single source) ──────
