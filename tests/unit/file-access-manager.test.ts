@@ -599,9 +599,26 @@ describe('FileAccessManager', () => {
       accessCount: 0
     }
 
+    /**
+     * A LOCAL grant is carried under the id that follows from its own path
+     * (directory-id.ts), so these fixtures name that id. One with an arbitrary
+     * id is a PRE-migration entry and is re-keyed on load — pinned separately
+     * below. Network fixtures keep their structural `protocol://host/share` id,
+     * which was never path-derived.
+     *
+     * Measured outside this process, so no expectation here is the module
+     * compared against itself:
+     *   printf '%s' '/home/testuser/documents' | shasum -a 256 | cut -c1-16
+     *   printf '%s' '/home/testuser/malformed' | shasum -a 256 | cut -c1-16
+     */
+    const LOCAL_PATH = '/home/testuser/documents'
+    const LOCAL_ID = '1b1db21e20334b22'
+    const MALFORMED_PATH = '/home/testuser/malformed'
+    const MALFORMED_ID = 'a3d2da660317eb03'
+
     const LOCAL_GRANT = {
-      id: 'local-docs',
-      path: '/home/testuser/documents',
+      id: LOCAL_ID,
+      path: LOCAL_PATH,
       name: 'documents',
       location: 'local' as const,
       permissions: ['read'] as FileAccessPermission[],
@@ -635,7 +652,7 @@ describe('FileAccessManager', () => {
         42,
         { ...LOCAL_GRANT, confirmedAt: 1_700_000_000_001 }
       )
-      expect(reloaded.getAllowedDirectories().map((d) => d.id)).toEqual(['local-docs'])
+      expect(reloaded.getAllowedDirectories().map((d) => d.id)).toEqual([LOCAL_ID])
     })
 
     it('does not trust a network grant persisted without a confirmation marker', async () => {
@@ -726,7 +743,6 @@ describe('FileAccessManager', () => {
     describe('the edit permission', () => {
       const LOCAL_EDIT_GRANT = {
         ...LOCAL_GRANT,
-        id: 'local-edit',
         permissions: ['read', 'create', 'edit'] as FileAccessPermission[]
       }
 
@@ -804,7 +820,7 @@ describe('FileAccessManager', () => {
       it('keeps a confirmed grant with no permissions instead of parking it as unconfirmed', () => {
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
         try {
-          const confirmedEmpty = { ...LOCAL_GRANT, id: 'confirmed-empty', permissions: [], confirmedAt: 1_700_000_004_000 }
+          const confirmedEmpty = { ...LOCAL_GRANT, permissions: [], confirmedAt: 1_700_000_004_000 }
 
           const reloaded = restartWith(confirmedEmpty)
 
@@ -817,7 +833,7 @@ describe('FileAccessManager', () => {
       })
 
       it('parks a marker-less local grant whose only permission was edit', () => {
-        const editOnly = { ...LOCAL_GRANT, id: 'edit-only', permissions: ['edit'] as FileAccessPermission[] }
+        const editOnly = { ...LOCAL_GRANT, permissions: ['edit'] as FileAccessPermission[] }
 
         const reloaded = restartWith(editOnly)
 
@@ -848,24 +864,90 @@ describe('FileAccessManager', () => {
       ])('keeps a confirmed grant whose permissions is %s as an empty list', (_label, permissions) => {
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
         try {
-          const malformed = { ...LOCAL_GRANT, id: 'malformed-confirmed', permissions, confirmedAt: 1_700_000_005_000 }
-          const valid = { ...LOCAL_GRANT, id: 'valid-after', confirmedAt: 1_700_000_005_000 }
+          // Two DIFFERENT paths, because the id follows the path: two entries
+          // sharing one path are one entry in the allowlist by design.
+          const malformed = {
+            ...LOCAL_GRANT,
+            id: MALFORMED_ID,
+            path: MALFORMED_PATH,
+            permissions,
+            confirmedAt: 1_700_000_005_000
+          }
+          const valid = { ...LOCAL_GRANT, confirmedAt: 1_700_000_005_000 }
 
           let reloaded: FileAccessManager | undefined
           expect(() => { reloaded = restartWith(malformed, valid) }).not.toThrow()
 
           const dirs = reloaded!.getAllowedDirectories()
-          expect(dirs.map((d) => d.id)).toEqual([malformed.id, valid.id])
+          expect(dirs.map((d) => d.id)).toEqual([MALFORMED_ID, LOCAL_ID])
           expect(dirs[0].permissions).toEqual([])
           expect(dirs[1]).toEqual(valid)
           expect(reloaded!.getUnconfirmedDirectories()).toEqual([])
 
           // The junk list is not persisted back in a shape its type forbids.
           const stored = mockStoreData.get('allowedDirectories', []) as Array<{ id: string; permissions: unknown }>
-          expect(stored.find((d) => d.id === malformed.id)!.permissions).toEqual([])
+          expect(stored.find((d) => d.id === MALFORMED_ID)!.permissions).toEqual([])
         } finally {
           warn.mockRestore()
         }
+      })
+
+      /**
+       * The directory id used to cover only the first twelve bytes of the
+       * path, so every project under one home shared it and a second project
+       * silently replaced the first in this Map. store-migration.ts re-keys the
+       * FILE; the loader re-derives the id as well, so a session is right even
+       * when that rewrite could not land (a read-only userData, or an early
+       * call where electron's `app` is not there to say where the file is).
+       */
+      it('re-keys a local grant stored under a pre-migration id, and writes the list back', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+        try {
+          // The legacy id of this path, measured: 16 base64 characters hold 12
+          // input bytes, and this one decodes back to '/home/testus' — which is
+          // also why it leaked a path prefix and the new id must not.
+          const legacy = { ...LOCAL_GRANT, id: 'L2hvbWUvdGVzdHVz', confirmedAt: 1_700_000_006_000 }
+
+          const reloaded = restartWith(legacy)
+
+          expect(reloaded.getAllowedDirectories().map((d) => d.id)).toEqual([LOCAL_ID])
+          const stored = mockStoreData.get('allowedDirectories', []) as Array<{ id: string }>
+          expect(stored.map((d) => d.id)).toEqual([LOCAL_ID])
+          // Everything else about the grant is untouched.
+          expect(reloaded.getAllowedDirectories()[0]).toEqual({ ...legacy, id: LOCAL_ID })
+        } finally {
+          warn.mockRestore()
+        }
+      })
+
+      it('two sibling projects that shared one legacy id become two grants', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+        try {
+          // Both carry the SAME legacy id, which is the defect: loading them
+          // left one grant. They differ only in their path.
+          const alpha = { ...LOCAL_GRANT, id: 'L2hvbWUvdGVzdHVz', confirmedAt: 1 }
+          const beta = { ...alpha, path: MALFORMED_PATH }
+
+          const reloaded = restartWith(alpha, beta)
+
+          expect(reloaded.getAllowedDirectories().map((d) => d.id)).toEqual([LOCAL_ID, MALFORMED_ID])
+        } finally {
+          warn.mockRestore()
+        }
+      })
+
+      it('a NETWORK grant is not re-keyed: its id is not derived from a path', () => {
+        const confirmed = { ...LEGACY_NETWORK_GRANT, confirmedAt: 1_700_000_007_000 }
+
+        const reloaded = restartWith(confirmed)
+
+        // '/Volumes/NAS' hashes to 4f9a74f9db2b405c (measured outside this
+        // process); the entry must NOT end up under that id, or addNetworkShare
+        // would add a second entry for the same share instead of replacing it.
+        expect(reloaded.getAllowedDirectories().map((d) => d.id)).toEqual([
+          'smb://192.168.1.100/share'
+        ])
+        expect(reloaded.getAllowedDirectories()[0].id).not.toBe('4f9a74f9db2b405c')
       })
 
       it('does not rewrite the store when nothing was reduced or dropped', () => {

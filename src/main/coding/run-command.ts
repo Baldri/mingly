@@ -28,10 +28,12 @@
 
 import { spawn } from 'child_process'
 import * as fs from 'fs'
+import * as os from 'os'
 import * as path from 'path'
 import { StringDecoder } from 'string_decoder'
 import type { ToolRegistry, ToolContext, ToolGate } from '../agent/tool-registry'
 import { CODING_MODE_ORDER, parseCodingMode } from '../../shared/coding-types'
+import { AGENT_RUN_TIMEOUT_MS } from '../../shared/types'
 import { atLeast } from '../policy/policy-types'
 import { isRealPathWithin, resolveRealPath } from '../file-access/real-path-guard'
 import { SimpleStore } from '../utils/simple-store'
@@ -46,7 +48,19 @@ import {
 } from './read-tools'
 
 export const RUN_MAX_COMMANDS = 20
-export const RUN_TOTAL_MS = 300_000
+/**
+ * The cumulative command time of one run, pinned to the agent's run timeout.
+ *
+ * WHICH CEILING LEADS: the run timeout, because it ends the run outright while
+ * this one only refuses the next command. The two must therefore not stand side
+ * by side as independent numbers: this was 300_000 against a 120_000 run
+ * timeout, so it could never be reached. Before C1 that was harmless — the
+ * registry-wide tool timeout capped every command at 14 s — but a command now
+ * gets its full RUN_COMMAND_MS, so TWO commands reach the run timeout. Derived
+ * rather than copied, so raising the run timeout raises this with it and the
+ * relation cannot silently invert again.
+ */
+export const RUN_TOTAL_MS = AGENT_RUN_TIMEOUT_MS
 export const RUN_COMMAND_MS = 60_000
 /** The one name this tool is registered under; read in two places. */
 const RUN_COMMAND_TOOL = 'mingly_run_command'
@@ -435,8 +449,13 @@ const GIT_CONFIG_MAX_BYTES = 256 * 1024
 
 const MAX_LINK_HOPS = 40
 
+/** How long the config probe may take. It reads one bounded local file. */
+const GIT_CONFIG_PROBE_MS = 10_000
+/** Key names read from one config file before the probe counts as unusable. */
+const GIT_CONFIG_KEYS_MAX_CHARS = 512 * 1024
+
 /**
- * Does one line of a git config name a program git might run?
+ * Does any of these config KEY NAMES name a program git might run?
  *
  * Measured (git 2.53.0, negative control in the same run): a
  * `filter.<name>.clean` driver selected by a `.gitattributes` in the tree is
@@ -447,25 +466,91 @@ const MAX_LINK_HOPS = 40
  * There is NO git flag that switches clean/smudge off (`--no-ext-diff` and
  * `--no-textconv` cover different drivers), so the repository is refused.
  *
- * What counts as naming a program: a `filter` section, a key whose name ends in
- * `command`, and an `include`/`includeIf` section — the last because what it
- * pulls in is not read here, and a check that ignored it would be bypassed by
- * one line. A comment is not a definition.
+ * What counts as naming a program is unchanged: a `filter` section, a key whose
+ * name ends in `command`, and an `include`/`includeIf` section — the last
+ * because what it pulls in is not read here, and a check that ignored it would
+ * be bypassed by one line.
  *
- * This is deliberately an OVER-approximation: it reads the text rather than
- * implementing git's config grammar, so it can refuse a repository that would
- * have been harmless. A refusal is the safe direction; a miss is not.
+ * What changed is WHAT is asked. This used to match the TEXT of each line, and
+ * accepted whitespace, `]`, `"` or end of line after a section name. git also
+ * accepts a dot — the legacy `[filter.lfs]` form — and that form defines a
+ * working driver. Measured, with the quoted form as the control in the same run:
+ *
+ *   [filter.lfs]     git config --get filter.lfs.clean -> /bin/echo PWNED, exit 0
+ *   [filter "lfs"]   the same (control)
+ *   old regex:       false for [filter.lfs], true for [filter "lfs"]
+ *
+ * A denylist over spellings cannot promise it found every spelling, and the gap
+ * was the symptom, not the defect. So the spelling question now goes to the only
+ * authority on it (readGitConfigKeys) and what is left here is a decision over
+ * names git has already normalised: git lower-cases the section and the variable
+ * and a DOTTED subsection, and keeps the case of a QUOTED one — measured
+ * `filter.spy.clean` for `[filter.SPY]` and `filter.LFS.clean` for
+ * `[filter "LFS"]`, so the name is lower-cased here before it is judged.
+ *
+ * Still an OVER-approximation, deliberately: `[include.path] x = …` is a
+ * subsection called `path`, not an include directive, and it is refused anyway.
+ * A refusal is the safe direction; a miss is not.
  */
-function lineNamesProgram(raw: string): boolean {
-  const line = raw.trim()
-  if (line === '' || line.startsWith('#') || line.startsWith(';')) return false
-  const lower = line.toLowerCase()
-  // A section header, with or without a subsection, possibly followed by a
-  // variable on the same line (which git allows).
-  if (/\[\s*(?:filter|includeif|include)(?:[\s\]"]|$)/.test(lower)) return true
-  // A variable whose name ends in `command`: core.sshCommand, diff.<x>.command,
-  // trailer.<x>.command and whatever git adds next.
-  return /(?:^|\s|\])[a-z0-9.-]*command\s*=/.test(lower)
+export function gitConfigNamesProgram(keys: readonly string[]): boolean {
+  return keys.some((key) => {
+    const name = key.toLowerCase()
+    return (
+      name.startsWith('filter.') ||
+      name.startsWith('include.') ||
+      name.startsWith('includeif.') ||
+      // core.sshCommand, diff.<x>.command, trailer.<x>.command and whatever git
+      // adds next. A SUBSECTION named command (`foo.command.bar`) does not end
+      // the key, so it is not caught — measured.
+      name.endsWith('command')
+    )
+  })
+}
+
+/**
+ * The key names ONE config file defines, as git reads it, or null when the
+ * question could not be answered.
+ *
+ * `--file` makes git read that file and nothing else: measured, a clean
+ * repository config lists only its own keys, no global or system ones. With
+ * `--file` git does not follow `include.path` either (measured A/B: adding
+ * `--includes` pulls the included file's keys in, the default does not), and
+ * `--no-includes` says that out loud instead of relying on the default. So this
+ * call reads one bounded local file and its content cannot send git elsewhere.
+ * GIT_CONFIG_NOSYSTEM and GIT_CONFIG_GLOBAL are set as well, so the answer does
+ * not depend on the machine the app runs on.
+ *
+ * null for every way of not knowing: git could not be started, exited non-zero
+ * (a missing file and a MALFORMED file are both exit 128 — measured), was
+ * signalled, timed out, or wrote more than this will read. Truncated output is
+ * refused rather than searched, because the key that matters could be the one
+ * that was cut. The caller refuses on null.
+ */
+async function readGitConfigKeys(
+  gitBinary: string,
+  interpreters: Readonly<Record<string, string>>,
+  file: string
+): Promise<string[] | null> {
+  const res = await runProcess(
+    gitBinary,
+    ['config', '--file', file, '--no-includes', '--name-only', '--list'],
+    path.dirname(file),
+    {
+      ...childEnv(gitBinary, interpreters, {}),
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_GLOBAL: os.devNull
+    },
+    GIT_CONFIG_PROBE_MS,
+    GIT_CONFIG_KEYS_MAX_CHARS,
+    1024,
+    GIT_CONFIG_KEYS_MAX_CHARS
+  )
+  if (res === null) return null
+  if (res.timedOut || res.flooded || res.omitted > 0) return null
+  if (res.signal !== null || res.exitCode !== 0) return null
+  // head then tail is the stream in order; omitted === 0 above says nothing of
+  // it was dropped.
+  return (res.head + res.tail).split(/\r?\n/).filter((line) => line !== '')
 }
 
 /**
@@ -473,29 +558,35 @@ function lineNamesProgram(raw: string): boolean {
  * and, when a common dir is pinned, `$GIT_COMMON_DIR/config` (where a linked
  * worktree's shared config lives).
  *
- * Absent is safe — nothing is defined. Unreadable, not a regular file or larger
- * than the ceiling is NOT safe: a file this app cannot judge is one it must not
- * vouch for.
+ * Absent is safe — nothing is defined, and git reads it the same way.
+ * Unreadable, not a regular file, larger than the ceiling, or an answer git
+ * would not give is NOT safe: a file this app cannot judge is one it must not
+ * vouch for. The size and kind are still checked here, before the file is handed
+ * to git: that bounds what the probe can be made to read.
  *
  * NOT covered, and not claimed: the global `~/.gitconfig` (HOME is passed
  * through to the child), and keys that name a program for commands this tool
  * does not allow. `core.fsmonitor`, the pager and the external diff and
  * textconv drivers are switched off on the command line instead.
  */
-async function gitConfigIsSafe(gitDir: string, commonDir: string | null): Promise<boolean> {
+async function gitConfigIsSafe(
+  gitBinary: string,
+  interpreters: Readonly<Record<string, string>>,
+  gitDir: string,
+  commonDir: string | null
+): Promise<boolean> {
   for (const dir of commonDir === null ? [gitDir] : [gitDir, commonDir]) {
     const file = path.join(dir, 'config')
-    let text: string
     try {
       const stat = await fs.promises.stat(file)
       if (!stat.isFile() || stat.size > GIT_CONFIG_MAX_BYTES) return false
-      text = await fs.promises.readFile(file, 'utf8')
     } catch (error) {
       // No config file: nothing is defined. Anything else: refuse.
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
       return false
     }
-    if (text.split(/\r?\n/).some(lineNamesProgram)) return false
+    const keys = await readGitConfigKeys(gitBinary, interpreters, file)
+    if (keys === null || gitConfigNamesProgram(keys)) return false
   }
   return true
 }
@@ -724,20 +815,15 @@ async function runCommand(
       // grant. For npm the package.json read above is the mark (and must be valid).
       if (detailed.tool === undefined) return COMMAND_UNAVAILABLE
       const pinned: Record<string, string> = {}
+      let gitDirs: { gitDir: string; commonDir: string | null } | null = null
       if (detailed.tool === 'git') {
         // Its mark is a redirection: validate where it leads and pin git there.
-        const resolved = await resolveGitDir(scope)
-        if (resolved === null) return COMMAND_UNAVAILABLE
-        // The git dir is inside the grant, but its CONTENT still decides what
-        // git executes: a clean filter runs for every allowed form (measured).
-        // Environment-dependent, so the shared text and nothing more specific —
-        // a differentiated refusal would let the agent probe repository
-        // configuration it is not allowed to read.
-        if (!(await gitConfigIsSafe(resolved.gitDir, resolved.commonDir))) return COMMAND_UNAVAILABLE
-        pinned.GIT_DIR = resolved.gitDir
+        gitDirs = await resolveGitDir(scope)
+        if (gitDirs === null) return COMMAND_UNAVAILABLE
+        pinned.GIT_DIR = gitDirs.gitDir
         // The validated common dir becomes authoritative, like GIT_DIR: git reads
         // it from the `commondir` file otherwise, and that file is not trusted.
-        if (resolved.commonDir !== null) pinned.GIT_COMMON_DIR = resolved.commonDir
+        if (gitDirs.commonDir !== null) pinned.GIT_COMMON_DIR = gitDirs.commonDir
         pinned.GIT_WORK_TREE = scope.realRoot
       } else if (detailed.tool === 'npm' ? scripts === null : !(await rootHasMark(detailed.tool, scope))) {
         return COMMAND_UNAVAILABLE
@@ -747,6 +833,22 @@ async function runCommand(
       if (!(await binaryIsRunnable(plan.file, projectBin, scope))) return COMMAND_UNAVAILABLE
       for (const arg of detailed.pathArgs) {
         if (!(await pathArgIsSafe(arg, scope))) return COMMAND_UNAVAILABLE
+      }
+
+      // The git dir is inside the grant, but its CONTENT still decides what git
+      // executes: a clean filter runs for every allowed form (measured). The
+      // question is put to git itself, so it comes AFTER the binary check —
+      // this is the one check that asks the binary rather than the file system.
+      // Not cached per run, deliberately: a permitted command runs project code
+      // that can rewrite the config, so an answer is only good for the command
+      // it precedes. Environment-dependent, so the shared text and nothing more
+      // specific — a differentiated refusal would let the agent probe
+      // repository configuration it is not allowed to read.
+      if (
+        gitDirs !== null &&
+        !(await gitConfigIsSafe(plan.file, interpreters, gitDirs.gitDir, gitDirs.commonDir))
+      ) {
+        return COMMAND_UNAVAILABLE
       }
 
       started = true

@@ -108,3 +108,59 @@ export async function writeFileAtomic(
   }
 }
 
+/**
+ * The synchronous sibling, for the one caller that cannot be asynchronous: a
+ * store migration that has to finish BEFORE the store it migrates is read, and
+ * which therefore runs inside a synchronous constructor.
+ *
+ * Same discipline and the same file, so there is still one place that knows it:
+ * a temp file in the target's own directory, `O_EXCL | O_NOFOLLOW`, flushed,
+ * then renamed over the target. An interruption leaves the target entirely old
+ * or entirely new, which is what makes the migration repeatable.
+ *
+ * No identity or content hooks: those exist for the apply and undo paths, which
+ * race a human's editor. A store file in `userData` has no second writer before
+ * the store that owns it exists.
+ */
+export function writeFileAtomicSync(target: string, content: string | Buffer): void {
+  const dir = path.dirname(target)
+  // The mode of the file being replaced, else 0o600. Replacing keeps whatever
+  // the user's umask produced the first time; a NEW store file is private.
+  let mode: number
+  try {
+    mode = fs.statSync(target).mode & 0o777
+  } catch {
+    mode = 0o600
+  }
+
+  const temp = path.join(dir, `.mingly-tmp-${randomBytes(8).toString('hex')}`)
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(
+      temp,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | O_NOFOLLOW,
+      0o600
+    )
+    fs.writeFileSync(fd, content)
+    fs.fchmodSync(fd, mode)
+    fs.fsyncSync(fd)
+    fs.closeSync(fd)
+    fd = undefined
+    fs.renameSync(temp, target)
+  } catch (error) {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        // The write already failed; there is nothing left to save here.
+      }
+    }
+    try {
+      fs.unlinkSync(temp)
+    } catch {
+      // Best effort: a temp file that cannot be removed is not read by anything.
+    }
+    throw error
+  }
+}
+

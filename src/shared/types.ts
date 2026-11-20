@@ -155,6 +155,19 @@ export interface AgentToolResult {
   toolCallId: string
   content: string
   isError: boolean
+  /**
+   * The sanitizer produced a DIFFERENT string for this result and the loop
+   * forwarded the original bytes anyway (mingly_edit_file matches its `oldText`
+   * against the real file, so a proposal built from normalised text would be
+   * refused as "not found").
+   *
+   * A flag, never the finding and never the cleaned text: the surface says that
+   * it happened, and `displayText` makes the characters visible. Optional and
+   * only ever `true`, so a result nobody flagged is simply absent — the
+   * fail-closed reading of a missing field is "nothing to report", which is
+   * also the truth for every result that was not scanned.
+   */
+  sanitizerCleaned?: true
 }
 
 /**
@@ -201,6 +214,21 @@ export interface AgentRun {
 /**
  * Configuration limits for agent execution.
  */
+/**
+ * The wall-clock ceiling of ONE agent run, in ms, and the rail that ends a run
+ * first.
+ *
+ * Here, in shared, because two modules have to agree on it: AgentExecutor's
+ * default config, and `mingly_run_command`'s cumulative command budget
+ * (RUN_TOTAL_MS). The two used to stand side by side at 120 s and 300 s, so the
+ * command budget could never be spent — before C1 that was invisible, because
+ * the registry-wide tool timeout capped every command at 14 s; once commands
+ * got their real 60 s, two of them reached this ceiling and the budget became a
+ * number that looked like a limit. Deriving one from the other is what keeps
+ * them from drifting apart again. THIS one leads: it ends the run.
+ */
+export const AGENT_RUN_TIMEOUT_MS = 120_000
+
 export interface AgentConfig {
   /** Maximum number of agent steps before stopping (safety rail) */
   maxSteps: number

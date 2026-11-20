@@ -26,18 +26,46 @@ export interface ToolResultOrigin {
   filePath?: string
 }
 
+/**
+ * A tool result the sanitizer produced a DIFFERENT string for, which was then
+ * forwarded unchanged. Never the content, never the found value: the index, the
+ * origin and the sanitizer's own warning type names.
+ *
+ * Why this is reported rather than applied: `mingly_edit_file` matches its
+ * `oldText` against the REAL file, so a proposal built from normalised text
+ * would be refused as "not found", and the block threshold cannot be lowered
+ * either — every file with a BOM or a zero-width space in a fixture would
+ * become unreadable. So the agent loop forwards the original bytes while the
+ * chat path sends the cleaned text, and the difference is RECORDED instead of
+ * left silent. The caller writes the audit entry; this file stays free of the
+ * Electron module graph.
+ */
+export interface SanitizerFlag {
+  /** Index in the step's results, so the caller can name the origin. */
+  index: number
+  origin: ToolResultOrigin
+  /** The sanitizer's warning types for this result. Names from a fixed set. */
+  types: string[]
+}
+
 export type LoopGuardOutcome =
   // No provider field: a dispatch redirect is blocked rather than adopted, so
   // the run always continues on the provider it came in with. A field that can
   // only ever hold ctx.provider would invite the belief that it can hold more.
-  | { kind: 'ok' }
-  | { kind: 'blocked'; reason: string }
+  //
+  // `flagged` is on EVERY variant: a result can be cleaned and then block, or
+  // be cleaned and then need consent, and the caller moves past a settled
+  // result — so a report attached only to `ok` would be lost exactly where it
+  // matters most.
+  | { kind: 'ok'; flagged: readonly SanitizerFlag[] }
+  | { kind: 'blocked'; reason: string; flagged: readonly SanitizerFlag[] }
   | {
       kind: 'consent'
       index: number
       origin: ToolResultOrigin
       scanResult: SensitiveScan
       request: unknown
+      flagged: readonly SanitizerFlag[]
     }
 
 /**
@@ -86,6 +114,22 @@ export async function guardToolResults(
   deps: GuardDeps,
   startIndex = 0,
 ): Promise<LoopGuardOutcome> {
+  const flagged: SanitizerFlag[] = []
+
+  /**
+   * Note a result the sanitizer rewrote. The trigger is that the cleaned string
+   * DIFFERS from the content — that is where the two paths diverge. A finding
+   * that changed nothing (a pattern match) is no asymmetry: both paths then
+   * send the same bytes, so there is nothing to record.
+   */
+  const noteIfCleaned = (index: number, report: { sanitizedText?: string; warnings?: { type: string }[] }): void => {
+    const content = results[index].content
+    if (typeof content !== 'string') return
+    if (report.sanitizedText === undefined || report.sanitizedText === content) return
+    const types = [...new Set((report.warnings ?? []).map((w) => w.type))]
+    flagged.push({ index, origin: origins[index] ?? { toolName: 'unknown' }, types })
+  }
+
   // One guardInput call per result. guardInput sanitizes only the LAST element
   // of `texts` (request-guard.ts:53), so handing it three results as one array
   // would leave two of them un-scanned for injection — and injection inside a
@@ -106,14 +150,17 @@ export async function guardToolResults(
       return {
         kind: 'blocked',
         reason: `Prompt injection detected in the result of ${describeOrigin(origin)} (risk ${outcome.riskScore}).`,
+        flagged,
       }
     }
     if (outcome.kind === 'sensitive-denied') {
       return {
         kind: 'blocked',
         reason: `${outcome.reason} Source: ${describeOrigin(origin)}.`,
+        flagged,
       }
     }
+    noteIfCleaned(i, outcome)
     if (outcome.kind === 'consent') {
       return {
         kind: 'consent',
@@ -121,6 +168,7 @@ export async function guardToolResults(
         origin: origin ?? { toolName: 'unknown' },
         scanResult: outcome.scanResult,
         request: outcome.request,
+        flagged,
       }
     }
   }
@@ -140,7 +188,7 @@ export async function guardToolResults(
   )
 
   if (!dispatch.ok) {
-    return { kind: 'blocked', reason: dispatch.reason ?? 'Blocked by the dispatch guard.' }
+    return { kind: 'blocked', reason: dispatch.reason ?? 'Blocked by the dispatch guard.', flagged }
   }
 
   // No mid-run provider switch — for ANY run type, not just coding runs.
@@ -173,8 +221,9 @@ export async function guardToolResults(
         `Dispatch refused ${ctx.provider} as-is for the collected content (${cause}): ` +
         `${landing}. The content was only ever checked against ${ctx.provider}, so the run ends ` +
         'instead of switching providers mid-run.',
+      flagged,
     }
   }
 
-  return { kind: 'ok' }
+  return { kind: 'ok', flagged }
 }

@@ -1,5 +1,6 @@
 import { SimpleStore } from "../utils/simple-store";
 import { parseCodingMode, type CodingMode } from "../../shared/coding-types";
+import { CODING_MODES_SCHEMA_VERSION } from "../file-access/store-migration";
 
 /** Per-directory coding mode. Unknown or unreadable means `off`. */
 export interface CodingModeStore {
@@ -23,6 +24,7 @@ export interface KeyValueBacking {
 }
 
 const MODES_KEY = "modes";
+const SCHEMA_VERSION_KEY = "schemaVersion";
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -31,8 +33,27 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 export function createCodingModeStore(
   backing: KeyValueBacking,
 ): CodingModeStore {
-  /** The persisted map, or an empty one when what is stored is not a map. */
+  /**
+   * The persisted map — but only out of a file that declares the schema
+   * version. Anything else reads as empty, which means `off` everywhere.
+   *
+   * Before the directory-id fix the keys of this file were a 12-byte prefix of
+   * the project path, so every project under one home directory shared a key: a
+   * stored `propose-run` belonged to whichever of them was granted last, and
+   * which one can no longer be established. The ruling is to discard those
+   * modes and let the user grade again.
+   *
+   * The gate is HERE and not only in the migration that rewrites the file,
+   * because a rewrite that could not land (a read-only userData, a full disk)
+   * would otherwise leave the ambiguous keys in force — the fail-open
+   * direction. A missing, low or non-numeric version is "not migrated", never
+   * "unknown, carry on": the defect being guarded against IS an absent field.
+   */
   const readModes = (): Record<string, unknown> => {
+    const version = backing.get(SCHEMA_VERSION_KEY, 0);
+    if (typeof version !== "number" || !(version >= CODING_MODES_SCHEMA_VERSION)) {
+      return {};
+    }
     const stored = backing.get(MODES_KEY, {});
     return isPlainRecord(stored) ? stored : {};
   };
@@ -48,11 +69,15 @@ export function createCodingModeStore(
     },
 
     setMode(directoryId: string, mode: CodingMode): void {
-      // Re-parse on write too, so a mistyped caller can never persist a bad value.
-      backing.set(MODES_KEY, {
-        ...readModes(),
-        [directoryId]: parseCodingMode(mode),
-      });
+      // Read BEFORE the version is stamped: under an unversioned file readModes
+      // answers {}, so the ambiguous old keys are dropped here rather than
+      // merged forward into a file that would then be trusted. Re-parsed on
+      // write too, so a mistyped caller can never persist a bad value.
+      const next = { ...readModes(), [directoryId]: parseCodingMode(mode) };
+      // Either write landing alone fails closed: modes without the marker read
+      // as empty, and the marker without modes reads as empty as well.
+      backing.set(SCHEMA_VERSION_KEY, CODING_MODES_SCHEMA_VERSION);
+      backing.set(MODES_KEY, next);
     },
 
     forgetMode(directoryId: string): void {

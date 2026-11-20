@@ -18,17 +18,39 @@ import type { ToolContext } from '../../src/main/agent/tool-registry'
 import { getEditProposalStore } from '../../src/main/coding/edit-proposals'
 import { getRunDirectoryRegistry } from '../../src/main/coding/run-directories'
 import { getRunAuditContext } from '../../src/main/coding/coding-audit'
+import { getGuardDeps } from '../../src/main/security/request-guard-deps'
 
 // What the guard does to the big tool result: nothing, block it as an injection,
 // or find a sensitive value in it (which asks the user). Default: nothing.
-const guardCfg = vi.hoisted(() => ({ mode: 'clean' as 'clean' | 'inject' | 'sensitive', big: 'x'.repeat(5000) }))
+const guardCfg = vi.hoisted(() => ({
+  mode: 'clean' as 'clean' | 'inject' | 'sensitive' | 'cleaning',
+  big: 'x'.repeat(5000)
+}))
+
+/**
+ * A zero-width space, the cheapest thing the sanitizer rewrites without
+ * blocking: `unicode_abuse` at a risk score well under the block threshold of
+ * 80. Mode `cleaning` makes the double behave like the real sanitizer does on
+ * such a result — it returns a DIFFERENT string and says why.
+ */
+const ZWSP = '\u200b'
 
 vi.mock('../../src/main/security/request-guard-deps', () => ({
   getGuardDeps: () => ({
-    sanitize: (text: string) =>
-      guardCfg.mode === 'inject' && text === guardCfg.big
-        ? { safe: false, sanitized: text, riskScore: 100, warnings: ['injection'] }
-        : { safe: true, riskScore: 0, warnings: [] },
+    sanitize: (text: string) => {
+      if (guardCfg.mode === 'inject' && text === guardCfg.big) {
+        return { safe: false, sanitized: text, riskScore: 100, warnings: ['injection'] }
+      }
+      if (guardCfg.mode === 'cleaning' && text.includes(ZWSP)) {
+        return {
+          safe: true,
+          riskScore: 30,
+          warnings: [{ type: 'unicode_abuse', severity: 'medium' }],
+          sanitized: text.split(ZWSP).join('')
+        }
+      }
+      return { safe: true, riskScore: 0, warnings: [], sanitized: text }
+    },
     scanSensitive: (text: string) =>
       guardCfg.mode === 'sensitive' && text.includes(guardCfg.big)
         ? { hasSensitiveData: true, matches: [], overallRiskLevel: 'high' }
@@ -74,6 +96,8 @@ vi.mock('../../src/main/llm-clients/client-manager', () => ({
 }))
 
 const BIG = 'x'.repeat(5000)
+/** What the tool "returns"; `null` keeps BIG, which the compaction externalizes. */
+let toolResultContent: string | null = null
 let registryCalls: Array<{ ctx: ToolContext | undefined }> = []
 // Runs inside the mocked executeToolCalls, with the step's context.
 let toolCallHook: ((ctx: ToolContext | undefined) => void | Promise<void>) | undefined
@@ -91,7 +115,7 @@ vi.mock('../../src/main/agent/tool-registry', () => ({
     executeToolCalls: vi.fn(async (calls: AgentToolCall[], ctx?: ToolContext) => {
       registryCalls.push({ ctx })
       await toolCallHook?.(ctx)
-      return calls.map((tc) => ({ toolCallId: tc.id, content: BIG, isError: false }))
+      return calls.map((tc) => ({ toolCallId: tc.id, content: toolResultContent ?? BIG, isError: false }))
     }),
   })),
 }))
@@ -142,6 +166,7 @@ beforeEach(() => {
   llmResponses = []
   seenToolMessages = []
   registryCalls = []
+  toolResultContent = null
   toolCallHook = undefined
   toolListCtx = []
   storedModes = {}
@@ -151,7 +176,6 @@ beforeEach(() => {
   executor = new AgentExecutor({
     maxSteps: 5,
     maxTokensPerRun: 50000,
-    toolTimeoutMs: 5000,
     runTimeoutMs: 10000,
   })
 })
@@ -517,6 +541,105 @@ describe('coding run audit context (Task 13)', () => {
     expect(auditLog.rows.filter((r) => r.action === 'coding.guard_blocked')).toEqual([])
   })
 
+  /**
+   * C5. The sanitizer is the same DETECTOR on the chat path and in the agent
+   * loop, but not the same TREATMENT: chat sends the cleaned text, a tool
+   * result is forwarded byte-for-byte because mingly_edit_file matches its
+   * `oldText` against the REAL file. The asymmetry stays and is RECORDED.
+   */
+  it('forwards a tool result the sanitizer cleaned BYTE-IDENTICALLY to the provider', async () => {
+    storedModes['dir-1'] = 'propose'
+    guardCfg.mode = 'cleaning'
+    toolResultContent = `oldText-anchor${ZWSP}-line`
+    llmResponses = [toolCallStep('tc-1')]
+
+    const run = await executor.execute('task', 'anthropic', 'claude-opus-5', [], undefined, coding())
+
+    expect(run.status).toBe('completed')
+    // What the model was handed on the second call is the tool message.
+    expect(seenToolMessages[1]).toEqual([toolResultContent])
+    // Spelled out rather than left to toEqual: the zero-width space survived.
+    expect(seenToolMessages[1][0].includes(ZWSP)).toBe(true)
+  })
+
+  it('positive control: the cleaned version existed and differed — it was simply not sent', () => {
+    // The shared guardInput both paths call is what produces it; the chat path
+    // forwards `sanitizedText` (ipc-handlers.ts) and the loop does not.
+    const raw = `oldText-anchor${ZWSP}-line`
+    const report = getGuardDeps().sanitize(raw)
+    guardCfg.mode = 'cleaning'
+    const cleaning = getGuardDeps().sanitize(raw)
+    expect(report.sanitized).toBe(raw)
+    expect(cleaning.sanitized).not.toBe(raw)
+    expect(cleaning.riskScore).toBeLessThan(80)
+  })
+
+  it('writes coding.guard_flagged for the cleaned result, with the type and no content', async () => {
+    storedModes['dir-1'] = 'propose'
+    guardCfg.mode = 'cleaning'
+    toolResultContent = `secret-canary-4242${ZWSP}`
+    llmResponses = [toolCallStep('tc-1')]
+
+    const run = await executor.execute('task', 'anthropic', 'claude-opus-5', [], undefined, coding())
+
+    const flagged = auditLog.rows.filter((r) => r.action === 'coding.guard_flagged')
+    expect(flagged).toHaveLength(1)
+    expect(flagged[0].entityId).toBe(run.id)
+    expect(flagged[0].details).toMatchObject({
+      projectPath,
+      provider: 'anthropic',
+      model: 'claude-opus-5',
+      guardBlocked: false,
+      flaggedTypes: ['unicode_abuse']
+    })
+    // The row says it happened, which type and in which run — never what was in it.
+    expect(JSON.stringify(flagged[0])).not.toContain('secret-canary')
+  })
+
+  it('marks the step result the surface shows, for a plain run as well as a coding run', async () => {
+    guardCfg.mode = 'cleaning'
+    toolResultContent = `marked${ZWSP}result`
+
+    for (const options of [undefined, coding()]) {
+      storedModes['dir-1'] = 'propose'
+      llmCallCount = 0
+      llmResponses = [toolCallStep('tc-1')]
+      const run = await executor.execute('task', 'anthropic', 'm', [], undefined, options)
+      expect(run.steps[0].toolResults[0].sanitizerCleaned).toBe(true)
+    }
+  })
+
+  it('does not mark a result the sanitizer left alone', async () => {
+    guardCfg.mode = 'cleaning'
+    toolResultContent = 'nothing to clean'
+    llmResponses = [toolCallStep('tc-1')]
+
+    const run = await executor.execute('task', 'anthropic', 'm')
+
+    expect(run.steps[0].toolResults[0].sanitizerCleaned).toBeUndefined()
+  })
+
+  it('writes nothing when the sanitizer changed nothing (false-alarm direction)', async () => {
+    storedModes['dir-1'] = 'propose'
+    guardCfg.mode = 'cleaning'
+    toolResultContent = 'nothing to clean here'
+    llmResponses = [toolCallStep('tc-1')]
+
+    await executor.execute('task', 'anthropic', 'm', [], undefined, coding())
+
+    expect(auditLog.rows.filter((r) => r.action === 'coding.guard_flagged')).toEqual([])
+  })
+
+  it('writes no coding.guard_flagged for a run without coding options', async () => {
+    guardCfg.mode = 'cleaning'
+    toolResultContent = `plain run${ZWSP}`
+    llmResponses = [toolCallStep('tc-1')]
+
+    await executor.execute('task', 'anthropic', 'm')
+
+    expect(auditLog.rows.filter((r) => r.action === 'coding.guard_flagged')).toEqual([])
+  })
+
   it('marks the run when the user withheld a file at the consent question, and not when they sent it', async () => {
     storedModes['dir-1'] = 'propose'
     for (const [choice, expected] of [['drop-file', true], ['send', false]] as const) {
@@ -524,7 +647,7 @@ describe('coding run audit context (Task 13)', () => {
       llmCallCount = 0
       llmResponses = [toolCallStep('tc-1')]
       const asker = new AgentExecutor(
-        { maxSteps: 5, maxTokensPerRun: 50000, toolTimeoutMs: 5000, runTimeoutMs: 10000 },
+        { maxSteps: 5, maxTokensPerRun: 50000, runTimeoutMs: 10000 },
         { consentBroker: { askWithSource: async () => ({ choice, decidedBy: 'user' }), cancel: () => undefined } as never }
       )
       const run = await asker.execute('task', 'anthropic', 'm', [], undefined, coding())

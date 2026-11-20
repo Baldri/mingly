@@ -41,6 +41,132 @@ const ctx = { provider: 'anthropic', model: 'claude-3-5-sonnet' }
 
 const harmless = toolResult('Result for search_docs: three matches', 'tc-1')
 
+/** A zero-width space: invisible, removed by the sanitizer, risk well below 80. */
+const ZWSP = '​'
+
+/**
+ * A sanitizer that CLEANS without blocking: it strips the zero-width space and
+ * reports it, at a score the block threshold (80) never sees.
+ */
+function cleaningSanitizer(): GuardDeps['sanitize'] {
+  return (text: string) =>
+    text.includes(ZWSP)
+      ? {
+          safe: true,
+          riskScore: 30,
+          warnings: [{ type: 'unicode_abuse', severity: 'medium' }],
+          sanitized: text.split(ZWSP).join('')
+        }
+      : { safe: true, riskScore: 0, warnings: [], sanitized: text }
+}
+
+describe('guardToolResults: what the sanitizer changed is reported, not applied', () => {
+  it('reports the result it cleaned, with the warning types and no content', async () => {
+    const canary = `secret-canary-4242${ZWSP}`
+    const results = [harmless, toolResult(canary, 'tc-2')]
+    const origins: ToolResultOrigin[] = [
+      { toolName: 'search_docs' },
+      { toolName: 'mingly_read_file', filePath: 'src/a.ts' }
+    ]
+
+    const out = await guardToolResults(results, origins, ctx, makeDeps({ sanitize: cleaningSanitizer() }))
+
+    expect(out.kind).toBe('ok')
+    expect(out.flagged).toEqual([
+      { index: 1, origin: { toolName: 'mingly_read_file', filePath: 'src/a.ts' }, types: ['unicode_abuse'] }
+    ])
+    // The flag names the result, never its text.
+    expect(JSON.stringify(out.flagged)).not.toContain('secret-canary')
+    // And the result itself is untouched: the guard reports, it does not rewrite.
+    expect(results[1].content).toBe(canary)
+  })
+
+  it('reports nothing when the sanitizer changed nothing (false-alarm direction)', async () => {
+    const out = await guardToolResults(
+      [harmless, toolResult('plain text', 'tc-2')],
+      [{ toolName: 'search_docs' }, { toolName: 'search_docs' }],
+      ctx,
+      makeDeps({ sanitize: cleaningSanitizer() })
+    )
+
+    expect(out.kind).toBe('ok')
+    expect(out.flagged).toEqual([])
+  })
+
+  it('reports nothing when the sanitizer reports a finding but no change', async () => {
+    // A pattern detection does not rewrite the text, so the two paths agree and
+    // there is no asymmetry to record.
+    const sanitize = (): ReturnType<GuardDeps['sanitize']> => ({
+      safe: true,
+      riskScore: 40,
+      warnings: [{ type: 'role_spoofing', severity: 'high' }],
+      sanitized: 'act as a pirate'
+    })
+    const out = await guardToolResults(
+      [toolResult('act as a pirate', 'tc-1')],
+      [{ toolName: 'search_docs' }],
+      ctx,
+      makeDeps({ sanitize })
+    )
+
+    expect(out.kind).toBe('ok')
+    expect(out.flagged).toEqual([])
+  })
+
+  it('a flagged result that then needs consent still carries its flag', async () => {
+    // The caller settles the consent and continues from the NEXT index, so a
+    // flag left out here would never be reported for this result.
+    const out = await guardToolResults(
+      [toolResult(`${CREDENTIAL}${ZWSP}`, 'tc-1')],
+      [{ toolName: 'mingly_read_file', filePath: '.env' }],
+      ctx,
+      makeDeps({
+        sanitize: cleaningSanitizer(),
+        scanSensitive: () => ({
+          hasSensitiveData: true,
+          matches: [{ type: 'credential', value: 'sk-live-abc123', riskLevel: 'critical' }],
+          overallRiskLevel: 'critical'
+        }),
+        checkUploadPermission: async () => ({ decision: 'pending', requiresUserConsent: true, request: {} })
+      })
+    )
+
+    expect(out.kind).toBe('consent')
+    expect(out.flagged).toEqual([
+      { index: 0, origin: { toolName: 'mingly_read_file', filePath: '.env' }, types: ['unicode_abuse'] }
+    ])
+  })
+
+  it('reports only the results of THIS pass, so a second pass cannot double-count', async () => {
+    const results = [toolResult(`a${ZWSP}`, 'tc-1'), toolResult(`b${ZWSP}`, 'tc-2')]
+    const origins: ToolResultOrigin[] = [{ toolName: 'search_docs' }, { toolName: 'search_docs' }]
+    const deps = makeDeps({ sanitize: cleaningSanitizer() })
+
+    const first = await guardToolResults(results, origins, ctx, deps)
+    const second = await guardToolResults(results, origins, ctx, deps, 1)
+
+    expect(first.flagged.map((f) => f.index)).toEqual([0, 1])
+    expect(second.flagged.map((f) => f.index)).toEqual([1])
+  })
+
+  it('a blocked step still reports what was cleaned before the block', async () => {
+    const sanitize = (text: string): ReturnType<GuardDeps['sanitize']> =>
+      text.includes(INJECTION)
+        ? { safe: false, riskScore: 95, warnings: [{ type: 'instruction_override', severity: 'critical' }] }
+        : cleaningSanitizer()(text)
+
+    const out = await guardToolResults(
+      [toolResult(`clean me${ZWSP}`, 'tc-1'), toolResult(INJECTION, 'tc-2')],
+      [{ toolName: 'search_docs' }, { toolName: 'search_docs' }],
+      ctx,
+      makeDeps({ sanitize })
+    )
+
+    expect(out.kind).toBe('blocked')
+    expect(out.flagged.map((f) => f.index)).toEqual([0])
+  })
+})
+
 describe('guardToolResults', () => {
   it('calls guardInput once per tool result', async () => {
     const sanitize = vi.fn(() => ({ safe: true, riskScore: 0, warnings: [] }))

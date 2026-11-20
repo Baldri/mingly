@@ -8,11 +8,21 @@
  * gone), with a generous ceiling that only bounds the test itself.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { execFileSync } from 'child_process'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { ToolRegistry, type ToolContext } from '../../src/main/agent/tool-registry'
-import { registerRunCommand, readInterpreterPaths, physicalPath, type RunLimits } from '../../src/main/coding/run-command'
+import {
+  registerRunCommand,
+  readInterpreterPaths,
+  physicalPath,
+  gitConfigNamesProgram,
+  RUN_TOTAL_MS,
+  RUN_COMMAND_MS,
+  type RunLimits
+} from '../../src/main/coding/run-command'
+import { AGENT_RUN_TIMEOUT_MS } from '../../src/shared/types'
 import { COMMAND_UNAVAILABLE } from '../../src/main/coding/command-allowlist'
 import { ensureProjectWorkspace } from '../../src/main/coding/project-workspace'
 import type { AllowedDirectory } from '../../src/shared/file-access-types'
@@ -46,8 +56,32 @@ function script(file: string, body: string): string {
   return file
 }
 
+/**
+ * A real git, used for ONE thing: answering `git config` for the stub below.
+ *
+ * The guard over a repository config no longer matches the file's text; it asks
+ * git which key names the file defines, because git's config grammar has more
+ * spellings than a regex can be trusted to enumerate — `[filter.lfs]` is the
+ * one that got through. A hand-written answer here would re-encode this test's
+ * own idea of that grammar, and that idea is what was wrong, so the stub
+ * delegates the question to the authority. Everything else each test stubs
+ * itself, so the suite stays independent of whether npm, node or pytest exist.
+ * Any machine that can check this repository out has git.
+ */
+const REAL_GIT = ((): string => {
+  try {
+    return execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+  } catch {
+    return ''
+  }
+})()
+
 function fake(name: string, body: string): void {
-  interpreters[name] = script(path.join(bins, name), body)
+  const prelude =
+    name === 'git' && REAL_GIT !== ''
+      ? `if [ "$1" = "config" ]; then exec "${REAL_GIT}" "$@"; fi\n`
+      : ''
+  interpreters[name] = script(path.join(bins, name), prelude + body)
 }
 
 function makeRegistry(limits: Partial<RunLimits> = {}, maxResultChars = 1_000_000): ToolRegistry {
@@ -350,8 +384,17 @@ describe('mingly_run_command refuses alike when the environment says no', () => 
     // no package.json at all
     fs.rmSync(path.join(project, 'package.json'))
     texts.push(await run(registry, 'npm run build'))
-    // no grant
+    // a repository config that names a program — in the dotted spelling, and in
+    // a spelling git itself will not parse. Both depend on what the repository
+    // says, not on what the model wrote, so both carry this same text.
     fake('git', 'echo ok')
+    const config = path.join(project, '.git', 'config')
+    fs.writeFileSync(config, '[filter.spy]\n\tclean = /tmp/spy.sh\n')
+    texts.push(await run(registry, 'git status'))
+    fs.writeFileSync(config, '[filter.spy\n\tclean = /tmp/spy.sh\n')
+    texts.push(await run(registry, 'git status'))
+    fs.rmSync(config)
+    // no grant
     grants = []
     texts.push(await run(registry, 'git status'))
 
@@ -818,12 +861,30 @@ describe('mingly_run_command: the granted root must be the tool\'s own root (cla
       fs.writeFileSync(path.join(project, '.git', 'config'), body)
     }
 
+    /**
+     * Every form here is one git ACCEPTS — measured (git 2.53.0) with
+     * `git config --file <f> --no-includes --name-only --list`, which answered
+     * exit 0 and the key name noted for each. A form git rejected would make
+     * the guard refuse because the file is malformed, and the test would pass
+     * for the wrong reason.
+     *
+     * The DOTTED spellings are the ones the old text match missed: the regex
+     * accepted whitespace, `]`, `"` or end of line after the section name, and
+     * git also accepts a dot. Measured in the same run: `[filter.spy] clean=…`
+     * defines `filter.spy.clean`, exactly as `[filter "spy"]` does, and a
+     * `git status` or `git diff --stat` runs it.
+     */
     const RISKY = [
       ['a clean filter driver', '[filter "spy"]\n\tclean = /tmp/spy.sh\n'],
+      ['a DOTTED filter section', '[filter.spy]\n\tclean = /tmp/spy.sh\n'],
+      ['a DOTTED filter section with a capitalised subsection', '[filter.SPY]\n\tclean = /tmp/spy.sh\n'],
+      ['a QUOTED filter section with a capitalised subsection', '[filter "SPY"]\n\tclean = /tmp/spy.sh\n'],
       ['a filter driver on one line', '[filter "spy"] smudge = /tmp/spy.sh\n'],
       ['a long-running filter process', '[filter "spy"]\n\tprocess = /tmp/spy.sh\n'],
       ['an include that may define one', '[include]\n\tpath = /tmp/extra.cfg\n'],
+      ['a DOTTED include section', '[include.path]\n\tx = /tmp/extra.cfg\n'],
       ['a conditional include', '[includeIf "gitdir:/"]\n\tpath = /tmp/extra.cfg\n'],
+      ['a DOTTED conditional include', '[includeIf.gitdir]\n\tpath = /tmp/extra.cfg\n'],
       ['a key naming a program', '[core]\n\tsshCommand = /tmp/spy.sh\n'],
       ['a diff driver command', '[diff "x"]\n\tcommand = /tmp/spy.sh\n']
     ] as const
@@ -836,6 +897,29 @@ describe('mingly_run_command: the granted root must be the tool\'s own root (cla
         expect(fs.existsSync(started)).toBe(false)
       })
     }
+
+    it('the harness has a real git to answer the config question', () => {
+      // Without it the stub cannot answer `git config` and every case in this
+      // suite would be decided by something other than git's own grammar.
+      expect(REAL_GIT).not.toBe('')
+    })
+
+    it('a config git itself cannot parse is refused, not read past', async () => {
+      // Measured: `git config --file` exits 128 on a malformed file. A file this
+      // app cannot have judged is one it must not vouch for.
+      writeConfig('[filter.spy\n\tclean = /tmp/spy.sh\n')
+      expect(await run(makeRegistry(), 'git status')).toBe(COMMAND_UNAVAILABLE)
+      expect(fs.existsSync(started)).toBe(false)
+    })
+
+    it('false alarm direction: a section that merely starts like one is allowed', async () => {
+      // `[filterx]` is not a filter section, and `[foo "command"]` is a
+      // subsection named command, not a variable. Measured key names:
+      // `filterx.clean` and `foo.command.bar`.
+      writeConfig('[filterx]\n\tclean = x\n[foo "command"]\n\tbar = x\n')
+      expect(await run(makeRegistry(), 'git status')).toContain('exit code 0')
+      expect(fs.existsSync(started)).toBe(true)
+    })
 
     it('false alarm direction: an ordinary repository config still runs', async () => {
       // What `git init` plus a user writes. None of it names a program.
@@ -890,6 +974,93 @@ describe('mingly_run_command: the granted root must be the tool\'s own root (cla
       fs.writeFileSync(path.join(project, 'package.json'), '{"scripts":{"test":"x"}}')
       expect(await run(makeRegistry(), 'npm test')).toContain('exit code 0')
     })
+  })
+})
+
+/**
+ * Z2. Two ceilings bound a run's commands: this tool's cumulative budget and
+ * the agent's own run timeout. Before C1 every command was capped at 14 s by
+ * the registry-wide tool timeout, so the relation did not matter; now a command
+ * gets its full 60 s, which means TWO commands reach the agent's 120 s. A
+ * budget that the other ceiling can never let a run spend is not a budget, it
+ * is a number that looks like one.
+ *
+ * The assertions are on the RELATION, plus one literal for the ceiling itself
+ * so a silent widening of it is visible. 120_000 is the documented rail
+ * (AgentConfig.runTimeoutMs), written out here rather than read from the module
+ * the relation is about.
+ */
+describe('the command budget and the agent run timeout', () => {
+  it('the run timeout is the documented 120 seconds', () => {
+    expect(AGENT_RUN_TIMEOUT_MS).toBe(120_000)
+  })
+
+  it('the cumulative command budget never exceeds the run timeout that ends the run first', () => {
+    expect(RUN_TOTAL_MS).toBeLessThanOrEqual(AGENT_RUN_TIMEOUT_MS)
+  })
+
+  it('one command never exceeds the whole run budget', () => {
+    expect(RUN_COMMAND_MS).toBeLessThanOrEqual(RUN_TOTAL_MS)
+  })
+})
+
+/**
+ * The decision over key NAMES, separately from the probe that produces them.
+ *
+ * Every name here was printed by `git config --file <f> --no-includes
+ * --name-only --list` for the config form in the comment (git 2.53.0), so the
+ * inputs are what git says, not what this test believes git says.
+ */
+describe('gitConfigNamesProgram', () => {
+  it('refuses every form that defines a filter driver, dotted or quoted', () => {
+    // [filter "spy"] / [filter.spy] / [filter.SPY] / [filter "SPY"]
+    for (const key of ['filter.spy.clean', 'filter.spy.smudge', 'filter.spy.process', 'filter.LFS.clean']) {
+      expect(gitConfigNamesProgram([key]), key).toBe(true)
+    }
+  })
+
+  it('refuses an include, a conditional include and their dotted spellings', () => {
+    // [include] / [include.path] / [includeIf "gitdir:/"] / [includeIf.gitdir]
+    for (const key of ['include.path', 'include.path.x', 'includeif.gitdir:/.path', 'includeif.gitdir.path']) {
+      expect(gitConfigNamesProgram([key]), key).toBe(true)
+    }
+  })
+
+  it('refuses a variable whose name ends in command', () => {
+    for (const key of ['core.sshcommand', 'diff.x.command', 'trailer.x.command']) {
+      expect(gitConfigNamesProgram([key]), key).toBe(true)
+    }
+  })
+
+  it('allows the keys an ordinary repository config defines', () => {
+    expect(
+      gitConfigNamesProgram([
+        'core.repositoryformatversion',
+        'core.filemode',
+        'core.bare',
+        'core.logallrefupdates',
+        'core.ignorecase',
+        'core.precomposeunicode',
+        'user.email',
+        'user.name',
+        'remote.origin.url',
+        'remote.origin.fetch',
+        'branch.main.remote',
+        'branch.main.merge'
+      ])
+    ).toBe(false)
+  })
+
+  it('allows names that only look like one of the refused forms', () => {
+    // [filterx] clean=…  and  [foo "command"] bar=…
+    expect(gitConfigNamesProgram(['filterx.clean'])).toBe(false)
+    expect(gitConfigNamesProgram(['foo.command.bar'])).toBe(false)
+    expect(gitConfigNamesProgram(['includeiffy.path'])).toBe(false)
+  })
+
+  it('finds the one bad key among many good ones, and says no to none at all', () => {
+    expect(gitConfigNamesProgram(['core.filemode', 'filter.spy.clean', 'user.name'])).toBe(true)
+    expect(gitConfigNamesProgram([])).toBe(false)
   })
 })
 

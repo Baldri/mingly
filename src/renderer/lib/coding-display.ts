@@ -27,6 +27,23 @@ export function displayText(text: string): string {
   return escapeHiddenPerLine(text)
 }
 
+/**
+ * What the step panel says about a tool result the sanitizer rewrote.
+ *
+ * Both halves matter. The provider received the ORIGINAL bytes, deliberately:
+ * `mingly_edit_file` matches its `oldText` against the real file, so forwarding
+ * normalised text would make every proposal "not found". And the human, who has
+ * to judge what the agent read, sees the hidden characters here as `<U+XXXX>`
+ * rather than not at all.
+ *
+ * Lives next to `displayText` because it is the sentence that explains what
+ * `displayText` just did, and it is used for EVERY agent run, not only coding
+ * runs — AgentStepIndicator shows them all.
+ */
+export const AGENT_RESULT_SANITIZED_NOTICE =
+  'Hinweis: Die Schutzschicht hat in diesem Ergebnis Zeichen beanstandet. An den Anbieter ging es ' +
+  'unverändert; hier sind unsichtbare Zeichen als <U+XXXX> sichtbar gemacht.'
+
 export interface DiffLineView {
   kind: 'add' | 'remove' | 'context' | 'meta'
   text: string

@@ -150,7 +150,6 @@ const RUN_TIMEOUT_MS = 10000
 const RUN_CONFIG = {
   maxSteps: 5,
   maxTokensPerRun: 50000,
-  toolTimeoutMs: 5000,
   runTimeoutMs: RUN_TIMEOUT_MS
 }
 

@@ -187,6 +187,13 @@ const NO_DIGEST =
  * proposal in the package, so it says what happened, not who clicked.
  */
 const ACCEPT_ABORTED_REASON = 'Das Anwenden wurde abgebrochen; der Vorschlag wurde nicht weiter angeboten.'
+/**
+ * The same for a package the surface could not reload: it stops being offered,
+ * so the main process has to stop holding it.
+ */
+const REFRESH_FAILED_REASON =
+  'Die vorgeschlagenen Änderungen konnten nicht erneut geladen werden; der Vorschlag wurde nicht ' +
+  'weiter angeboten.'
 /** Appended when the main process did not confirm the rejection above. */
 const REJECTION_NOT_RECORDED =
   'Hinweis: Die Ablehnung dieser Vorschläge konnte nicht vermerkt werden; im Audit-Export erscheinen ' +
@@ -259,10 +266,23 @@ export const useCodingStore = create<CodingState>((set, get) => {
       return
     }
     if (loaded.kind === 'empty') {
+      // Checked rather than assumed: an empty reply means the run has no
+      // entries left in the main process, and entries only go away once it
+      // recorded the package as accepted, rejected or abandoned
+      // (EditProposalStore.resolve / resolveApplied / endRun). There is nothing
+      // left for a rejection to resolve.
       set({ pending: null, error: message })
       return
     }
-    set({ pending: null, error: `${message} ${loaded.error}` })
+    // Who else believes something about this package? The main process does —
+    // the reload FAILED, so nothing there resolved it, and dropping `pending`
+    // alone would leave the proposals in neither half of the audit trail and
+    // keep one of the EDIT_MAX_RETAINED_RUNS slots for the rest of the session.
+    // Told BEFORE `pending` is cleared, as on the accept path; a rejection that
+    // does not go through is NAMED and changes nothing else.
+    const recorded = await rejectInMain(previous.runId, REFRESH_FAILED_REASON)
+    const reason = `${message} ${loaded.error}`
+    set({ pending: null, error: recorded ? reason : `${reason} ${REJECTION_NOT_RECORDED}` })
   }
 
   /**

@@ -100,6 +100,23 @@ export interface CodingGuardBlockedDetails {
   policyVersion: string
 }
 
+/**
+ * What a FLAGGED guard records: the sanitizer changed a tool result and did not
+ * block it, so the provider received the original bytes.
+ *
+ * `types` are the sanitizer's own warning types — names from a fixed set, not
+ * text, and never the value it found. The difference from
+ * CodingGuardBlockedDetails is deliberate: that one ends a run, this one records
+ * that a run went on with content a cleaner version existed of.
+ */
+export interface CodingGuardFlaggedDetails {
+  projectPath: string
+  provider: string
+  model: string
+  policyVersion: string
+  types: readonly string[]
+}
+
 export interface CodingUndoDetails {
   projectPath: string
   restored: readonly string[]
@@ -150,6 +167,26 @@ function projectFile(value: unknown): string {
 function reasonText(value: unknown): string {
   if (typeof value !== 'string') return ''
   return stripHiddenCharacters(value).slice(0, MAX_REASON_CHARS)
+}
+
+/** Types kept on one flagged entry; the sanitizer has eight, so this bounds it. */
+const MAX_FLAGGED_TYPES = 8
+
+/**
+ * A fixed list of names, deduplicated, sorted and bounded. Each entry goes
+ * through `name`, so anything that is not a name becomes UNKNOWN rather than
+ * free text — a "type" that could carry the finding would put the finding into
+ * the trail. Sorted so the exported cell does not depend on detection order.
+ */
+function typeList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const kept: string[] = []
+  for (const entry of value) {
+    const type = name(entry)
+    if (!kept.includes(type)) kept.push(type)
+    if (kept.length >= MAX_FLAGGED_TYPES) break
+  }
+  return kept.sort()
 }
 
 function count(value: unknown): number {
@@ -244,6 +281,42 @@ export function logCodingGuardBlocked(runId: string, details: CodingGuardBlocked
       model: name(details?.model),
       policyVersion: name(details?.policyVersion),
       guardBlocked: true
+    }
+  })
+}
+
+/**
+ * The sanitizer changed a tool result and the run went on with the original.
+ *
+ * Why this entry exists at all: the sanitizer is the same DETECTOR on the chat
+ * path and on the agent loop, but not the same TREATMENT. Chat sends the
+ * cleaned text; a tool result is forwarded byte-for-byte, because
+ * mingly_edit_file matches its `oldText` against the REAL file and a proposal
+ * built from normalised text would be refused as "not found". Forwarding the
+ * cleaned text instead would break the edit tool, and lowering the block
+ * threshold would make every file with a BOM or a zero-width space unreadable.
+ * So the asymmetry stays — and this row is what turns it from silent into
+ * provable. One row per guard pass that found something, which is the same unit
+ * `coding.guard_blocked` records.
+ *
+ * Never the found value, never the content: only that it happened, which types,
+ * and in which run.
+ */
+export function logCodingGuardFlagged(runId: string, details: CodingGuardFlaggedDetails): void {
+  getActivityLogger().log({
+    ...ACTOR_GUARD,
+    action: 'coding.guard_flagged',
+    entityType: ENTITY_TYPE,
+    entityId: runId,
+    details: {
+      projectPath: projectRoot(details?.projectPath),
+      provider: name(details?.provider),
+      model: name(details?.model),
+      policyVersion: name(details?.policyVersion),
+      // Stated rather than left empty: an export filtered on guardBlocked must
+      // not read this row as "the guard stopped the run", because it did not.
+      guardBlocked: false,
+      flaggedTypes: typeList(details?.types)
     }
   })
 }
@@ -349,6 +422,10 @@ export function resolveRunAuditContext(runId: string): RunAuditContext & { known
  * `note` carries the user's refusal reason on a `coding.change_rejected` row
  * and the explanation on an `export.truncated` row; the `action` column says
  * which. Every other column is a path, a number, a flag or a name.
+ *
+ * A new column is APPENDED, never inserted: every column before it keeps the
+ * index a reader's script already uses, so an added one can only ever show up
+ * as an extra field at the end. `flaggedTypes` was added that way.
  */
 export const CODING_AUDIT_COLUMNS = [
   'id',
@@ -369,7 +446,9 @@ export const CODING_AUDIT_COLUMNS = [
   'skippedCount',
   'interrupted',
   'skippedReasons',
-  'note'
+  'note',
+  /** Sanitizer warning types of a `coding.guard_flagged` row; names, not text. */
+  'flaggedTypes'
 ] as const
 
 /** The whole export, in bytes. A row limit alone does not bound it. */
@@ -441,7 +520,10 @@ function rowFor(entry: {
     reasonsCell(d.skippedReasons),
     // The only free-text cell: a refusal reason the user typed, or the note of
     // an export.truncated row. `cell` neutralises and bounds it like any other.
-    d.note
+    d.note,
+    // Joined here rather than in `cell`: a list is not a value `cell` knows,
+    // and it would silently become an empty string.
+    Array.isArray(d.flaggedTypes) ? d.flaggedTypes.join(';') : ''
   ])
 }
 

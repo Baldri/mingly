@@ -517,6 +517,71 @@ describe('coding store', () => {
       expect(state.error).toMatch(/geändert/)
     })
 
+    /**
+     * Z1 — the third instance of one class in this review round: a package
+     * vanishes from the surface while the MAIN process still holds it, so no
+     * `coding.change_rejected` row is written and one of the
+     * EDIT_MAX_RETAINED_RUNS slots stays occupied for the rest of the session.
+     * Point 13 was the start path, A1 the accept path, this is the refresh path.
+     *
+     * The question that catches it: who else believes something about this
+     * package? Here nothing resolved it — the reload FAILED — so the main
+     * process still holds it and has to be told.
+     */
+    it('a refresh that FAILS rejects the package in the main process too', async () => {
+      await withPending()
+      h.api.codingEdits.accept.mockResolvedValue({
+        success: false,
+        outcome: { kind: 'refused', code: 'package-changed', reason: 'english text' }
+      })
+      h.api.codingEdits.pending.mockResolvedValue({ success: false, error: 'store unreachable' })
+      h.api.codingEdits.reject.mockResolvedValue({ success: true })
+
+      await useCodingStore.getState().acceptPending()
+
+      expect(h.api.codingEdits.reject).toHaveBeenCalledTimes(1)
+      expect(h.api.codingEdits.reject.mock.calls[0][0]).toBe('run_1')
+      // A reason is recorded, so the audit row says what happened.
+      expect(typeof h.api.codingEdits.reject.mock.calls[0][1]).toBe('string')
+      const state = useCodingStore.getState()
+      expect(state.pending).toBeNull()
+      expect(state.error).toContain('store unreachable')
+    })
+
+    it('a refresh that fails AND cannot be rejected says the rejection was not recorded', async () => {
+      await withPending()
+      h.api.codingEdits.accept.mockResolvedValue({
+        success: false,
+        outcome: { kind: 'refused', code: 'package-changed', reason: 'english text' }
+      })
+      h.api.codingEdits.pending.mockResolvedValue({ success: false, error: 'store unreachable' })
+      h.api.codingEdits.reject.mockResolvedValue({ success: false })
+
+      await useCodingStore.getState().acceptPending()
+
+      expect(useCodingStore.getState().pending).toBeNull()
+      expect(useCodingStore.getState().error).toMatch(/weder als angewendet noch als abgelehnt/)
+    })
+
+    it('a refresh that SUCCEEDS does not reject anything (false-alarm direction)', async () => {
+      await withPending()
+      h.api.codingEdits.accept.mockResolvedValue({
+        success: false,
+        outcome: { kind: 'refused', code: 'package-changed', reason: 'english text' }
+      })
+      h.api.codingEdits.pending.mockResolvedValue({
+        success: true,
+        directoryId: 'd1',
+        digest: 'dig2',
+        edits: [EDIT]
+      })
+
+      await useCodingStore.getState().acceptPending()
+
+      expect(h.api.codingEdits.reject).not.toHaveBeenCalled()
+      expect(useCodingStore.getState().pending).not.toBeNull()
+    })
+
     it('a changed package that is now empty closes the dialog instead of showing a stale list', async () => {
       await withPending()
       h.api.codingEdits.accept.mockResolvedValue({
@@ -527,6 +592,10 @@ describe('coding store', () => {
       await useCodingStore.getState().acceptPending()
       expect(useCodingStore.getState().pending).toBeNull()
       expect(useCodingStore.getState().error).toMatch(/geändert/)
+      // Checked, not assumed: an EMPTY reply means the main process has no
+      // entries for this run any more, which only happens once it recorded the
+      // package as accepted, rejected or abandoned. Nothing left to reject.
+      expect(h.api.codingEdits.reject).not.toHaveBeenCalled()
     })
 
     it('a package reported without a digest is not offered for acceptance, and says why', async () => {

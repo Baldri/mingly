@@ -119,7 +119,6 @@ describe('Task 1: Progress Recitation', () => {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000,
       enableProgressRecitation: true
     })
@@ -172,7 +171,6 @@ describe('Task 1: Progress Recitation', () => {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000,
       enableProgressRecitation: false
     })
@@ -216,7 +214,6 @@ describe('Task 1: Progress Recitation', () => {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000,
       enableProgressRecitation: true
     })
@@ -263,7 +260,6 @@ describe('Task 1: Progress Recitation', () => {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000,
       enableProgressRecitation: true
     })
@@ -326,7 +322,6 @@ describe('Task 2: Error Preservation', () => {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000,
       enableErrorPreservation: true
     })
@@ -375,7 +370,6 @@ describe('Task 2: Error Preservation', () => {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000,
       enableErrorPreservation: false
     })
@@ -417,7 +411,6 @@ describe('Task 3: KV-Cache Optimization', () => {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000
     })
 
@@ -449,7 +442,6 @@ describe('Task 3: KV-Cache Optimization', () => {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000
     })
 

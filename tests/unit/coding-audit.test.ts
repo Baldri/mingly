@@ -40,6 +40,7 @@ import {
   logCodingChange,
   logCodingChangeRejected,
   logCodingGuardBlocked,
+  logCodingGuardFlagged,
   logCodingRunUndone,
   exportCodingAudit,
   recordRunAuditContext,
@@ -249,6 +250,79 @@ describe('logCodingGuardBlocked and logCodingRunUndone', () => {
     expect(JSON.stringify(logged()[0].details)).not.toContain('reason')
   })
 
+  /**
+   * C5: the sanitizer is the same DETECTOR on both paths but not the same
+   * TREATMENT. A tool result it cleaned without blocking goes to the provider
+   * byte-for-byte, because mingly_edit_file matches its oldText against the
+   * REAL file and a proposal built from normalised text would be refused as
+   * "not found". That asymmetry is deliberate; this entry is what makes it
+   * provable instead of silent.
+   */
+  it('records a flagged tool result with its types, and no finding and no content', () => {
+    logCodingGuardFlagged('run1', {
+      projectPath: '/Users/dev/project',
+      provider: 'anthropic',
+      model: 'claude-opus-5',
+      policyVersion: '2026-08-26.1',
+      types: ['unicode_abuse', SECRET_LINE]
+    })
+
+    expect(logged()).toHaveLength(1)
+    expect(logged()[0]).toMatchObject({
+      actorType: 'system',
+      actorId: 'guard',
+      action: 'coding.guard_flagged',
+      entityType: 'coding_run',
+      entityId: 'run1'
+    })
+    expect(logged()[0].details).toEqual({
+      projectPath: '/Users/dev/project',
+      provider: 'anthropic',
+      model: 'claude-opus-5',
+      policyVersion: '2026-08-26.1',
+      // It did NOT block: that is the whole point of the separate action.
+      guardBlocked: false,
+      // A type that is not a name is UNKNOWN, never free text.
+      flaggedTypes: ['unicode_abuse', UNKNOWN]
+    })
+    expect(JSON.stringify(logged()[0])).not.toContain('sk-live')
+  })
+
+  it('deduplicates and bounds the types, and sorts them so the cell is stable', () => {
+    logCodingGuardFlagged('run1', {
+      projectPath: '/p',
+      provider: 'a',
+      model: 'b',
+      policyVersion: 'c',
+      types: ['unicode_abuse', 'excessive_length', 'unicode_abuse']
+    })
+    expect(logged()[0].details!.flaggedTypes).toEqual(['excessive_length', 'unicode_abuse'])
+
+    store.rows.length = 0
+    logCodingGuardFlagged('run1', {
+      projectPath: '/p',
+      provider: 'a',
+      model: 'b',
+      policyVersion: 'c',
+      types: Array.from({ length: 50 }, (_unused, i) => `type_${i}`)
+    })
+    expect((logged()[0].details!.flaggedTypes as string[]).length).toBeLessThanOrEqual(8)
+  })
+
+  it('a types value that is not a list is no types at all', () => {
+    for (const types of ['unicode_abuse', 42, null, undefined, { 0: 'x' }]) {
+      store.rows.length = 0
+      logCodingGuardFlagged('run1', {
+        projectPath: '/p',
+        provider: 'a',
+        model: 'b',
+        policyVersion: 'c',
+        types: types as never
+      })
+      expect(logged()[0].details!.flaggedTypes).toEqual([])
+    }
+  })
+
   it('records an undo with counts and reason codes, never file names it could not vouch for', () => {
     logCodingRunUndone('run1', {
       projectPath: '/Users/dev/project',
@@ -346,7 +420,10 @@ describe('exportCodingAudit', () => {
       'skippedCount',
       'interrupted',
       'skippedReasons',
-      'note'
+      'note',
+      // Appended, never inserted: every column above keeps the index a
+      // compliance officer's script already reads it at.
+      'flaggedTypes'
     ])
     expect(rows).toHaveLength(3)
     const data = rows.slice(1)
@@ -421,6 +498,21 @@ describe('exportCodingAudit', () => {
     const rows = parseCsv(exportCodingAudit({}))
     expect(rows).toHaveLength(1)
     expect(rows[0]).toEqual([...CODING_AUDIT_COLUMNS])
+  })
+
+  it('a flagged guard row carries its types in their own cell and says it did not block', () => {
+    logCodingGuardFlagged('run1', {
+      projectPath: '/p',
+      provider: 'anthropic',
+      model: 'm',
+      policyVersion: 'v',
+      types: ['unicode_abuse', 'excessive_length']
+    })
+    const row = parseCsv(exportCodingAudit({}))[1]
+    expect(row[col('action')]).toBe('coding.guard_flagged')
+    expect(row[col('flaggedTypes')]).toBe('excessive_length;unicode_abuse')
+    expect(row[col('guardBlocked')]).toBe('false')
+    expect(row).toHaveLength(CODING_AUDIT_COLUMNS.length)
   })
 
   it('escapes a comma and a quote in a path', () => {

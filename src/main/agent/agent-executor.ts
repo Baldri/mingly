@@ -19,7 +19,7 @@ import { postflightGuard, preflightGuard } from '../security/request-guard'
 import { getGuardDeps } from '../security/request-guard-deps'
 
 import { nanoid } from 'nanoid'
-import { guardToolResults, type ToolResultOrigin } from './loop-guard'
+import { guardToolResults, type SanitizerFlag, type ToolResultOrigin } from './loop-guard'
 import { originForToolCall } from '../coding/read-tools'
 import {
   buildConsentRequest,
@@ -36,6 +36,7 @@ import { getRunDirectoryRegistry } from '../coding/run-directories'
 import {
   currentPolicyVersion,
   logCodingGuardBlocked,
+  logCodingGuardFlagged,
   markGuardBlocked,
   markGuardRedirected,
   recordRunAuditContext
@@ -46,6 +47,7 @@ import { getAgentContextManager } from './agent-context-manager'
 import { getClientManager } from '../llm-clients/client-manager'
 import type { ToolUseResponse } from '../llm-clients/client-manager'
 import { getCircuitBreaker } from '../security/circuit-breaker'
+import { AGENT_RUN_TIMEOUT_MS } from '../../shared/types'
 import type {
   Message,
   AgentConfig,
@@ -61,7 +63,10 @@ import type {
 const DEFAULT_AGENT_CONFIG: AgentConfig = {
   maxSteps: 5,
   maxTokensPerRun: 50000,
-  runTimeoutMs: 120000,
+  // From shared, because mingly_run_command's cumulative command budget is
+  // derived from the same constant: this ceiling ends the run, so a command
+  // budget above it could never be spent (see AGENT_RUN_TIMEOUT_MS).
+  runTimeoutMs: AGENT_RUN_TIMEOUT_MS,
   enableProgressRecitation: true,
   enableErrorPreservation: true
 }
@@ -402,6 +407,34 @@ export class AgentExecutor {
         // the rest of the step from the next index. The loop is bounded: every
         // round moves `guardFrom` forward by at least one, and the dispatch
         // phase inside the guard always sees the whole, final step content.
+        // What the sanitizer rewrote but the loop forwarded as it was. The
+        // content is NOT replaced on purpose: mingly_edit_file matches its
+        // `oldText` against the real file, so a proposal built from normalised
+        // text would be refused as "not found". The difference from the chat
+        // path, which does send the cleaned text, is therefore recorded rather
+        // than removed — one entry per guard pass that found something, and
+        // never the finding itself. Non-coding runs have no project to record
+        // it against, like coding.guard_blocked above.
+        //
+        // The indexes are collected for EVERY run type, because the step panel
+        // shows every run; only the audit entry is coding-only.
+        const cleanedIndexes = new Set<number>()
+        const noteSanitizerFlags = (flags: readonly SanitizerFlag[]): void => {
+          for (const flag of flags) cleanedIndexes.add(flag.index)
+          if (!coding || flags.length === 0) return
+          try {
+            logCodingGuardFlagged(runId, {
+              projectPath: coding.projectPath,
+              provider,
+              model,
+              policyVersion: currentPolicyVersion(),
+              types: [...new Set(flags.flatMap((flag) => flag.types))]
+            })
+          } catch {
+            // A failing audit store does not change what the guard decided.
+          }
+        }
+
         let guardFrom = 0
         let loopGuard = await guardToolResults(
           rawToolResults,
@@ -410,6 +443,7 @@ export class AgentExecutor {
           getGuardDeps(),
           guardFrom,
         )
+        noteSanitizerFlags(loopGuard.flagged)
 
         while (loopGuard.kind === 'consent') {
           // Already aborted — the timeout can fire between the tool call and
@@ -473,6 +507,7 @@ export class AgentExecutor {
             getGuardDeps(),
             guardFrom,
           )
+          noteSanitizerFlags(loopGuard.flagged)
         }
 
         // The cancellation inside the loop above has to leave the ReAct loop too.
@@ -509,9 +544,13 @@ export class AgentExecutor {
         // the temp directory. `contextDir` stays undefined only for non-coding
         // runs, because a coding run without a workspace has already ended above.
         const contextManager = getAgentContextManager()
-        const toolResults = rawToolResults.map((r) =>
-          contextManager.compactToolResult(runId, r, contextDir)
-        )
+        const toolResults = rawToolResults.map((r, index) => {
+          const compacted = contextManager.compactToolResult(runId, r, contextDir)
+          // The flag travels with the result the renderer shows, not with the
+          // content: the step panel renders raw text and now says, next to the
+          // result it concerns, that the sanitizer had something to clean.
+          return cleanedIndexes.has(index) ? { ...compacted, sanitizerCleaned: true as const } : compacted
+        })
         step.toolResults = toolResults
 
         run.steps.push(step)

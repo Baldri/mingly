@@ -2,7 +2,7 @@ import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
 import type { Stats } from 'fs'
-import { dialog } from 'electron'
+import { app, dialog } from 'electron'
 import { SimpleStore } from '../utils/simple-store'
 import type {
   AllowedDirectory,
@@ -23,6 +23,8 @@ import {
 } from '../../shared/file-access-types'
 import { isMissingPathError, isRealPathWithin } from './real-path-guard'
 import { getCodingModeStore } from '../coding/coding-mode-store'
+import { currentDirectoryId, directoryId } from './directory-id'
+import { migrateDirectoryIdStores } from './store-migration'
 
 /**
  * Why a proposed network-share mount point was refused.
@@ -54,6 +56,20 @@ export class FileAccessManager {
   private networkShares: Map<string, NetworkShareConfig> = new Map()
 
   constructor() {
+    // BEFORE the store is created, so SimpleStore reads the migrated file and
+    // never caches the old one. registerInfrastructureHandlers constructs this
+    // class at start-up, before any IPC channel can be served, so this is also
+    // the point at which the coding mode store's file has been seen to — and if
+    // it has not, that store ignores an unversioned file anyway.
+    try {
+      migrateDirectoryIdStores(app.getPath('userData'))
+    } catch (error) {
+      // app may be unavailable (a unit test, a very early call). The migration
+      // itself swallows its own failures; this only covers resolving the path,
+      // and without it the session is still correct — loadAllowedDirectories
+      // re-derives the ids below.
+      console.warn('📁 ⚠️ Could not locate the store directory for migration:', error)
+    }
     this.store = SimpleStore.create('file-access.json')
     this.loadAllowedDirectories()
   }
@@ -109,20 +125,32 @@ export class FileAccessManager {
     }
     const dropped: AllowedDirectory[] = []
     // Unusable entries are pruned on the way in; the list is written back so
-    // that happens once instead of on every start.
-    let reduced = saved.length < storedList.length
-    if (reduced) {
-      console.warn(
-        `📁 ⚠️ Skipped ${storedList.length - saved.length} unusable stored grant entries`
-      )
+    // that happens once instead of on every start. `rewrite` collects every
+    // reason to write it back, the re-keying below included.
+    const unusable = storedList.length - saved.length
+    if (unusable > 0) {
+      console.warn(`📁 ⚠️ Skipped ${unusable} unusable stored grant entries`)
     }
+    let rewrite = unusable > 0
 
     saved.forEach(raw => {
       // Normalise once at the boundary: the store value is an unchecked cast,
       // and a permission list that is not a list is an empty one. Everything
       // below, including what gets stored, works on the normalised entry.
       const malformed = !Array.isArray(raw.permissions)
-      const dir: AllowedDirectory = malformed ? { ...raw, permissions: [] } : raw
+      const normalised: AllowedDirectory = malformed ? { ...raw, permissions: [] } : raw
+      // The id is re-derived from the entry's own path before anything is keyed
+      // on it. store-migration.ts does the same on the file; doing it here as
+      // well means the SESSION is right even when that rewrite could not land
+      // (a read-only userData, a full disk), and on an already migrated file it
+      // is a no-op, because deriving the id is deterministic.
+      const currentId = currentDirectoryId(normalised)
+      const dir: AllowedDirectory =
+        currentId === null ? normalised : { ...normalised, id: currentId }
+      if (currentId !== null) {
+        console.warn(`📁 Re-keyed the stored grant of ${dir.path} to its full-path id`)
+        rewrite = true
+      }
       const surviving = survivingPermissions(dir)
       // Park only what is genuinely unconfirmed. A confirmed grant with an
       // empty permission list is kept as it is: it grants nothing, and
@@ -139,13 +167,13 @@ export class FileAccessManager {
         console.warn(
           `📁 ⚠️ Unconfirmed ${dir.location} grant lost permission ${lost.join(', ')} (needs re-granting): ${dir.path}`
         )
-        reduced = true
+        rewrite = true
         this.allowedDirs.set(dir.id, { ...dir, permissions: surviving })
         return
       }
       if (malformed) {
         console.warn(`📁 ⚠️ Grant had a malformed permission list, now empty: ${dir.path}`)
-        reduced = true
+        rewrite = true
       }
       this.allowedDirs.set(dir.id, dir)
     })
@@ -153,7 +181,7 @@ export class FileAccessManager {
     if (dropped.length > 0) {
       this.parkUnconfirmedDirectories(dropped)
     }
-    if (dropped.length > 0 || reduced) {
+    if (dropped.length > 0 || rewrite) {
       this.saveAllowedDirectories()
     }
 
@@ -213,7 +241,7 @@ export class FileAccessManager {
       const dirName = path.basename(dirPath)
 
       const allowedDir: AllowedDirectory = {
-        id: this.generateDirId(dirPath),
+        id: directoryId(dirPath),
         path: dirPath,
         name: dirName,
         location: 'local',
@@ -702,13 +730,6 @@ export class FileAccessManager {
       '.jpeg': 'image/jpeg'
     }
     return mimeTypes[ext] || 'application/octet-stream'
-  }
-
-  /**
-   * Generate directory ID
-   */
-  private generateDirId(dirPath: string): string {
-    return Buffer.from(dirPath).toString('base64').substring(0, 16)
   }
 }
 

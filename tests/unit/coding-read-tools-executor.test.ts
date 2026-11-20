@@ -127,7 +127,6 @@ beforeEach(() => {
   executor = new AgentExecutor({
     maxSteps: 5,
     maxTokensPerRun: 50000,
-    toolTimeoutMs: 5000,
     runTimeoutMs: 10000
   })
 })
