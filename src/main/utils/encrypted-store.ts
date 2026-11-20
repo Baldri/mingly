@@ -43,6 +43,13 @@ export class EncryptedStore {
   private initialized = false
   private legacyKey: Buffer | null = null
   private fallbackKey: Buffer | null = null
+  /** Keys whose ciphertext is present but could not be decrypted this run. */
+  private unreadable = new Set<string>()
+  /**
+   * The store file existed but could not be read or parsed. The bytes are then
+   * never overwritten: the next save moves them aside first (see saveToDisk).
+   */
+  private loadFailed = false
 
   constructor(filename: string = 'secure-keys.enc.json') {
     this.storePath = path.join(app.getPath('userData'), filename)
@@ -106,11 +113,34 @@ export class EncryptedStore {
         this.entries = JSON.parse(content)
       }
     } catch {
+      // Unreadable or unparseable. Start empty IN MEMORY so the app keeps
+      // working, but remember it: the bytes on disk are the user's only copy
+      // of their secrets, and this branch must never be the reason they go.
       this.entries = {}
+      this.loadFailed = true
+    }
+  }
+
+  /**
+   * Move a store file we could not read out of the way, once, before the first
+   * write replaces it. Named rather than deleted: whatever went wrong may be
+   * fixable later, and then the ciphertext is still there.
+   */
+  private preserveUnreadableFile(): void {
+    if (!this.loadFailed) return
+    // Clear first: a failed rename must not make every later save retry it.
+    this.loadFailed = false
+    try {
+      if (!fs.existsSync(this.storePath)) return
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      fs.renameSync(this.storePath, `${this.storePath}.unreadable-${stamp}`)
+    } catch (error) {
+      console.error('Failed to preserve unreadable encrypted store:', error)
     }
   }
 
   private saveToDisk(): void {
+    this.preserveUnreadableFile()
     try {
       fs.writeFileSync(
         this.storePath,
@@ -167,21 +197,41 @@ export class EncryptedStore {
     if (!entry) return undefined
 
     try {
-      if (isSafeStorageEntry(entry)) {
-        const buffer = Buffer.from(entry.encrypted, 'base64')
-        return safeStorage.decryptString(buffer)
-      }
-
-      // Legacy / fallback entry — keyFor picks the right key by keyId.
-      return this.decryptLegacy(entry as LegacyEncryptedEntry)
+      const value = isSafeStorageEntry(entry)
+        ? safeStorage.decryptString(Buffer.from(entry.encrypted, 'base64'))
+        : // Legacy / fallback entry — keyFor picks the right key by keyId.
+          this.decryptLegacy(entry as LegacyEncryptedEntry)
+      this.unreadable.delete(key)
+      return value
     } catch {
-      // Decrypt failed — likely caused by adhoc re-signing after rebuild.
-      // Remove the corrupted entry so the user can re-enter the key cleanly.
-      console.error(`[EncryptedStore] Failed to decrypt key "${key}" — removing corrupted entry. Re-enter the API key in Settings.`)
-      delete this.entries[key]
-      this.saveToDisk()
+      // Decrypt failed — typically because the OS refuses this binary the key
+      // material (a dismissed keychain prompt, an ACL a rebuild invalidated).
+      //
+      // This used to delete the entry and save, on the reasoning that the user
+      // can just re-enter the key. It cost a real user all three of their API
+      // keys three seconds after a rebuilt app first started, with no notice
+      // and no way back. "I cannot read this right now" is not "this is
+      // worthless": the ciphertext is intact and may well be readable again
+      // once the cause is gone. Destroying it removes that possibility, so the
+      // entry stays and the caller is told it is unreadable instead.
+      this.unreadable.add(key)
+      console.error(`[EncryptedStore] Failed to decrypt key "${key}" — keeping the stored value. Re-enter the API key in Settings if it stays unreadable.`)
       return undefined
     }
+  }
+
+  /**
+   * Is this key stored but undecryptable? Distinguishes "not configured" from
+   * "configured, and we cannot read it" — the two look identical through
+   * `get`/`has`, and only the second one is worth telling the user about.
+   */
+  isUnreadable(key: string): boolean {
+    this.ensureInitialized()
+    if (!(key in this.entries)) return false
+    if (this.unreadable.has(key)) return true
+    // Not attempted yet in this run: answering the question is what settles it.
+    this.get(key)
+    return this.unreadable.has(key)
   }
 
   set(key: string, value: string): void {
@@ -214,3 +264,4 @@ export class EncryptedStore {
     this.saveToDisk()
   }
 }
+
