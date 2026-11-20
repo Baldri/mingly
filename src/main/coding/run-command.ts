@@ -444,8 +444,6 @@ async function rootHasMark(tool: CommandTool, scope: Scope): Promise<boolean> {
 }
 
 const GIT_POINTER_MAX_BYTES = 4096
-/** Largest repository config this app will judge; anything larger is refused. */
-const GIT_CONFIG_MAX_BYTES = 256 * 1024
 
 const MAX_LINK_HOPS = 40
 
@@ -508,35 +506,111 @@ export function gitConfigNamesProgram(keys: readonly string[]): boolean {
 }
 
 /**
- * The key names ONE config file defines, as git reads it, or null when the
- * question could not be answered.
+ * The config scopes that may appear once system and global config are switched
+ * off: the repository's own, and a linked worktree's `config.worktree`.
  *
- * `--file` makes git read that file and nothing else: measured, a clean
- * repository config lists only its own keys, no global or system ones. With
- * `--file` git does not follow `include.path` either (measured A/B: adding
- * `--includes` pulls the included file's keys in, the default does not), and
- * `--no-includes` says that out loud instead of relying on the default. So this
- * call reads one bounded local file and its content cannot send git elsewhere.
- * GIT_CONFIG_NOSYSTEM and GIT_CONFIG_GLOBAL are set as well, so the answer does
- * not depend on the machine the app runs on.
- *
- * null for every way of not knowing: git could not be started, exited non-zero
- * (a missing file and a MALFORMED file are both exit 128 — measured), was
- * signalled, timed out, or wrote more than this will read. Truncated output is
- * refused rather than searched, because the key that matters could be the one
- * that was cut. The caller refuses on null.
+ * Anything else is git saying it read something this app did not account for,
+ * and that is the exact class of mistake this check has already been wrong
+ * about twice. Measured that the label is real and not decorative: with
+ * `GIT_CONFIG_GLOBAL` pointing at a file that has `user.name`, the output gains
+ * a `global` line; with `GIT_CONFIG_GLOBAL=/dev/null` it does not.
  */
-async function readGitConfigKeys(
+const GIT_CONFIG_ALLOWED_SCOPES: ReadonlySet<string> = new Set(['local', 'worktree'])
+
+/**
+ * The key names out of a `git config --list --name-only --show-scope` listing,
+ * or null when the listing is not one this app can vouch for.
+ *
+ * Every line git writes is `scope<TAB>key`. Split at the FIRST tab: git refuses
+ * a key containing a newline outright (measured: `error: invalid key
+ * (newline)`), so one line is one key, but a SUBSECTION may contain a tab, and
+ * then the key is simply the whole remainder of the line — measured,
+ * `[filter "a<TAB>b"]` lists as `local<TAB>filter.a<TAB>b.clean`, three
+ * tab-separated fields. The section part, which decides everything, sits before
+ * any tab a repository could inject, so taking the remainder is both
+ * unambiguous and complete.
+ *
+ * null — and the caller refuses — for a line that is not `scope<TAB>key` at all,
+ * which is also how a warning on stderr is handled: git writes
+ * `warning: unable to access '…/config': Is a directory` and carries on, and a
+ * config this app could not have judged must not pass as an empty one.
+ *
+ * An EMPTY listing is `[]`, not null: git read no configuration, which is the
+ * authority's truthful answer and the safe one.
+ */
+export function parseGitConfigScopes(output: string): string[] | null {
+  const keys: string[] = []
+  for (const line of output.split(/\r?\n/)) {
+    if (line === '') continue
+    const tab = line.indexOf('\t')
+    if (tab <= 0) return null
+    const key = line.slice(tab + 1)
+    if (key === '' || !GIT_CONFIG_ALLOWED_SCOPES.has(line.slice(0, tab))) return null
+    keys.push(key)
+  }
+  return keys
+}
+
+/**
+ * Will git run a program for THIS repository, under the environment the command
+ * will get?
+ *
+ * The question, and not the files. Two earlier shapes of this check were
+ * bypassed, and both failures were the same mistake one level apart:
+ *
+ *  1. Matching the TEXT of `$GIT_DIR/config` missed git's dotted
+ *     `[filter.lfs]`, because a denylist over spellings cannot promise it found
+ *     every spelling.
+ *  2. Asking git's own parser — but `--file $GIT_DIR/config`, a file this app
+ *     chose — missed `$GIT_DIR/config.worktree`, which git reads when
+ *     `extensions.worktreeConfig` is set. Measured (git 2.53.0, controls in the
+ *     same run): `git config --get filter.evil.clean` answered
+ *     `/bin/echo PWNED` while the `--file` route did not list the key at all.
+ *     And `extensions.worktreeconfig` is refused by no rule here, so the file
+ *     that POINTS at the driver passed the check.
+ *
+ * So the authority is asked what it will USE, with the same GIT_DIR,
+ * GIT_COMMON_DIR and GIT_WORK_TREE the real command is pinned to, and with
+ * system and global config switched off so the answer does not depend on the
+ * machine. There is no list of files to keep in sync any more, and
+ * `extensions.worktreeConfig` needs no special case — which is the point.
+ *
+ * `--no-includes` is deliberate: an `include.path` directive then appears as a
+ * KEY, which is refused, without git reading whatever it points at (measured
+ * A/B: `--includes` pulls the included file's keys in, the default does not).
+ *
+ * Fail closed on every way of not knowing: git could not be started, exited
+ * non-zero (a config git cannot parse is exit 128 — measured), was signalled,
+ * timed out, wrote more than this will read, or produced a line that is not
+ * `scope<TAB>key`. Truncated output is refused rather than searched, because
+ * the key that matters could be the one that was cut. A warning on stderr lands
+ * in the same stream and has no tab, so it refuses too — which is how a config
+ * git could not open is refused rather than read past.
+ *
+ * NO empty-output special case: a repository git does not recognise answers
+ * with nothing, and measured, the real command then fails with `fatal: not a
+ * git repository` — git will use no configuration, which is the truthful answer
+ * and the safe one. Adding "but an empty answer is suspicious" would be another
+ * assumption on top of the authority, which is what went wrong twice.
+ *
+ * NOT covered, and not claimed: keys that name a program for commands this tool
+ * does not allow. `core.fsmonitor`, the pager and the external diff and textconv
+ * drivers are switched off on the command line instead.
+ */
+async function gitConfigIsSafe(
   gitBinary: string,
   interpreters: Readonly<Record<string, string>>,
-  file: string
-): Promise<string[] | null> {
+  pinned: Readonly<Record<string, string>>,
+  cwd: string
+): Promise<boolean> {
   const res = await runProcess(
     gitBinary,
-    ['config', '--file', file, '--no-includes', '--name-only', '--list'],
-    path.dirname(file),
+    ['config', '--list', '--name-only', '--show-scope', '--no-includes'],
+    cwd,
     {
-      ...childEnv(gitBinary, interpreters, {}),
+      // The command's own pinned GIT_DIR / GIT_COMMON_DIR / GIT_WORK_TREE, so
+      // the answer is about the invocation that is about to happen.
+      ...childEnv(gitBinary, interpreters, pinned),
       GIT_CONFIG_NOSYSTEM: '1',
       GIT_CONFIG_GLOBAL: os.devNull
     },
@@ -545,50 +619,14 @@ async function readGitConfigKeys(
     1024,
     GIT_CONFIG_KEYS_MAX_CHARS
   )
-  if (res === null) return null
-  if (res.timedOut || res.flooded || res.omitted > 0) return null
-  if (res.signal !== null || res.exitCode !== 0) return null
-  // head then tail is the stream in order; omitted === 0 above says nothing of
-  // it was dropped.
-  return (res.head + res.tail).split(/\r?\n/).filter((line) => line !== '')
-}
+  if (res === null) return false
+  if (res.timedOut || res.flooded || res.omitted > 0) return false
+  if (res.signal !== null || res.exitCode !== 0) return false
 
-/**
- * Judge the config files git will read for THIS repository: `$GIT_DIR/config`
- * and, when a common dir is pinned, `$GIT_COMMON_DIR/config` (where a linked
- * worktree's shared config lives).
- *
- * Absent is safe — nothing is defined, and git reads it the same way.
- * Unreadable, not a regular file, larger than the ceiling, or an answer git
- * would not give is NOT safe: a file this app cannot judge is one it must not
- * vouch for. The size and kind are still checked here, before the file is handed
- * to git: that bounds what the probe can be made to read.
- *
- * NOT covered, and not claimed: the global `~/.gitconfig` (HOME is passed
- * through to the child), and keys that name a program for commands this tool
- * does not allow. `core.fsmonitor`, the pager and the external diff and
- * textconv drivers are switched off on the command line instead.
- */
-async function gitConfigIsSafe(
-  gitBinary: string,
-  interpreters: Readonly<Record<string, string>>,
-  gitDir: string,
-  commonDir: string | null
-): Promise<boolean> {
-  for (const dir of commonDir === null ? [gitDir] : [gitDir, commonDir]) {
-    const file = path.join(dir, 'config')
-    try {
-      const stat = await fs.promises.stat(file)
-      if (!stat.isFile() || stat.size > GIT_CONFIG_MAX_BYTES) return false
-    } catch (error) {
-      // No config file: nothing is defined. Anything else: refuse.
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-      return false
-    }
-    const keys = await readGitConfigKeys(gitBinary, interpreters, file)
-    if (keys === null || gitConfigNamesProgram(keys)) return false
-  }
-  return true
+  // head then tail is the stream in order; omitted === 0 above says none of it
+  // was dropped.
+  const keys = parseGitConfigScopes(res.head + res.tail)
+  return keys !== null && !gitConfigNamesProgram(keys)
 }
 
 /**
@@ -836,18 +874,15 @@ async function runCommand(
       }
 
       // The git dir is inside the grant, but its CONTENT still decides what git
-      // executes: a clean filter runs for every allowed form (measured). The
-      // question is put to git itself, so it comes AFTER the binary check —
-      // this is the one check that asks the binary rather than the file system.
-      // Not cached per run, deliberately: a permitted command runs project code
-      // that can rewrite the config, so an answer is only good for the command
-      // it precedes. Environment-dependent, so the shared text and nothing more
-      // specific — a differentiated refusal would let the agent probe
-      // repository configuration it is not allowed to read.
-      if (
-        gitDirs !== null &&
-        !(await gitConfigIsSafe(plan.file, interpreters, gitDirs.gitDir, gitDirs.commonDir))
-      ) {
+      // executes: a clean filter runs for every allowed form (measured). Asked
+      // of git itself under the SAME pinned environment, so it comes AFTER the
+      // binary check — this is the one check that asks the binary rather than
+      // the file system. Not cached per run, deliberately: a permitted command
+      // runs project code that can rewrite the config, so an answer is only
+      // good for the command it precedes. Environment-dependent, so the shared
+      // text and nothing more specific — a differentiated refusal would let the
+      // agent probe repository configuration it is not allowed to read.
+      if (gitDirs !== null && !(await gitConfigIsSafe(plan.file, interpreters, pinned, plan.cwd))) {
         return COMMAND_UNAVAILABLE
       }
 

@@ -18,6 +18,7 @@ import {
   readInterpreterPaths,
   physicalPath,
   gitConfigNamesProgram,
+  parseGitConfigScopes,
   RUN_TOTAL_MS,
   RUN_COMMAND_MS,
   type RunLimits
@@ -386,10 +387,16 @@ describe('mingly_run_command refuses alike when the environment says no', () => 
     texts.push(await run(registry, 'npm run build'))
     // a repository config that names a program — in the dotted spelling, and in
     // a spelling git itself will not parse. Both depend on what the repository
-    // says, not on what the model wrote, so both carry this same text.
+    // says, not on what the model wrote, so both carry this same text. The
+    // scaffolding makes the git dir one git accepts as a repository, which is
+    // the precondition for it to read any config at all (measured).
     fake('git', 'echo ok')
-    const config = path.join(project, '.git', 'config')
-    fs.writeFileSync(config, '[filter.spy]\n\tclean = /tmp/spy.sh\n')
+    const gitDir = path.join(project, '.git')
+    fs.mkdirSync(path.join(gitDir, 'objects'), { recursive: true })
+    fs.mkdirSync(path.join(gitDir, 'refs'), { recursive: true })
+    fs.writeFileSync(path.join(gitDir, 'HEAD'), 'ref: refs/heads/main\n')
+    const config = path.join(gitDir, 'config')
+    fs.writeFileSync(config, '[core]\n\trepositoryformatversion = 0\n[filter.spy]\n\tclean = /tmp/spy.sh\n')
     texts.push(await run(registry, 'git status'))
     fs.writeFileSync(config, '[filter.spy\n\tclean = /tmp/spy.sh\n')
     texts.push(await run(registry, 'git status'))
@@ -856,9 +863,25 @@ describe('mingly_run_command: the granted root must be the tool\'s own root (cla
      * The refusal is environment-dependent, so it carries the ONE shared text
      * and says nothing about what the config holds.
      */
-    const writeConfig = (body: string): void => {
-      fs.mkdirSync(path.join(project, '.git'), { recursive: true })
-      fs.writeFileSync(path.join(project, '.git', 'config'), body)
+    /**
+     * A git dir git ACCEPTS as a repository, plus the config under test.
+     *
+     * The scaffolding (`HEAD`, `objects/`, `refs/`) is the precondition of the
+     * question the guard now asks: it asks git what configuration it will USE,
+     * and git answers nothing at all for a directory it does not recognise as a
+     * repository — measured, and in that case the real command fails with
+     * `fatal: not a git repository` too, so there is nothing to guard there.
+     * Measured minimum for git 2.53.0: HEAD plus objects/ and refs/.
+     */
+    const writeConfig = (body: string, worktreeBody?: string): void => {
+      const gitDir = path.join(project, '.git')
+      fs.mkdirSync(path.join(gitDir, 'objects'), { recursive: true })
+      fs.mkdirSync(path.join(gitDir, 'refs'), { recursive: true })
+      fs.writeFileSync(path.join(gitDir, 'HEAD'), 'ref: refs/heads/main\n')
+      fs.writeFileSync(path.join(gitDir, 'config'), body)
+      if (worktreeBody !== undefined) {
+        fs.writeFileSync(path.join(gitDir, 'config.worktree'), worktreeBody)
+      }
     }
 
     /**
@@ -897,6 +920,46 @@ describe('mingly_run_command: the granted root must be the tool\'s own root (cla
         expect(fs.existsSync(started)).toBe(false)
       })
     }
+
+    /**
+     * The second measured bypass of this guard, and the reason it no longer
+     * enumerates files at all.
+     *
+     * git also reads `$GIT_DIR/config.worktree` when `extensions.worktreeConfig`
+     * is set. Measured (git 2.53.0, hand-built repository, controls in the same
+     * run): with `extensions.worktreeConfig = true` in `config` and
+     * `[filter "evil"] clean = /bin/echo PWNED` in `config.worktree`,
+     *
+     *   git config --get filter.evil.clean               -> /bin/echo PWNED, exit 0
+     *   git config --file .git/config --name-only --list -> filter.evil.clean ABSENT
+     *   git config --list --name-only --show-scope       -> worktree<TAB>filter.evil.clean
+     *
+     * `extensions.worktreeconfig` itself is refused by no rule — it is not a
+     * filter, not an include and does not end in `command` — so the file-based
+     * route read the config that POINTS at the driver and passed it.
+     */
+    it('refuses a filter driver hidden in config.worktree, which the file route never opened', async () => {
+      writeConfig(
+        '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tworktreeConfig = true\n',
+        '[filter "evil"]\n\tclean = /bin/echo PWNED\n'
+      )
+
+      expect(await run(makeRegistry(), 'git status')).toBe(COMMAND_UNAVAILABLE)
+      expect(await run(makeRegistry(), 'git diff --stat')).toBe(COMMAND_UNAVAILABLE)
+      expect(fs.existsSync(started)).toBe(false)
+    })
+
+    it('false alarm direction: worktreeConfig without a hostile config.worktree still runs', async () => {
+      // The extension on its own is not a finding; what matters is what the
+      // file it switches on actually defines.
+      writeConfig(
+        '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tworktreeConfig = true\n',
+        '[core]\n\tsparseCheckout = false\n'
+      )
+
+      expect(await run(makeRegistry(), 'git status')).toContain('exit code 0')
+      expect(fs.existsSync(started)).toBe(true)
+    })
 
     it('the harness has a real git to answer the config question', () => {
       // Without it the stub cannot answer `git config` and every case in this
@@ -955,17 +1018,26 @@ describe('mingly_run_command: the granted root must be the tool\'s own root (cla
 
     it('the config of the pinned common dir is checked too', async () => {
       // In a linked worktree the shared config lives in the common dir, which
-      // is where git reads it from.
+      // is where git reads it from. The layout has to be one git RECOGNISES:
+      // measured, a fabricated worktree dir makes git read no config at all and
+      // makes the real command fail with `fatal: not a git repository`, so a
+      // hostile config there was never reachable in the first place.
       const common = path.join(project, '.gitdata')
       const wt = path.join(common, 'worktrees', 'wt')
       fs.mkdirSync(wt, { recursive: true })
+      fs.mkdirSync(path.join(common, 'objects'), { recursive: true })
+      fs.mkdirSync(path.join(common, 'refs'), { recursive: true })
+      fs.writeFileSync(path.join(wt, 'HEAD'), 'ref: refs/heads/wtbr\n')
       fs.writeFileSync(path.join(wt, 'commondir'), '../..')
       fs.writeFileSync(path.join(project, '.git'), 'gitdir: .gitdata/worktrees/wt\n')
-      fs.writeFileSync(path.join(common, 'config'), '[filter "spy"]\n\tclean = /tmp/spy.sh\n')
+      fs.writeFileSync(
+        path.join(common, 'config'),
+        '[core]\n\trepositoryformatversion = 0\n[filter "spy"]\n\tclean = /tmp/spy.sh\n'
+      )
       expect(await run(makeRegistry(), 'git status')).toBe(COMMAND_UNAVAILABLE)
       expect(fs.existsSync(started)).toBe(false)
-      // Positive control: the same worktree without that config runs.
-      fs.rmSync(path.join(common, 'config'))
+      // Positive control: the same worktree without that filter runs.
+      fs.writeFileSync(path.join(common, 'config'), '[core]\n\trepositoryformatversion = 0\n')
       expect(await run(makeRegistry(), 'git status')).toContain('exit code 0')
     })
 
@@ -1061,6 +1133,64 @@ describe('gitConfigNamesProgram', () => {
   it('finds the one bad key among many good ones, and says no to none at all', () => {
     expect(gitConfigNamesProgram(['core.filemode', 'filter.spy.clean', 'user.name'])).toBe(true)
     expect(gitConfigNamesProgram([])).toBe(false)
+  })
+})
+
+/**
+ * The listing parser, separately from the probe that produces the listing.
+ *
+ * Every input here is output a real git produced (2.53.0), copied from the
+ * measurement, so the parser is tested against what git writes and not against
+ * what this test believes it writes.
+ */
+describe('parseGitConfigScopes', () => {
+  it('reads the keys out of an ordinary listing', () => {
+    expect(
+      parseGitConfigScopes('local\tcore.repositoryformatversion\nlocal\tcore.filemode\n')
+    ).toEqual(['core.repositoryformatversion', 'core.filemode'])
+  })
+
+  it('reads a worktree-scoped key, which is where the second bypass lived', () => {
+    expect(
+      parseGitConfigScopes(
+        'local\tcore.repositoryformatversion\n' +
+          'local\textensions.worktreeconfig\n' +
+          'worktree\tfilter.evil.clean\n'
+      )
+    ).toEqual(['core.repositoryformatversion', 'extensions.worktreeconfig', 'filter.evil.clean'])
+  })
+
+  it('keeps a tab inside a subsection as part of the KEY', () => {
+    // Measured: `[filter "a<TAB>b"] clean = x` lists as three tab-separated
+    // fields. The key is the remainder of the line, so the filter is still seen.
+    const keys = parseGitConfigScopes('local\tfilter.a\tb.clean\n')
+    expect(keys).toEqual(['filter.a\tb.clean'])
+    expect(gitConfigNamesProgram(keys!)).toBe(true)
+  })
+
+  it('refuses a scope outside local and worktree', () => {
+    // What git prints when a global config IS read (measured with
+    // GIT_CONFIG_GLOBAL pointing at a real file). Under this app's environment
+    // it cannot appear, and if it ever does, git read something unaccounted for.
+    expect(parseGitConfigScopes('global\tuser.name\n')).toBeNull()
+    expect(parseGitConfigScopes('local\tcore.filemode\nsystem\tcore.autocrlf\n')).toBeNull()
+    expect(parseGitConfigScopes('command\tcore.filemode\n')).toBeNull()
+  })
+
+  it('refuses a line that is not scope<TAB>key, warnings included', () => {
+    // git writes this to stderr and carries on, so a config it could not open
+    // must not pass for an empty one.
+    expect(parseGitConfigScopes("warning: unable to access '/x/.git/config': Is a directory\n")).toBeNull()
+    expect(parseGitConfigScopes('local\t\n')).toBeNull()
+    expect(parseGitConfigScopes('\tcore.filemode\n')).toBeNull()
+    expect(parseGitConfigScopes('no-tab-at-all\n')).toBeNull()
+  })
+
+  it('an empty listing is no keys, not a failure', () => {
+    // A repository git does not recognise answers with nothing, and the real
+    // command then fails with `fatal: not a git repository` (measured).
+    expect(parseGitConfigScopes('')).toEqual([])
+    expect(parseGitConfigScopes('\n')).toEqual([])
   })
 })
 
