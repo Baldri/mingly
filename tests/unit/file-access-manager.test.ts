@@ -3,14 +3,23 @@
  * Tests directory access control, file read/create with security checks.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
+import { rmSync } from 'fs'
+
+// The constructor migrates the stores under userData with real synchronous fs
+// (only fs/promises is mocked below): a directory of this test's own, never a
+// fixed path under the shared system temp directory.
+const userDataDir = vi.hoisted(() => {
+  const { mkdtempSync: mk } = require('fs') as typeof import('fs')
+  return mk((process.env.TMPDIR ?? '/tmp').replace(/\/$/, '') + '/mingly-file-access-userdata-')
+})
 
 const mockShowOpenDialog = vi.fn()
 const mockShowMessageBox = vi.fn()
 
 vi.mock('electron', () => ({
   app: {
-    getPath: () => '/tmp/mingly-file-access-test'
+    getPath: () => userDataDir
   },
   dialog: {
     showOpenDialog: (...args: any[]) => mockShowOpenDialog(...args),
@@ -43,6 +52,10 @@ vi.mock('../../src/main/utils/simple-store', () => ({
     }))
   }
 }))
+
+afterAll(() => {
+  rmSync(userDataDir, { recursive: true, force: true })
+})
 
 const fsMock = vi.hoisted(() => ({
   readFile: vi.fn(),

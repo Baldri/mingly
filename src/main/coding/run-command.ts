@@ -319,7 +319,12 @@ function runProcess(
       if (graceTimer) clearTimeout(graceTimer)
       if (settleTimer) clearTimeout(settleTimer)
       // The leader is gone; anything it left behind in its group goes too.
-      kill()
+      // Deliberately NOT kill(): this is housekeeping after an ordinary end, not
+      // a kill the run intended, so a refusal here (killGroup still logs it)
+      // must not put "could not be stopped" next to a clean exit code. Only the
+      // timeout and flood paths, where stopping the process was the point, mark
+      // the result unstoppable.
+      killGroup(child.pid, child)
       child.stdout?.destroy()
       child.stderr?.destroy()
       resolve({
@@ -538,14 +543,20 @@ const GIT_CONFIG_ALLOWED_SCOPES: ReadonlySet<string> = new Set(['local', 'worktr
  * An EMPTY listing is `[]`, not null: git read no configuration, which is the
  * authority's truthful answer and the safe one.
  */
-export function parseGitConfigScopes(output: string): string[] | null {
+export function parseGitConfigScopes(output: string, onUnparsable?: (line: string) => void): string[] | null {
   const keys: string[] = []
   for (const line of output.split(/\r?\n/)) {
     if (line === '') continue
     const tab = line.indexOf('\t')
-    if (tab <= 0) return null
+    if (tab <= 0) {
+      onUnparsable?.(line)
+      return null
+    }
     const key = line.slice(tab + 1)
-    if (key === '' || !GIT_CONFIG_ALLOWED_SCOPES.has(line.slice(0, tab))) return null
+    if (key === '' || !GIT_CONFIG_ALLOWED_SCOPES.has(line.slice(0, tab))) {
+      onUnparsable?.(line)
+      return null
+    }
     keys.push(key)
   }
   return keys
@@ -574,6 +585,13 @@ export function parseGitConfigScopes(output: string): string[] | null {
  * system and global config switched off so the answer does not depend on the
  * machine. There is no list of files to keep in sync any more, and
  * `extensions.worktreeConfig` needs no special case — which is the point.
+ *
+ * Global config is out of scope ON PURPOSE, not by oversight: the threat is a
+ * FOREIGN repository the user points the agent at, while `~/.gitconfig` is the
+ * user's own (a filter he installed, e.g. via `git lfs install`, is no attack),
+ * and probing it too would refuse every git command for everyone with git-lfs
+ * installed globally. Do not make the probe "consistent" with the real command's
+ * environment.
  *
  * `--no-includes` is deliberate: an `include.path` directive then appears as a
  * KEY, which is refused, without git reading whatever it points at (measured
@@ -625,7 +643,14 @@ async function gitConfigIsSafe(
 
   // head then tail is the stream in order; omitted === 0 above says none of it
   // was dropped.
-  const keys = parseGitConfigScopes(res.head + res.tail)
+  // The refusal that follows is the shared text and says nothing about WHICH line
+  // failed: that would let the agent probe repository configuration. The local
+  // log may say, so a "git is unavailable here" complaint can be diagnosed.
+  const keys = parseGitConfigScopes(res.head + res.tail, (line) =>
+    console.warn(
+      `mingly_run_command: git config listing refused, unparsable line: ${JSON.stringify(line.slice(0, 200))}`
+    )
+  )
   return keys !== null && !gitConfigNamesProgram(keys)
 }
 

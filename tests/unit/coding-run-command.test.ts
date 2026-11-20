@@ -348,6 +348,26 @@ describe('mingly_run_command bounds', () => {
     }
   })
 
+  it('does not call a clean exit unstoppable when only the cleanup kill is refused', async () => {
+    // finish() kills the group after EVERY end, the clean one included. A
+    // refusal there was never an intended kill; reporting "could not be
+    // stopped" next to `exit code 0` would be a sentence that is not true.
+    // The positive control is the timeout test above: it keeps the sentence.
+    fake('git', 'echo ok')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' })
+    })
+    try {
+      const out = await run(makeRegistry(), 'git status')
+      expect(out).toContain('exit code 0')
+      expect(out).not.toMatch(/could not be stopped/)
+    } finally {
+      kill.mockRestore()
+      warn.mockRestore()
+    }
+  })
+
   it('does not warn when the kill finds nothing left to kill (negative control)', async () => {
     fake('git', 'echo ok')
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
@@ -406,6 +426,29 @@ describe('mingly_run_command refuses alike when the environment says no', () => 
     texts.push(await run(registry, 'git status'))
 
     expect(texts).toEqual(Array(texts.length).fill(COMMAND_UNAVAILABLE))
+  })
+
+  it('logs which listing line was unparsable, and still refuses with the shared text', async () => {
+    // The refusal towards the model stays silent and identical (above); the
+    // local log may say why, or the complaint "git is unavailable here" cannot
+    // be diagnosed. A git that exits 0 but lists a scope this app did not
+    // account for is the unparsable-line path.
+    const gitDir = path.join(project, '.git')
+    fs.mkdirSync(path.join(gitDir, 'objects'), { recursive: true })
+    fs.mkdirSync(path.join(gitDir, 'refs'), { recursive: true })
+    fs.writeFileSync(path.join(gitDir, 'HEAD'), 'ref: refs/heads/main\n')
+    fs.writeFileSync(path.join(gitDir, 'config'), '[core]\n\trepositoryformatversion = 0\n')
+    interpreters.git = script(
+      path.join(bins, 'git'),
+      'if [ "$1" = "config" ]; then printf "global\\tuser.name\\n"; exit 0; fi\necho ok'
+    )
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      expect(await run(makeRegistry(), 'git status')).toBe(COMMAND_UNAVAILABLE)
+      expect(JSON.stringify(warn.mock.calls)).toContain('global')
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('positive control for the above: with everything in place the same commands run', async () => {

@@ -19,10 +19,20 @@
  * compared it against the stored grant string.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
+import { rmSync } from 'fs'
+
+// The constructor migrates the stores under userData with real synchronous fs:
+// a directory of this test's own, never the shared system temp directory.
+const userDataDir = vi.hoisted(() => {
+  const { mkdtempSync: mk } = require('fs') as typeof import('fs')
+  const { join } = require('path') as typeof import('path')
+  const { tmpdir } = require('os') as typeof import('os')
+  return mk(join(tmpdir(), 'mingly-symlink-userdata-'))
+})
 
 const harness = vi.hoisted(() => ({
   ipcHandlers: new Map<string, (...args: any[]) => any>(),
@@ -39,7 +49,7 @@ const storeMock = vi.hoisted(() => {
 })
 
 vi.mock('electron', () => ({
-  app: { getPath: () => os.tmpdir() },
+  app: { getPath: () => userDataDir },
   ipcMain: {
     handle: (channel: string, handler: (...args: any[]) => any) => {
       harness.ipcHandlers.set(channel, handler)
@@ -79,6 +89,10 @@ import { IPC_CHANNELS } from '../../src/shared/types'
 
 const SECRET = 'GEHEIM: ausserhalb jedes Grants'
 const INSIDE = 'drinnen, legitim'
+
+afterAll(() => {
+  rmSync(userDataDir, { recursive: true, force: true })
+})
 
 let root: string
 let granted: string
