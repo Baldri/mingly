@@ -152,8 +152,12 @@ describe('Vision Formatting', () => {
       const parts = formatGoogleParts(createMessageWithImage())
       expect(parts).toHaveLength(2)
       expect(parts[0]).toHaveProperty('text')
-      expect(parts[1]).toHaveProperty('inlineData')
-      expect(parts[1].inlineData.mimeType).toBe('image/png')
+      const imagePart = parts[1]
+      expect(imagePart).toHaveProperty('inlineData')
+      // `in` narrowt die Union wirklich, toHaveProperty tut es fuer TypeScript
+      // nicht — und ein Cast wuerde die Pruefung entwerten.
+      if (!('inlineData' in imagePart)) throw new Error('expected an inlineData part')
+      expect(imagePart.inlineData.mimeType).toBe('image/png')
     })
   })
 

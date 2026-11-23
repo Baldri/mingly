@@ -15,7 +15,7 @@ vi.mock('../../src/main/llm-clients/client-manager', () => ({
 
 vi.mock('../../src/main/routing/intelligent-router', () => ({
   getRouter: vi.fn(() => ({
-    route: vi.fn(async (content: string) => ({
+    route: vi.fn(async (_content: string) => ({
       suggestedProvider: 'anthropic',
       confidence: 0.9,
       category: 'code',
@@ -32,7 +32,7 @@ import {
   HybridOrchestrator,
   DEFAULT_ORCHESTRATOR_CONFIG
 } from '../../src/main/routing/hybrid-orchestrator'
-import type { DelegationProposal, OrchestratorConfig } from '../../src/main/routing/hybrid-orchestrator'
+import type { DelegationProposal } from '../../src/main/routing/hybrid-orchestrator'
 
 describe('HybridOrchestrator', () => {
   let orchestrator: HybridOrchestrator

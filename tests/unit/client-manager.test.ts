@@ -5,10 +5,19 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+/**
+ * `this` inside the constructor mocks below. They are regular functions on
+ * purpose (see the note at the first one) so `new` works, and they assign
+ * vi.fn() properties onto `this` — which TypeScript cannot infer, so it has to
+ * be annotated. `Record<string, ReturnType<typeof vi.fn>>` rather than `any`:
+ * CLAUDE.md rules out `any`, and this says what the mocks actually are.
+ */
+type ClientMockThis = Record<string, ReturnType<typeof vi.fn>>
+
 // Mock all LLM client modules to avoid real SDK imports
 // NOTE: Must use regular functions (not arrows) so they work with `new`
 vi.mock('../../src/main/llm-clients/anthropic-client', () => ({
-  AnthropicClient: vi.fn().mockImplementation(function () {
+  AnthropicClient: vi.fn().mockImplementation(function (this: ClientMockThis) {
     this.setApiKey = vi.fn()
     this.validateApiKey = vi.fn().mockResolvedValue(true)
     this.sendMessage = vi.fn()
@@ -18,7 +27,7 @@ vi.mock('../../src/main/llm-clients/anthropic-client', () => ({
 }))
 
 vi.mock('../../src/main/llm-clients/openai-client', () => ({
-  OpenAIClient: vi.fn().mockImplementation(function () {
+  OpenAIClient: vi.fn().mockImplementation(function (this: ClientMockThis) {
     this.setApiKey = vi.fn()
     this.validateApiKey = vi.fn().mockResolvedValue(true)
     this.sendMessage = vi.fn()
@@ -28,7 +37,7 @@ vi.mock('../../src/main/llm-clients/openai-client', () => ({
 }))
 
 vi.mock('../../src/main/llm-clients/google-client', () => ({
-  GoogleClient: vi.fn().mockImplementation(function () {
+  GoogleClient: vi.fn().mockImplementation(function (this: ClientMockThis) {
     this.setApiKey = vi.fn()
     this.validateApiKey = vi.fn().mockResolvedValue(true)
     this.sendMessage = vi.fn()
@@ -38,7 +47,7 @@ vi.mock('../../src/main/llm-clients/google-client', () => ({
 }))
 
 vi.mock('../../src/main/llm-clients/ollama-client', () => ({
-  OllamaClient: vi.fn().mockImplementation(function () {
+  OllamaClient: vi.fn().mockImplementation(function (this: ClientMockThis) {
     this.setApiKey = vi.fn()
     this.validateApiKey = vi.fn().mockResolvedValue(true)
     this.sendMessage = vi.fn()
@@ -48,7 +57,7 @@ vi.mock('../../src/main/llm-clients/ollama-client', () => ({
 }))
 
 vi.mock('../../src/main/llm-clients/generic-openai-client', () => ({
-  GenericOpenAIClient: vi.fn().mockImplementation(function () {
+  GenericOpenAIClient: vi.fn().mockImplementation(function (this: ClientMockThis) {
     this.setApiKey = vi.fn()
     this.validateApiKey = vi.fn().mockResolvedValue(true)
     this.sendMessage = vi.fn()

@@ -6,8 +6,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Mock Ollama module — must use regular function for `new` to work
+/**
+ * `this` inside the constructor mock below. It is a regular function so `new`
+ * works, and it assigns onto `this`, which TypeScript cannot infer. Annotated
+ * rather than `any`, which CLAUDE.md rules out.
+ */
+type MockThis = Record<string, unknown>
+
 vi.mock('ollama', () => ({
-  Ollama: vi.fn().mockImplementation(function () {
+  Ollama: vi.fn().mockImplementation(function (this: MockThis) {
     this.list = vi.fn().mockRejectedValue(new Error('Not available'))
     this.generate = vi.fn()
   })

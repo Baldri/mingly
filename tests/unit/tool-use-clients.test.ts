@@ -3,7 +3,7 @@
  * Validates the ToolUseResponse interface, LLMClient interface extensions,
  * and LLMClientManager convenience methods.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { Message, ToolDefinition, AgentToolCall } from '../../src/shared/types'
 import type { ToolUseResponse, LLMClient } from '../../src/main/llm-clients/client-manager'
 import type { StreamChunk } from '../../src/main/llm-clients/anthropic-client'
@@ -34,10 +34,6 @@ const sampleTools: ToolDefinition[] = [
       required: ['location']
     }
   }
-]
-
-const sampleMessages: Message[] = [
-  { id: 'msg-1', role: 'user', content: 'Search for documents about TypeScript' }
 ]
 
 // ── ToolUseResponse Interface ────────────────────────────────

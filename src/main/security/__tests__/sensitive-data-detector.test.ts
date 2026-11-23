@@ -191,13 +191,15 @@ describe('Sensitive Data Detector', () => {
 
   describe('Custom Patterns', () => {
     it('should allow adding custom patterns', () => {
-      detector.addCustomPattern('employee-id', /\bEMP-\d{6}\b/g, 'high')
+      // 'custom' ist der Zweig, den SensitiveDataType dafuer vorsieht; die API
+      // nimmt keinen eigenen Namen, und der Test nahm das bisher an.
+      detector.addCustomPattern('custom', /\bEMP-\d{6}\b/g, 'high')
 
       const text = 'Employee EMP-123456 accessed the system'
       const result = detector.scan(text)
 
       expect(result.hasSensitiveData).toBe(true)
-      expect(result.matches[0].type).toBe('employee-id')
+      expect(result.matches[0].type).toBe('custom')
       expect(result.matches[0].riskLevel).toBe('high')
 
       // Cleanup

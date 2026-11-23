@@ -12,11 +12,9 @@ import type { AgentEvent } from '../../src/main/agent/agent-executor'
 vi.mock('../../src/main/agent/agent-executor', () => {
   class MockAgentExecutor {
     private eventHandlers: Array<(event: AgentEvent) => void> = []
-    private config: Record<string, unknown>
-
-    constructor(config?: Record<string, unknown>) {
-      this.config = config ?? {}
-    }
+    // Kein config-Feld: der echte Executor nimmt eine Konfiguration, also
+    // behaelt der Mock die Signatur — gelesen wird sie hier aber nie.
+    constructor(_config?: Record<string, unknown>) {}
 
     onEvent(handler: (event: AgentEvent) => void) {
       this.eventHandlers.push(handler)

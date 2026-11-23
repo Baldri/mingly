@@ -46,6 +46,7 @@ function grant(): AllowedDirectory {
     location: 'local',
     permissions: ['read', 'edit'],
     recursive: true,
+    accessCount: 0,
     grantedAt: 1,
     confirmedAt: 1
   }

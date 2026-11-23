@@ -401,7 +401,9 @@ describe('Transkriptions-Aufbewahrung', () => {
       setRetention('ws1', { audioDays: 7, transcriptDays: 365 })
       const fremd = path.join(tmpDir, 'nicht-im-spool.wav')
       fs.writeFileSync(fremd, 'fremde Datei')
-      const manipuliert = makeJob('manipuliert', { ageDays: 10, audioPath: fremd })
+      // Der Aufruf, nicht der Wert: makeJob legt den Job an, und genau dessen
+      // Faelligkeit prueft dieser Test.
+      makeJob('manipuliert', { ageDays: 10, audioPath: fremd })
       // Positivkontrolle im selben Lauf: ein regulaerer Job derselben Frist.
       const regulaer = makeJob('regulaer', { ageDays: 10 })
 

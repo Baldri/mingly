@@ -19,8 +19,15 @@ const mockStore = vi.hoisted(() => ({
   delete: vi.fn()
 }))
 
+/**
+ * `this` inside the constructor mock below. It is a regular function so `new`
+ * works, and it assigns onto `this`, which TypeScript cannot infer. Annotated
+ * rather than `any`, which CLAUDE.md rules out.
+ */
+type MockThis = Record<string, unknown>
+
 vi.mock('../../src/main/utils/encrypted-store', () => ({
-  EncryptedStore: vi.fn().mockImplementation(function () {
+  EncryptedStore: vi.fn().mockImplementation(function (this: MockThis) {
     Object.assign(this, mockStore)
   })
 }))

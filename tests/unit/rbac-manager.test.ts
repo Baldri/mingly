@@ -27,7 +27,6 @@ vi.mock('fs', () => ({
 import {
   RBACManager, PERMISSIONS, ROLE_PERMISSIONS, ROLE_HIERARCHY
 } from '../../src/main/security/rbac-manager'
-import type { Role } from '../../src/main/security/rbac-manager'
 
 describe('PERMISSIONS', () => {
   it('should define permissions with categories', () => {

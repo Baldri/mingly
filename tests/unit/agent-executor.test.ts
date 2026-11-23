@@ -3,7 +3,7 @@
  * Tests the full agent lifecycle: single-step, multi-step, cancellation,
  * token budget, max steps, timeouts, and event emission.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { AgentExecutor } from '../../src/main/agent/agent-executor'
 import { AGENT_RUN_TIMEOUT_MS } from '../../src/shared/types'
 import type { AgentEvent } from '../../src/main/agent/agent-executor'
