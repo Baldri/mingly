@@ -8,18 +8,13 @@
  *   npm i -D @playwright/test && npx playwright install
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { generateId } from '../../src/renderer/utils/id-generator'
 import { validateMCPConfig } from '../../src/main/utils/mcp-sanitizer'
 
 // ─── Shared Mocks ────────────────────────────────────────────────
-const mockConversations = [
-  { id: 'conv-1', title: 'Test Chat', provider: 'anthropic', model: 'claude-3-sonnet', createdAt: Date.now() },
-  { id: 'conv-2', title: 'Code Review', provider: 'openai', model: 'gpt-4', createdAt: Date.now() }
-]
-
 // ─── App Launch ──────────────────────────────────────────────────
 describe('App Launch Flow', () => {
   it('should determine first-launch state based on wizard completion', () => {

@@ -220,7 +220,12 @@ describe('resolveConsentChoice', () => {
 describe('createConsentBroker', () => {
   it('publishes the request and resolves with the answer', async () => {
     const published: CodingConsentRequest[] = []
-    const broker = createConsentBroker({ publish: (req) => published.push(req) })
+    // Block-Body: push() gibt die neue Laenge zurueck, publish erwartet void.
+    const broker = createConsentBroker({
+      publish: (req) => {
+        published.push(req)
+      }
+    })
     const req = requestFor(EMAIL_SCAN)
 
     const pending = broker.ask(req)

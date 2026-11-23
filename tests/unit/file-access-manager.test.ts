@@ -245,7 +245,7 @@ describe('FileAccessManager', () => {
 
   describe('readFile', () => {
     it('should throw when directory not granted', async () => {
-      await expect(manager.readFile({ directoryId: 'unknown', filePath: 'file.txt' }))
+      await expect(manager.readFile({ directoryId: 'unknown', filePath: 'file.txt' , operation: 'read' }))
         .rejects.toThrow('Directory access not granted')
     })
 
@@ -257,7 +257,7 @@ describe('FileAccessManager', () => {
       })
       const dir = await manager.requestDirectoryAccess(['create'])
 
-      await expect(manager.readFile({ directoryId: dir!.id, filePath: 'file.txt' }))
+      await expect(manager.readFile({ directoryId: dir!.id, filePath: 'file.txt' , operation: 'read' }))
         .rejects.toThrow('Read permission not granted')
     })
 
@@ -268,7 +268,7 @@ describe('FileAccessManager', () => {
       })
       const dir = await manager.requestDirectoryAccess(['read'])
 
-      await expect(manager.readFile({ directoryId: dir!.id, filePath: '../../etc/passwd' }))
+      await expect(manager.readFile({ directoryId: dir!.id, filePath: '../../etc/passwd' , operation: 'read' }))
         .rejects.toThrow('Path traversal')
     })
 
@@ -279,7 +279,7 @@ describe('FileAccessManager', () => {
       })
       const dir = await manager.requestDirectoryAccess(['read'])
 
-      await expect(manager.readFile({ directoryId: dir!.id, filePath: 'file.exe' }))
+      await expect(manager.readFile({ directoryId: dir!.id, filePath: 'file.exe' , operation: 'read' }))
         .rejects.toThrow('not allowed')
     })
 
@@ -292,14 +292,14 @@ describe('FileAccessManager', () => {
 
       vi.mocked(fsPromises.readFile).mockResolvedValueOnce('file content')
 
-      const content = await manager.readFile({ directoryId: dir!.id, filePath: 'readme.md' })
+      const content = await manager.readFile({ directoryId: dir!.id, filePath: 'readme.md' , operation: 'read' })
       expect(content).toBe('file content')
     })
   })
 
   describe('createFile', () => {
     it('should throw when directory not granted', async () => {
-      await expect(manager.createFile({ directoryId: 'unknown', filePath: 'new.txt' }, 'content'))
+      await expect(manager.createFile({ directoryId: 'unknown', filePath: 'new.txt' , operation: 'create' }, 'content'))
         .rejects.toThrow('Directory access not granted')
     })
 
@@ -310,7 +310,7 @@ describe('FileAccessManager', () => {
       })
       const dir = await manager.requestDirectoryAccess(['read'])
 
-      await expect(manager.createFile({ directoryId: dir!.id, filePath: 'new.txt' }, 'content'))
+      await expect(manager.createFile({ directoryId: dir!.id, filePath: 'new.txt' , operation: 'create' }, 'content'))
         .rejects.toThrow('Create permission not granted')
     })
 
@@ -321,7 +321,7 @@ describe('FileAccessManager', () => {
       })
       const dir = await manager.requestDirectoryAccess(['create'])
 
-      await expect(manager.createFile({ directoryId: dir!.id, filePath: '../../etc/hack.txt' }, 'x'))
+      await expect(manager.createFile({ directoryId: dir!.id, filePath: '../../etc/hack.txt' , operation: 'create' }, 'x'))
         .rejects.toThrow('Path traversal')
     })
 
@@ -335,7 +335,7 @@ describe('FileAccessManager', () => {
       // fs.access resolves = file exists
       vi.mocked(fsPromises.access).mockResolvedValueOnce(undefined)
 
-      await expect(manager.createFile({ directoryId: dir!.id, filePath: 'existing.txt' }, 'content'))
+      await expect(manager.createFile({ directoryId: dir!.id, filePath: 'existing.txt' , operation: 'create' }, 'content'))
         .rejects.toThrow('already exists')
     })
 
@@ -351,7 +351,7 @@ describe('FileAccessManager', () => {
       vi.mocked(fsPromises.mkdir).mockResolvedValueOnce(undefined)
       vi.mocked(fsPromises.writeFile).mockResolvedValueOnce(undefined)
 
-      const result = await manager.createFile({ directoryId: dir!.id, filePath: 'new.md' }, 'content')
+      const result = await manager.createFile({ directoryId: dir!.id, filePath: 'new.md' , operation: 'create' }, 'content')
       expect(result.success).toBe(true)
     })
   })

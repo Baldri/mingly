@@ -170,9 +170,14 @@ describe('ensureProjectWorkspace', () => {
     // Simulate the race deterministically: a symlink is planted after pass 1
     // saw the path as missing, by hooking the first mkdir.
     const real = fs.promises.mkdir.bind(fs.promises)
-    const spy = vi.spyOn(fs.promises, 'mkdir').mockImplementationOnce(async (target) => {
+    const spy = vi.spyOn(fs.promises, 'mkdir').mockImplementationOnce(async (target, _options?) => {
       fs.symlinkSync(outside, String(target))
-      return real(String(target), { mode: 0o700 }) // EEXIST: the symlink is there now
+      // EEXIST: the symlink is there now. `await` plus an explicit undefined,
+      // because fs.promises.mkdir's general signature returns
+      // Promise<string | undefined> (the created path under `recursive`) while
+      // this overload gives void — the test needs neither.
+      await real(String(target), { mode: 0o700 })
+      return undefined
     })
     try {
       await expect(ensureProjectWorkspace(p, 'r1')).rejects.toThrow(ProjectWorkspaceError)

@@ -486,7 +486,12 @@ describe('exportCodingAudit', () => {
       provider: 'anthropic',
       model: 'm',
       policyVersion: '1',
-      ...({ oldText: SECRET_LINE, newText: SECRET_LINE, diff: SECRET_LINE } as never)
+      // Record, nicht never: der Spread soll Felder einschleusen, die der Typ
+      // verbietet — genau darum geht es hier. Spread auf `never` ist ungueltig.
+      ...({ oldText: SECRET_LINE, newText: SECRET_LINE, diff: SECRET_LINE } as Record<
+        string,
+        unknown
+      >)
     })
     expect(JSON.stringify(logged())).not.toContain('sk-live')
     expect(exportCodingAudit({})).not.toContain('sk-live')

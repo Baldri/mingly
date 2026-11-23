@@ -38,6 +38,7 @@ function grant(overrides: Partial<AllowedDirectory> = {}): AllowedDirectory {
     location: 'local',
     permissions: ['read'],
     recursive: true,
+    accessCount: 0,
     grantedAt: 1,
     confirmedAt: 1,
     ...overrides

@@ -3,7 +3,7 @@
  * Tests RAG context injection logic (mocking RAG HTTP + RAG-Wissen + SimpleStore).
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 
 // Mock electron (needed by SimpleStore)
 vi.mock('electron', () => ({

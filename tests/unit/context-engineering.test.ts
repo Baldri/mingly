@@ -8,7 +8,6 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { AgentExecutor } from '../../src/main/agent/agent-executor'
-import type { AgentEvent } from '../../src/main/agent/agent-executor'
 import { AgentContextManager } from '../../src/main/agent/agent-context-manager'
 import type { Message, ToolDefinition, AgentToolCall, AgentToolResult } from '../../src/shared/types'
 import type { ToolUseResponse } from '../../src/main/llm-clients/client-manager'
@@ -38,7 +37,7 @@ let capturedMessages: Message[][] = []
 vi.mock('../../src/main/llm-clients/client-manager', () => ({
   getClientManager: vi.fn(() => ({
     providerSupportsToolUse: vi.fn().mockReturnValue(true),
-    sendMessageWithTools: vi.fn().mockImplementation(async (provider: string, messages: Message[]) => {
+    sendMessageWithTools: vi.fn().mockImplementation(async (_provider: string, messages: Message[]) => {
       capturedMessages.push([...messages])
       const response = llmResponses[llmCallCount] ?? {
         text: 'Final answer.',
@@ -91,7 +90,7 @@ vi.mock('../../src/main/agent/agent-context-manager', async () => {
   return {
     ...actual,
     getAgentContextManager: vi.fn(() => ({
-      compactToolResult: vi.fn((runId: string, result: AgentToolResult) => result),
+      compactToolResult: vi.fn((_runId: string, result: AgentToolResult) => result),
       cleanup: vi.fn()
     }))
   }

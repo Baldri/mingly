@@ -12,8 +12,7 @@
  *   detector.shutdown()
  */
 
-import type { PIIEntity, PIICategory } from '../../../src/main/privacy/pii-types'
-import { PII_SENSITIVITY } from '../../../src/main/privacy/pii-types'
+import type { PIIEntity } from '../../../src/main/privacy/pii-types'
 
 const MODEL_ID = new NERModelManager().getModelId()
 const CACHE_DIR = `${process.env.HOME}/.mingly/models`

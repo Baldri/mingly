@@ -7,7 +7,7 @@ import { getMCPClientManager } from '../../src/main/mcp/mcp-client-manager'
 import { ToolRegistry, type ToolContext, type ToolGate } from '../../src/main/agent/tool-registry'
 import { CODING_MODE_ORDER, type CodingMode } from '../../src/shared/coding-types'
 import { atLeast } from '../../src/main/policy/policy-types'
-import type { ToolDefinition, AgentToolCall, AgentToolResult } from '../../src/shared/types'
+import type { ToolDefinition } from '../../src/shared/types'
 
 // Mock MCPClientManager
 vi.mock('../../src/main/mcp/mcp-client-manager', () => ({
@@ -421,7 +421,8 @@ describe('Context-gated built-in tools', () => {
         .mocked(getMCPClientManager)
         .mock.results.flatMap((r) =>
           r.type === 'return'
-            ? (r.value as { executeTool: { mock: { calls: unknown[] } } }).executeTool.mock.calls
+            ? (r.value as unknown as { executeTool: { mock: { calls: unknown[] } } })
+                .executeTool.mock.calls
             : []
         )
 

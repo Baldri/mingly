@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { CircuitBreaker } from '../circuit-breaker'
-import type { CircuitEvent, CircuitBreakerConfig } from '../circuit-breaker'
+import type { CircuitEvent } from '../circuit-breaker'
 
 // Mock the tracking engine
 vi.mock('../../tracking/tracking-engine', () => ({
