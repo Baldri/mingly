@@ -166,3 +166,104 @@ describe('EncryptedStore never overwrites a store file it could not parse', () =
     expect(sidecars()).toEqual([])
   })
 })
+
+/**
+ * What happens when moving the unreadable file aside FAILS.
+ *
+ * The first version of this preservation cleared its own `loadFailed` flag
+ * before attempting the rename, with the reasoning that a failed rename must
+ * not make every later save retry it — and then `saveToDisk` went on to write
+ * anyway. So a rename that threw produced exactly the outcome the whole
+ * mechanism exists to prevent: the only copy of the user's secrets overwritten,
+ * with a line in the log as the sole trace.
+ *
+ * The window is narrow (a rename inside a directory the app can otherwise
+ * write), but it is the same class the mechanism was built to close, so the
+ * choice here is explicit: when the bytes cannot be preserved, NOTHING is
+ * written. Losing a key the user just typed costs them one re-entry; losing the
+ * file costs them everything in it, with no way back.
+ *
+ * `fs.renameSync` and `fs.copyFileSync` are spied rather than provoked through
+ * the real filesystem: an OS that refuses them is the scenario, and arranging a
+ * genuine refusal (a read-only directory) would also stop the ordinary write,
+ * so the test could no longer tell "we refused" from "the write failed too".
+ * Each test asserts the spy was actually reached.
+ */
+describe('EncryptedStore refuses to write when it cannot preserve the old bytes', () => {
+  const garbage = '{"anthropic-api-key": {"encrypted": "truncated...'
+
+  beforeEach(() => {
+    electronState.failDecrypt = false
+    electronState.userData = fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-encstore-fail-'))
+    fs.writeFileSync(storePath(), garbage, 'utf-8')
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    fs.rmSync(electronState.userData, { recursive: true, force: true })
+  })
+
+  it('leaves the file untouched when neither the rename nor the copy can be made', () => {
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+    })
+    const copy = vi.spyOn(fs, 'copyFileSync').mockImplementation(() => {
+      throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+    })
+
+    const store = new EncryptedStore(FILE)
+    store.set('openai-api-key', 'sk-new')
+
+    // Positive control: the refusal has to come from the preservation attempt,
+    // not from the test forgetting to trigger it.
+    expect(rename).toHaveBeenCalled()
+    expect(copy).toHaveBeenCalled()
+
+    // The point of the whole exercise.
+    expect(rawFile()).toBe(garbage)
+    expect(sidecars()).toEqual([])
+    // The session still works; only the persisting of it was refused.
+    expect(store.get('openai-api-key')).toBe('sk-new')
+  })
+
+  it('falls back to a copy when only the rename fails, and then writes', () => {
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw Object.assign(new Error('EXDEV'), { code: 'EXDEV' })
+    })
+
+    const store = new EncryptedStore(FILE)
+    store.set('openai-api-key', 'sk-new')
+
+    expect(rename).toHaveBeenCalled()
+    // The bytes are safe in the sidecar, so replacing the original is allowed.
+    expect(sidecars()).toHaveLength(1)
+    expect(fs.readFileSync(path.join(electronState.userData, sidecars()[0]), 'utf-8')).toBe(garbage)
+    expect(entryKeys()).toEqual(['openai-api-key'])
+  })
+
+  it('tries the preservation again on the next save instead of giving up on it', () => {
+    const rename = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+    })
+    const copy = vi.spyOn(fs, 'copyFileSync').mockImplementation(() => {
+      throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+    })
+
+    const store = new EncryptedStore(FILE)
+    store.set('openai-api-key', 'sk-first')
+    expect(rawFile()).toBe(garbage)
+
+    // The obstacle goes away — a keychain prompt answered, a lock released.
+    rename.mockRestore()
+    copy.mockRestore()
+
+    store.set('google-api-key', 'sk-second')
+
+    // Both keys land, and the original bytes are in the sidecar rather than
+    // gone: the retry is what makes the refusal above recoverable instead of
+    // permanent.
+    expect(sidecars()).toHaveLength(1)
+    expect(fs.readFileSync(path.join(electronState.userData, sidecars()[0]), 'utf-8')).toBe(garbage)
+    expect(entryKeys().sort()).toEqual(['google-api-key', 'openai-api-key'])
+  })
+})
