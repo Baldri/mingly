@@ -9,7 +9,7 @@
  * - User must explicitly grant access to each directory
  */
 
-export type FileAccessPermission = 'read' | 'create' | 'read-create'
+export type FileAccessPermission = 'read' | 'create' | 'read-create' | 'edit'
 export type FileLocation = 'local' | 'network-smb' | 'network-nfs'
 
 export interface AllowedDirectory {
@@ -34,7 +34,7 @@ export interface AllowedDirectory {
    * in requestDirectoryAccess, and confirmNetworkShareGrant's dialog in
    * addNetworkShare. Optional because entries persisted before the field
    * existed do not have it, and that absence is the point — see
-   * isPersistedGrantTrusted.
+   * survivingPermissions.
    */
   confirmedAt?: number
   lastAccessed?: number
@@ -42,7 +42,9 @@ export interface AllowedDirectory {
 }
 
 /**
- * Security: may a persisted entry be loaded back into the trusted allowlist?
+ * Security: which permissions of a persisted entry may be trusted after a
+ * restart? Replaces isPersistedGrantTrusted — the question is no longer
+ * WHETHER the entry is trusted but WHICH parts of it.
  *
  * PR #34 (2026-10-29) stopped the renderer from granting itself an arbitrary
  * directory through FILE_ACCESS_ADD_NETWORK_SHARE, but it could not undo the
@@ -51,18 +53,51 @@ export interface AllowedDirectory {
  * pre-#34 network grant looked exactly like one the user had confirmed in a
  * dialog, and the next start trusted it again (security audit 2026-11-02).
  *
- * A network grant therefore needs the marker. Local grants do not: they can
- * only come from the OS directory picker, which is itself the user's gesture,
- * and no renderer payload reaches that route. Their behaviour is unchanged.
+ * A network grant therefore needs the marker for anything at all: without it
+ * nothing survives (the caller drops and parks the entry).
+ *
+ * A local grant used to be exempt, on the reasoning that it can only come
+ * from the OS directory picker, which is itself the user's gesture. That is
+ * still enough for read and create, whose behaviour is unchanged. It is not
+ * enough for `edit`: that permission overwrites an EXISTING file, and a local
+ * grant is the one route on which no path is re-validated at load time and no
+ * read path checks `location`. Without the marker a persisted local entry is
+ * indistinguishable from one an injected renderer wrote, so `edit` needs the
+ * marker even locally and is the only permission removed without it.
  *
  * Fails closed on a missing or unusable marker. The defect being guarded
  * against IS an absent field, so `undefined` has to mean "not confirmed"
  * rather than "unknown" — the inverse of the fail-open hole the policy engine
  * had on an unrecognised level.
  */
-export function isPersistedGrantTrusted(dir: AllowedDirectory): boolean {
-  if (dir.location === 'local') return true
+export function survivingPermissions(dir: AllowedDirectory): FileAccessPermission[] {
+  // The store value arrives through an unchecked cast and this runs from the
+  // FileAccessManager constructor: a permission list that is not a list grants
+  // nothing, it must not throw at startup.
+  if (!Array.isArray(dir.permissions)) return []
+  if (hasConfirmationMarker(dir)) return [...dir.permissions]
+  if (dir.location !== 'local') return []
+  return dir.permissions.filter(permission => permission !== 'edit')
+}
+
+/**
+ * Does the entry carry a usable confirmation marker? Fails closed: anything
+ * but a positive finite number counts as absent. Kept as the single place
+ * this is decided.
+ */
+export function hasConfirmationMarker(dir: AllowedDirectory): boolean {
   return typeof dir.confirmedAt === 'number' && Number.isFinite(dir.confirmedAt) && dir.confirmedAt > 0
+}
+
+/**
+ * Does the grant allow this operation? `read-create` is the combined legacy
+ * spelling and implies both halves; `edit` is implied by nothing, so only an
+ * explicit `edit` entry grants it.
+ */
+export function hasPermission(dir: AllowedDirectory, needed: 'read' | 'create' | 'edit'): boolean {
+  if (!Array.isArray(dir.permissions)) return false
+  if (needed === 'edit') return dir.permissions.includes('edit')
+  return dir.permissions.includes(needed) || dir.permissions.includes('read-create')
 }
 
 export interface FileAccessRequest {

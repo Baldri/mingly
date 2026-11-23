@@ -123,8 +123,16 @@ const MessageBubble = memo(function MessageBubble({ message, isStreaming }: Mess
         </div>
       )}
 
+      {/*
+        `min-w-0` is what makes `max-w-[80%]` mean anything here. A flex child
+        defaults to `min-width: auto`, so it refuses to shrink below the width
+        of its content: one long line — a code block, a URL, a path — pushed
+        the bubble past the window and put a horizontal scrollbar under the
+        whole conversation. `break-words` then breaks what has no space to
+        break at.
+      */}
       <div
-        className={`max-w-[80%] rounded-lg px-4 py-3 ${
+        className={`min-w-0 max-w-[80%] break-words rounded-lg px-4 py-3 ${
           isUser
             ? 'bg-blue-500 text-white'
             : 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100'
@@ -162,9 +170,15 @@ const MessageBubble = memo(function MessageBubble({ message, isStreaming }: Mess
           </div>
         )}
 
-        <div className="prose prose-sm dark:prose-invert max-w-none">
+        {/*
+          A code block has no spaces to break at, so it must scroll inside the
+          bubble rather than widen it. `max-w-none` lifts prose's own cap, which
+          is wanted — the bubble sets the width — but it also means nothing else
+          stops a wide `<pre>`.
+        */}
+        <div className="prose prose-sm dark:prose-invert max-w-none overflow-x-auto">
           {isUser ? (
-            <p className="whitespace-pre-wrap m-0">{message.content}</p>
+            <p className="whitespace-pre-wrap break-words m-0">{message.content}</p>
           ) : (
             <Suspense fallback={<p className="whitespace-pre-wrap m-0">{message.content.substring(0, 200)}{message.content.length > 200 ? '...' : ''}</p>}>
               <MarkdownRenderer content={message.content} />

@@ -7,7 +7,7 @@
  *
  * Responsibilities:
  * 1. Convert MCP tools → ToolDefinition format (for LLM tool_use)
- * 2. Register built-in tools (e.g., echo for testing)
+ * 2. Register built-in tools (e.g., mingly_echo for testing)
  * 3. Execute tool calls and return structured results
  * 4. Handle tool timeouts and errors gracefully
  */
@@ -19,14 +19,82 @@ import type {
   AgentToolResult,
   MCPTool
 } from '../../shared/types'
+import type { CodingRunOptions } from '../../shared/coding-types'
+import type { ProjectWorkspace } from '../coding/project-workspace'
+import type { StepPaths } from './step-paths'
+import { registerReadTools } from '../coding/read-tools'
+import { registerEditTools } from '../coding/edit-proposals'
+import { registerRunCommand } from '../coding/run-command'
 
 // ── Built-in tool handler type ─────────────────────────────────
 
-type BuiltInToolHandler = (args: Record<string, unknown>) => Promise<string>
+/**
+ * What a run tells the registry about itself. `coding` is exactly the
+ * CodingRunOptions type, not a second structure with the same fields.
+ * Comparison and subagent runs pass no context at all.
+ */
+export interface ToolContext {
+  coding?: CodingRunOptions
+  /**
+   * The run's project workspace: the ONE instance the executor created. A
+   * handler reads it from here and never calls ensureProjectWorkspace itself
+   * (two instances per run would mean duplicate filesystem work and a race on
+   * the same directories). Absent for non-coding runs.
+   */
+  workspace?: ProjectWorkspace
+  /**
+   * Where coding tools report the path they ACTUALLY read (resolved real path,
+   * display form), keyed by `callKey`. One sink per loop step; the executor
+   * reads it when it builds the guard's origin, so a consent dialog names the
+   * file that was read and not the spelling the model used.
+   */
+  resolvedPaths?: StepPaths
+  /**
+   * Minted by the registry, per call, on the context a handler receives (the
+   * index of the call in its step). Never derived from the provider's call id:
+   * that arrives from outside, may repeat and may be empty.
+   */
+  callKey?: string
+  /**
+   * The run this call belongs to and the 1-based loop step it runs in. Set by
+   * the executor from its own counters (never from the model or the provider).
+   * Proposals are keyed on them; a tool that needs them and finds them missing
+   * must refuse.
+   */
+  runId?: string
+  stepNumber?: number
+}
+
+/**
+ * Decides whether a built-in tool exists for a run. Absent context means the
+ * strictest caller, so a coding gate must answer `false` for `undefined`.
+ */
+export type ToolGate = (ctx: ToolContext | undefined) => boolean
+
+export type BuiltInToolHandler = (
+  args: Record<string, unknown>,
+  ctx?: ToolContext
+) => Promise<string>
 
 interface BuiltInToolEntry {
   definition: ToolDefinition
   handler: BuiltInToolHandler
+  gate?: ToolGate
+  /** Overrides the registry-wide tool timeout for THIS tool (ms). */
+  timeoutMs?: number
+}
+
+/**
+ * Evaluate a gate fail-closed: no gate means always available; anything other
+ * than a literal `true` (false, a truthy non-boolean, a throw) means closed.
+ */
+function gateAllows(entry: BuiltInToolEntry, ctx: ToolContext | undefined): boolean {
+  if (!entry.gate) return true
+  try {
+    return entry.gate(ctx) === true
+  } catch {
+    return false
+  }
 }
 
 // ── MCP tool mapping ───────────────────────────────────────────
@@ -61,17 +129,48 @@ export class ToolRegistry {
     this.config = { ...DEFAULT_CONFIG, ...config }
   }
 
+  /**
+   * The result budget in chars. Tools that page their own output size the
+   * whole result (hint included) to this, so the single cut in truncateResult
+   * never removes the part that tells the model how to continue.
+   */
+  getMaxResultChars(): number {
+    return this.config.maxResultChars
+  }
+
+  /**
+   * The timeout in ms that applies to `toolName`, or the registry-wide one when
+   * no name is given. A tool that starts a process must stop it before this
+   * fires: the registry's rejection does not kill anything.
+   *
+   * A built-in may declare its own, because one tool's honest duration is not
+   * every tool's: `mingly_run_command` runs a test suite, and a registry-wide
+   * value long enough for that would let one hung MCP call block a run for just
+   * as long. Anything that is not a positive, finite, whole number of
+   * milliseconds falls back to the registry-wide value — the shorter side.
+   */
+  getToolTimeoutMs(toolName?: string): number {
+    const declared = toolName === undefined ? undefined : this.builtInTools.get(toolName)?.timeoutMs
+    if (typeof declared === 'number' && Number.isInteger(declared) && declared > 0) return declared
+    return this.config.toolTimeoutMs
+  }
+
   // ── Registration ────────────────────────────────────────────
 
   /**
    * Register a built-in tool with its handler function.
-   * Built-in tools are always available, regardless of MCP server state.
+   * Built-in tools are independent of MCP server state. Without a `gate` the
+   * tool is always available; with one it is offered (and run) only for a
+   * context the gate accepts. `timeoutMs` overrides the registry-wide tool
+   * timeout for this tool alone (see getToolTimeoutMs).
    */
   registerBuiltIn(
     definition: ToolDefinition,
-    handler: BuiltInToolHandler
+    handler: BuiltInToolHandler,
+    gate?: ToolGate,
+    timeoutMs?: number
   ): void {
-    this.builtInTools.set(definition.name, { definition, handler })
+    this.builtInTools.set(definition.name, { definition, handler, gate, timeoutMs })
   }
 
   /**
@@ -102,12 +201,12 @@ export class ToolRegistry {
    * Combines built-in tools + MCP tools.
    * MCP tools are converted from MCPTool format to ToolDefinition.
    */
-  getAvailableTools(): ToolDefinition[] {
+  getAvailableTools(ctx?: ToolContext): ToolDefinition[] {
     const tools: ToolDefinition[] = []
 
-    // Built-in tools
+    // Built-in tools — a tool whose gate says no is not offered at all
     for (const entry of this.builtInTools.values()) {
-      tools.push(entry.definition)
+      if (gateAllows(entry, ctx)) tools.push(entry.definition)
     }
 
     // MCP tools (converted from MCPTool → ToolDefinition)
@@ -115,6 +214,11 @@ export class ToolRegistry {
     const allMCPTools = mcpManager.listAllTools()
 
     for (const mcpTool of allMCPTools) {
+      // A built-in of the same name owns that name, whatever its gate says:
+      // open, it is already listed above (and wins at execution); closed, the
+      // name must not be offered through the MCP tool either, or the model
+      // would see a name it may not use.
+      if (this.builtInTools.has(mcpTool.toolName)) continue
       tools.push(this.mcpToolToDefinition(mcpTool))
     }
 
@@ -158,9 +262,9 @@ export class ToolRegistry {
    * Handles both built-in and MCP tools.
    * Enforces timeout and truncates large results.
    */
-  async executeTool(toolCall: AgentToolCall): Promise<AgentToolResult> {
+  async executeTool(toolCall: AgentToolCall, ctx?: ToolContext): Promise<AgentToolResult> {
     try {
-      const result = await this.executeWithTimeout(toolCall)
+      const result = await this.executeWithTimeout(toolCall, ctx)
       return result
     } catch (error) {
       const err = error as Error
@@ -182,9 +286,16 @@ export class ToolRegistry {
    * Execute multiple tool calls in parallel.
    * Returns results in the same order as the input calls.
    */
-  async executeToolCalls(toolCalls: AgentToolCall[]): Promise<AgentToolResult[]> {
+  async executeToolCalls(
+    toolCalls: AgentToolCall[],
+    ctx?: ToolContext
+  ): Promise<AgentToolResult[]> {
+    // The key a handler reports under is the call's index in THIS step, minted
+    // here: nothing security-relevant may hang off the provider's call id.
     const results = await Promise.allSettled(
-      toolCalls.map((tc) => this.executeTool(tc))
+      toolCalls.map((tc, index) =>
+        this.executeTool(tc, ctx ? { ...ctx, callKey: String(index) } : ctx)
+      )
     )
 
     return results.map((result, index) => {
@@ -203,11 +314,24 @@ export class ToolRegistry {
 
   // ── Private helpers ─────────────────────────────────────────
 
-  private async executeToolInner(toolCall: AgentToolCall): Promise<AgentToolResult> {
+  private async executeToolInner(
+    toolCall: AgentToolCall,
+    ctx?: ToolContext
+  ): Promise<AgentToolResult> {
     // 1. Check built-in tools first
     const builtIn = this.builtInTools.get(toolCall.name)
     if (builtIn) {
-      const result = await builtIn.handler(toolCall.arguments)
+      // Second check, independent of getAvailableTools: a model can name a tool
+      // it was never offered, and the two methods have different callers.
+      // Deliberately does not fall through to an MCP tool of the same name.
+      if (!gateAllows(builtIn, ctx)) {
+        return {
+          toolCallId: toolCall.id,
+          content: `Unknown tool: "${toolCall.name}". Available tools: ${this.getToolNames(ctx).join(', ')}`,
+          isError: true
+        }
+      }
+      const result = await builtIn.handler(toolCall.arguments, ctx)
       return {
         toolCallId: toolCall.id,
         content: this.truncateResult(result),
@@ -249,7 +373,7 @@ export class ToolRegistry {
     // 3. Unknown tool
     return {
       toolCallId: toolCall.id,
-      content: `Unknown tool: "${toolCall.name}". Available tools: ${this.getToolNames().join(', ')}`,
+      content: `Unknown tool: "${toolCall.name}". Available tools: ${this.getToolNames(ctx).join(', ')}`,
       isError: true
     }
   }
@@ -284,14 +408,18 @@ export class ToolRegistry {
    * Execute a tool with a properly clearable timeout.
    * Prevents timer resource leaks when the tool completes before the timeout.
    */
-  private executeWithTimeout(toolCall: AgentToolCall): Promise<AgentToolResult> {
+  private executeWithTimeout(
+    toolCall: AgentToolCall,
+    ctx?: ToolContext
+  ): Promise<AgentToolResult> {
+    const timeoutMs = this.getToolTimeoutMs(toolCall.name)
     return new Promise<AgentToolResult>((resolve, reject) => {
       const timer = setTimeout(
-        () => reject(new Error(`Tool execution timed out after ${this.config.toolTimeoutMs}ms`)),
-        this.config.toolTimeoutMs
+        () => reject(new Error(`Tool execution timed out after ${timeoutMs}ms`)),
+        timeoutMs
       )
 
-      this.executeToolInner(toolCall)
+      this.executeToolInner(toolCall, ctx)
         .then((result) => {
           clearTimeout(timer)
           resolve(result)
@@ -306,10 +434,16 @@ export class ToolRegistry {
   /**
    * Get names of all available tools (for error messages).
    */
-  private getToolNames(): string[] {
+  private getToolNames(ctx?: ToolContext): string[] {
     const names: string[] = []
-    for (const name of this.builtInTools.keys()) names.push(name)
-    for (const name of this.mcpToolMap.keys()) names.push(name)
+    for (const [name, entry] of this.builtInTools) {
+      if (gateAllows(entry, ctx)) names.push(name)
+    }
+    // A built-in owns its name even while its gate is closed: listing the MCP
+    // tool of that name would put a refused name into the refusal itself.
+    for (const name of this.mcpToolMap.keys()) {
+      if (!this.builtInTools.has(name)) names.push(name)
+    }
     return names
   }
 }
@@ -331,12 +465,33 @@ export function getToolRegistry(): ToolRegistry {
 /**
  * Register default built-in tools.
  * These are always available regardless of MCP server state.
+ *
+ * EVERY built-in here is registered under a namespaced name (`mingly_…`). A
+ * built-in OWNS its name, open gate or closed (see getAvailableTools), and
+ * these registrations run unconditionally on the singleton every run uses — so
+ * an unprefixed `read_file` or `edit_file` would remove a user's filesystem MCP
+ * server from every run, coding mode `off` included. The namespace is what
+ * makes that collision impossible; do not drop it in favour of "fall through to
+ * the MCP tool when the gate is closed", which would be a guard hanging on a
+ * name being spelled the same way.
+ *
+ * That holds for the two non-coding built-ins as well: `echo` and
+ * `decompose_task` are names an MCP server may serve, and they shadowed it
+ * through the very mechanism the coding tools were namespaced to avoid.
+ * tests/unit/default-builtin-tool-names.test.ts keeps the next one out.
  */
 function registerDefaultBuiltIns(registry: ToolRegistry): void {
+  // Coding read tools (gated: offered only in a coding run of mode read-only or above)
+  registerReadTools(registry)
+  // Coding edit tool (gated: offered only in mode propose or above; it records a proposal, it never writes)
+  registerEditTools(registry)
+  // Coding command tool (gated: offered only in mode propose-run; runs an allowlisted command without a shell)
+  registerRunCommand(registry)
+
   // Echo tool — useful for testing and debugging the agent loop
   registry.registerBuiltIn(
     {
-      name: 'echo',
+      name: 'mingly_echo',
       description: 'Echo back the input text. Useful for testing and debugging.',
       inputSchema: {
         type: 'object',
@@ -355,7 +510,7 @@ function registerDefaultBuiltIns(registry: ToolRegistry): void {
   // Forces the master LLM to output a structured JSON decomposition.
   registry.registerBuiltIn(
     {
-      name: 'decompose_task',
+      name: 'mingly_decompose_task',
       description:
         'Decompose a complex task into 1-3 independent subtasks that can be executed in parallel. ' +
         'Each subtask should be self-contained and produce a clear result. ' +

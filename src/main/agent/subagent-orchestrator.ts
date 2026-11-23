@@ -188,8 +188,10 @@ export class SubagentOrchestrator {
   /**
    * Phase 2: Execute subtasks in parallel.
    *
-   * Each subtask gets its own AgentExecutor with full tool access
-   * (all MCP tools + built-ins EXCEPT decompose_task).
+   * Each subtask gets its own AgentExecutor on the SHARED tool registry, so it
+   * sees what any other run sees — `mingly_decompose_task` included. The
+   * unprefixed `decompose_task` of phase 1 is registered on a temporary
+   * registry of its own and is not reachable from here.
    */
   async executeSubtasks(
     sessionId: string,
@@ -355,7 +357,6 @@ export class SubagentOrchestrator {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 50000,
-      toolTimeoutMs: 15000,
       runTimeoutMs: 120000,
       enableProgressRecitation: true,
       enableErrorPreservation: true

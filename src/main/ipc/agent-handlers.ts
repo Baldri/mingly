@@ -9,7 +9,17 @@ import { IPC_CHANNELS } from '../../shared/types'
 import { getAgentExecutor } from '../agent/agent-executor'
 import { getAgentComparisonService } from '../services/agent-comparison-service'
 import { getSubagentOrchestrator } from '../agent/subagent-orchestrator'
+import { getConsentBroker } from '../coding/consent-broker'
+import { exportCodingAudit } from '../coding/coding-audit'
+import { acceptEditsForRun, rejectEditsForRun, undoRunForDirectory } from '../coding/apply-edits'
+import {
+  resolveCodingRun,
+  setCodingModeForDirectory,
+  getPendingPackage
+} from '../coding/coding-run-request'
+import { parseCodingMode } from '../../shared/coding-types'
 import { wrapHandler, requireFeature } from './ipc-utils'
+import type { CodingRunOptions } from '../../shared/coding-types'
 import type {
   AgentConfig,
   AgentModelSlot,
@@ -33,9 +43,21 @@ export function registerAgentHandlers(): void {
       model: string,
       conversationId?: string,
       conversationHistory?: Message[],
-      systemPrompt?: string
+      systemPrompt?: string,
+      codingRequest?: unknown
     ) => {
       requireFeature('agentic_mode')
+
+      // R35: a coding run's project path comes from the GRANT for the directory
+      // id, derived here. Whatever the renderer sent as `codingRequest` is an
+      // input: a path that is not the grant's is refused, not corrected, and
+      // nothing has started yet when it is. `undefined` is a plain run.
+      let coding: CodingRunOptions | undefined
+      if (codingRequest !== undefined) {
+        const resolved = await resolveCodingRun(codingRequest)
+        if (resolved.kind === 'refused') return { success: false, error: resolved.reason }
+        coding = resolved.coding
+      }
 
       // Set up event forwarding to renderer
       const mainWindow = BrowserWindow.getAllWindows()[0]
@@ -51,7 +73,8 @@ export function registerAgentHandlers(): void {
           provider,
           model,
           conversationHistory ?? [],
-          systemPrompt
+          systemPrompt,
+          coding
         )
 
         return { success: true, run }
@@ -70,6 +93,156 @@ export function registerAgentHandlers(): void {
     (runId: string) => {
       const cancelled = executor.cancelRun(runId)
       return { success: true, cancelled }
+    }
+  )
+
+  // ========================================
+  // Coding consent — the answer to a mid-run question
+  // ========================================
+  //
+  // The question travels the other way (CODING_CONSENT_REQUEST), sent by the
+  // broker itself. Only the answer needs a handler.
+  //
+  // Everything arriving here is an input: the broker refuses a choice that was
+  // never offered for that request, an answer whose requestId is not the open
+  // question's, and ignores a runId with no open question — so this handler
+  // neither parses nor interprets the values.
+
+  wrapHandler(
+    IPC_CHANNELS.CODING_CONSENT_RESPOND,
+    (runId: string, requestId: unknown, choice: unknown) => {
+      // Answering resumes agent work, so it is gated like starting it.
+      requireFeature('agentic_mode')
+      const settled = getConsentBroker().respond(runId, requestId, choice)
+      return { success: true, settled }
+    }
+  )
+
+  // ========================================
+  // Coding edits: accept, reject, undo (after the run, by the user)
+  // ========================================
+  //
+  // Run id and directory id only, never a path: what is written is decided in
+  // the main process from the pending package, the project path from the grant.
+  // A refusal is a normal answer (`success: false`, with the reason), not an
+  // exception: the proposal stays and the user sees why.
+
+  wrapHandler(
+    IPC_CHANNELS.CODING_ACCEPT_EDITS,
+    async (runId: unknown, directoryId: unknown, packageDigest: unknown) => {
+      requireFeature('agentic_mode')
+      const outcome = await acceptEditsForRun(runId, directoryId, packageDigest)
+      // The applied proposals hold file text; the renderer needs only the paths.
+      const shown = outcome.kind === 'applied' ? { kind: outcome.kind, paths: outcome.paths } : outcome
+      return { success: outcome.kind === 'applied', outcome: shown }
+    }
+  )
+
+  wrapHandler(
+    IPC_CHANNELS.CODING_REJECT_EDITS,
+    (runId: unknown, reason?: unknown) => {
+      requireFeature('agentic_mode')
+      const outcome = rejectEditsForRun(runId, undefined, typeof reason === 'string' ? reason : undefined)
+      return { success: outcome.kind === 'rejected', outcome }
+    }
+  )
+
+  // Undo is the one coding channel WITHOUT requireFeature, like the audit
+  // export above and for a stronger reason.
+  //
+  // apply-edits.ts says in so many words that undo must not depend on the
+  // coding mode: someone switches coding off BECAUSE something went wrong, and
+  // making undo depend on the mode locks them out of restoring their own files
+  // exactly then. A gate on the SUBSCRIPTION is the same lock-out one level up
+  // — a lapsed plan, a failed licence check or an offline entitlement lookup
+  // would leave a user with files an agent changed and no way to put them
+  // back. Restoring one's own files belongs in the category of
+  // TRANSCRIPTION_DELETE, which is ungated on purpose so that the subscription
+  // status never decides whether data can be removed; it is not an export.
+  //
+  // The gate this channel DOES have is the one that matters: undoRunForDirectory
+  // requires the directory grant with read AND edit, the run's snapshot to be
+  // physically present under that grant, and the manifest hash this app
+  // recorded outside the project. Nothing is restored that was not recorded.
+  wrapHandler(
+    IPC_CHANNELS.CODING_UNDO_RUN,
+    async (runId: unknown, directoryId: unknown) => {
+      const outcome = await undoRunForDirectory(runId, directoryId)
+      return { success: outcome.kind === 'restored', outcome }
+    }
+  )
+
+  // ========================================
+  // Coding UI: the pending package and the mode per project
+  // ========================================
+  //
+  // The package is what the human is asked to approve. It is read by run id
+  // and carries paths, diffs and counts, never file text, plus the digest the
+  // accept must quote. Gated like the other coding channels: it exposes the
+  // content of proposed changes.
+
+  wrapHandler(
+    IPC_CHANNELS.CODING_GET_PENDING,
+    (runId: unknown) => {
+      requireFeature('agentic_mode')
+      const outcome = getPendingPackage(runId)
+      if (outcome.kind === 'refused') return { success: false, error: outcome.reason }
+      return { success: true, ...outcome }
+    }
+  )
+
+  // Reading a mode is not a capability. An unknown stored value reads as `off`.
+  wrapHandler(
+    IPC_CHANNELS.CODING_GET_MODE,
+    async (directoryId: unknown) => {
+      if (typeof directoryId !== 'string' || directoryId === '') {
+        return { success: false, error: 'No project directory was named.' }
+      }
+      const { getCodingModeStore } = await import('../coding/coding-mode-store')
+      return { success: true, mode: parseCodingMode(getCodingModeStore().getMode(directoryId)) }
+    }
+  )
+
+  // Setting a mode widens what the agent may do in a project: gated.
+  wrapHandler(
+    IPC_CHANNELS.CODING_SET_MODE,
+    async (directoryId: unknown, mode: unknown) => {
+      requireFeature('agentic_mode')
+      const outcome = await setCodingModeForDirectory(directoryId, mode)
+      if (outcome.kind === 'refused') return { success: false, error: outcome.reason }
+      return { success: true, mode: outcome.mode }
+    }
+  )
+
+  // ========================================
+  // Coding audit export — the one coding channel WITHOUT requireFeature, on purpose
+  // ========================================
+  //
+  // The constraint behind requireFeature binds channels that TRIGGER coding;
+  // this one triggers nothing. An entitlement gate grants a capability, and
+  // reading back the records of actions already taken is not a capability, it
+  // is access to one's own data.
+  //
+  // A considered divergence from the transcription export (see the note above
+  // TRANSCRIPTION_DELETE in transcription-handlers.ts, where exporting lets
+  // data leave the app and belongs behind the gate): that export carries
+  // CONTENT, this one carries METADATA about actions (paths, counts, flags,
+  // never content, see coding-audit.ts). "Data leaves the app" is far weaker
+  // for a record of what the app did. And a compliance officer asks for these
+  // records after something went wrong, which is when a plan may have lapsed:
+  // an audit trail that disappears with the subscription is not an audit trail.
+  //
+  // The renderer's `since` and `limit` are inputs: exportCodingAudit refuses a
+  // `since` that is not strict ISO 8601 and bounds the size.
+
+  wrapHandler(
+    IPC_CHANNELS.CODING_EXPORT_AUDIT,
+    (since?: unknown, limit?: unknown) => {
+      const csv = exportCodingAudit({
+        since: since as string | undefined,
+        limit: limit as number | undefined
+      })
+      return { success: true, csv }
     }
   )
 

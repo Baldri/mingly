@@ -8,9 +8,17 @@
  * - ❌ Error
  *
  * Expandable: click to see step details (thinking, tool calls, results).
+ *
+ * Everything shown here comes from outside the renderer — a model wrote the
+ * thinking and the tool names, a file or a command produced the results — so it
+ * all goes through `displayText`, the SAME escaping the diff dialog uses.
+ * Without it a zero-width space or a right-to-left override was invisible
+ * exactly where the human is trying to judge what the agent read. Where the
+ * sanitizer rewrote a result that was forwarded as it was, the panel says so.
  */
 
 import React, { useState } from 'react'
+import { AGENT_RESULT_SANITIZED_NOTICE, displayText } from '../lib/coding-display'
 import type { AgentStep, AgentRun } from '../../shared/types'
 
 interface AgentStepIndicatorProps {
@@ -71,7 +79,7 @@ export const AgentStepIndicator: React.FC<AgentStepIndicatorProps> = ({
                       : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'
                   }
                 `}
-                title={`Schritt ${step.stepNumber}: ${step.toolCalls.map((tc) => tc.name).join(', ') || 'Antwort'}`}
+                title={`Schritt ${step.stepNumber}: ${displayText(step.toolCalls.map((tc) => tc.name).join(', ')) || 'Antwort'}`}
               >
                 <span>{icon}</span>
                 <span>{step.stepNumber}</span>
@@ -135,12 +143,15 @@ const StepDetail: React.FC<StepDetailProps> = ({ step, onClose: _onClose }) => {
 
   return (
     <div className="ml-2 p-2 rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 text-xs space-y-1.5">
-      {/* Thinking */}
+      {/* Thinking. Cut first, THEN escaped: cutting after the escape could end
+          the text inside a `<U+` sequence and show half an escape. */}
       {step.thinking && (
         <div>
           <span className="font-medium text-zinc-500 dark:text-zinc-400">Überlegung: </span>
           <span className="text-zinc-700 dark:text-zinc-300">
-            {step.thinking.length > 200 ? step.thinking.substring(0, 200) + '...' : step.thinking}
+            {displayText(
+              step.thinking.length > 200 ? step.thinking.substring(0, 200) + '...' : step.thinking
+            )}
           </span>
         </div>
       )}
@@ -153,10 +164,10 @@ const StepDetail: React.FC<StepDetailProps> = ({ step, onClose: _onClose }) => {
               <span className="text-blue-500">🔧</span>
               <div>
                 <span className="font-mono font-medium text-blue-600 dark:text-blue-400">
-                  {tc.name}
+                  {displayText(tc.name)}
                 </span>
                 <span className="text-zinc-400 ml-1">
-                  ({Object.keys(tc.arguments).join(', ')})
+                  ({displayText(Object.keys(tc.arguments).join(', '))})
                 </span>
               </div>
             </div>
@@ -176,8 +187,15 @@ const StepDetail: React.FC<StepDetailProps> = ({ step, onClose: _onClose }) => {
                   : 'border-green-300 dark:border-green-700'
               }`}
             >
+              {tr.sanitizerCleaned && (
+                <div className="text-amber-700 dark:text-amber-400">
+                  {AGENT_RESULT_SANITIZED_NOTICE}
+                </div>
+              )}
               <pre className="whitespace-pre-wrap break-all text-zinc-600 dark:text-zinc-400 max-h-20 overflow-y-auto">
-                {tr.content.length > 300 ? tr.content.substring(0, 300) + '...' : tr.content}
+                {displayText(
+                  tr.content.length > 300 ? tr.content.substring(0, 300) + '...' : tr.content
+                )}
               </pre>
             </div>
           ))}

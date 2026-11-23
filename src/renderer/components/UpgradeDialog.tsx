@@ -105,6 +105,7 @@ const FEATURE_LABELS: Record<string, string> = {
   export: 'Export',
   auto_update: 'Auto-Update',
   agents: 'Agenten / Orchestrator',
+  agentic_mode: 'Coding-Modus',
   templates_custom: 'Custom Templates',
   comparison: 'Side-by-Side Vergleich',
   unlimited_conversations: 'Unbegrenzte Konversationen',

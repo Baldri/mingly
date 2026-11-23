@@ -11,6 +11,7 @@ import type {
   AgentRun,
   AgentStep
 } from '../../shared/types'
+import type { CodingRunRequest } from '../../shared/coding-types'
 
 // Agent event from IPC (mirrors AgentEvent from agent-executor.ts)
 interface AgentEvent {
@@ -40,7 +41,8 @@ interface AgentState {
     model: string,
     conversationId?: string,
     conversationHistory?: unknown[],
-    systemPrompt?: string
+    systemPrompt?: string,
+    coding?: CodingRunRequest
   ) => Promise<AgentRun | null>
   cancelRun: () => Promise<void>
   loadConfig: () => Promise<void>
@@ -60,7 +62,8 @@ interface AgentAPI {
     model: string,
     conversationId?: string,
     conversationHistory?: unknown[],
-    systemPrompt?: string
+    systemPrompt?: string,
+    coding?: CodingRunRequest
   ) => Promise<{ success: boolean; run?: AgentRun; error?: string }>
   cancel: (runId: string) => Promise<{ success: boolean; cancelled: boolean }>
   getConfig: () => Promise<{ success: boolean; config: AgentConfig }>
@@ -99,7 +102,7 @@ export const useAgentStore = create<AgentState>((set, get) => {
     },
 
     // Execute an agent task
-    executeAgent: async (task, provider, model, conversationId, conversationHistory, systemPrompt) => {
+    executeAgent: async (task, provider, model, conversationId, conversationHistory, systemPrompt, coding) => {
       const agentApi = getAgentAPI()
       if (!agentApi) {
         set({ error: 'Agent API not available' })
@@ -120,7 +123,8 @@ export const useAgentStore = create<AgentState>((set, get) => {
           model,
           conversationId,
           conversationHistory,
-          systemPrompt
+          systemPrompt,
+          coding
         )
 
         if (!result.success || !result.run) {

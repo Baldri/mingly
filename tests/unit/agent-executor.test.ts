@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { AgentExecutor } from '../../src/main/agent/agent-executor'
+import { AGENT_RUN_TIMEOUT_MS } from '../../src/shared/types'
 import type { AgentEvent } from '../../src/main/agent/agent-executor'
 import type { Message, ToolDefinition, AgentToolCall } from '../../src/shared/types'
 import type { ToolUseResponse } from '../../src/main/llm-clients/client-manager'
@@ -87,8 +88,24 @@ beforeEach(() => {
   executor = new AgentExecutor({
     maxSteps: 5,
     maxTokensPerRun: 50000,
-    toolTimeoutMs: 5000,
     runTimeoutMs: 10000
+  })
+})
+
+// ── Defaults ────────────────────────────────────────────────
+
+describe('Default configuration', () => {
+  /**
+   * Z2. `mingly_run_command`'s cumulative command budget is derived from this
+   * ceiling, so the two can no longer stand side by side as independent
+   * numbers. Asserted by RESOLVING the config at runtime, not by reading the
+   * definition: a default a caller never passes on would be a value nothing
+   * uses.
+   */
+  it('resolves the run timeout to the shared ceiling the command budget derives from', () => {
+    expect(new AgentExecutor().getConfig().runTimeoutMs).toBe(AGENT_RUN_TIMEOUT_MS)
+    // The literal, so a silent widening of the rail itself is visible here too.
+    expect(AGENT_RUN_TIMEOUT_MS).toBe(120_000)
   })
 })
 
@@ -179,7 +196,6 @@ describe('Max steps safety rail', () => {
     executor = new AgentExecutor({
       maxSteps,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000
     })
 
@@ -213,7 +229,6 @@ describe('Token budget safety rail', () => {
     executor = new AgentExecutor({
       maxSteps: 10,
       maxTokensPerRun: 200, // Very low budget
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000
     })
 

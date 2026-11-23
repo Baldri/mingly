@@ -2,6 +2,11 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '../shared/types'
 import type { LLMProvider, AppSettings, TranscriptExportFormat } from '../shared/types'
 import type { NetworkShareConfigInput } from '../shared/file-access-types'
+import type {
+  CodingConsentChoice,
+  CodingConsentRequest,
+  CodingRunRequest
+} from '../shared/coding-types'
 
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
@@ -536,7 +541,10 @@ const api = {
       model: string,
       conversationId?: string,
       conversationHistory?: any[],
-      systemPrompt?: string
+      systemPrompt?: string,
+      // A coding run names its project by directory id only. The main process
+      // derives the path from the grant and refuses a path that is not the grant's.
+      coding?: CodingRunRequest
     ) =>
       ipcRenderer.invoke(
         IPC_CHANNELS.AGENT_EXECUTE,
@@ -545,7 +553,8 @@ const api = {
         model,
         conversationId,
         conversationHistory,
-        systemPrompt
+        systemPrompt,
+        coding
       ),
 
     cancel: (runId: string) =>
@@ -562,6 +571,55 @@ const api = {
       ipcRenderer.on(IPC_CHANNELS.AGENT_STEP, listener)
       return () => ipcRenderer.removeListener(IPC_CHANNELS.AGENT_STEP, listener)
     }
+  },
+
+  // Coding consent (a sensitive finding in ONE tool result, mid-run)
+  //
+  // The run is paused while the question is open and its timeout is suspended,
+  // so an answer — any answer — is what gets it moving again. A choice the
+  // request did not offer is refused in the main process, not here: the bridge
+  // forwards, it does not decide.
+  codingConsent: {
+    onRequest: (callback: (request: CodingConsentRequest) => void) => {
+      const listener = (_event: any, request: CodingConsentRequest) => callback(request)
+      ipcRenderer.on(IPC_CHANNELS.CODING_CONSENT_REQUEST, listener)
+      return () =>
+        ipcRenderer.removeListener(IPC_CHANNELS.CODING_CONSENT_REQUEST, listener)
+    },
+
+    // `requestId` is the one the request carried; the main process refuses an
+    // answer that quotes any other.
+    respond: (runId: string, requestId: string, choice: CodingConsentChoice) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CODING_CONSENT_RESPOND, runId, requestId, choice)
+  },
+
+  // Coding edits (the user's decision on a run's proposed package). The bridge
+  // forwards ids only; paths never cross it. A refused apply answers with
+  // `success: false` and a reason, and the proposal stays.
+  codingEdits: {
+    // `packageDigest` names the package the user was shown (packageDigest() of the
+    // pending list); the main process refuses when the run's package has changed.
+    accept: (runId: string, directoryId: string, packageDigest: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CODING_ACCEPT_EDITS, runId, directoryId, packageDigest),
+    reject: (runId: string, reason?: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CODING_REJECT_EDITS, runId, reason),
+    undo: (runId: string, directoryId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CODING_UNDO_RUN, runId, directoryId),
+    // The package the run proposes, by run id: paths, diffs, counts and the
+    // digest `accept` must quote. No file text crosses.
+    pending: (runId: string) => ipcRenderer.invoke(IPC_CHANNELS.CODING_GET_PENDING, runId),
+    // The audit export (CSV text). Reads records of actions already taken and
+    // starts nothing; the handler is deliberately not feature-gated.
+    exportAudit: (since?: string, limit?: number) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CODING_EXPORT_AUDIT, since, limit)
+  },
+
+  // Coding mode per project grant. The main process refuses a value that is not
+  // one of the offered levels; there is no `auto`.
+  codingMode: {
+    get: (directoryId: string) => ipcRenderer.invoke(IPC_CHANNELS.CODING_GET_MODE, directoryId),
+    set: (directoryId: string, mode: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CODING_SET_MODE, directoryId, mode)
   },
 
   // Agent Comparison (Parallel Model Comparison with tool-use)

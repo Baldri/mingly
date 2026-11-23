@@ -155,6 +155,19 @@ export interface AgentToolResult {
   toolCallId: string
   content: string
   isError: boolean
+  /**
+   * The sanitizer produced a DIFFERENT string for this result and the loop
+   * forwarded the original bytes anyway (mingly_edit_file matches its `oldText`
+   * against the real file, so a proposal built from normalised text would be
+   * refused as "not found").
+   *
+   * A flag, never the finding and never the cleaned text: the surface says that
+   * it happened, and `displayText` makes the characters visible. Optional and
+   * only ever `true`, so a result nobody flagged is simply absent — the
+   * fail-closed reading of a missing field is "nothing to report", which is
+   * also the truth for every result that was not scanned.
+   */
+  sanitizerCleaned?: true
 }
 
 /**
@@ -201,13 +214,33 @@ export interface AgentRun {
 /**
  * Configuration limits for agent execution.
  */
+/**
+ * The wall-clock ceiling of ONE agent run, in ms, and the rail that ends a run
+ * first.
+ *
+ * Here, in shared, because two modules have to agree on it: AgentExecutor's
+ * default config, and `mingly_run_command`'s cumulative command budget
+ * (RUN_TOTAL_MS). The two used to stand side by side at 120 s and 300 s, so the
+ * command budget could never be spent — before C1 that was invisible, because
+ * the registry-wide tool timeout capped every command at 14 s; once commands
+ * got their real 60 s, two of them reached this ceiling and the budget became a
+ * number that looked like a limit. Deriving one from the other is what keeps
+ * them from drifting apart again. THIS one leads: it ends the run.
+ */
+export const AGENT_RUN_TIMEOUT_MS = 120_000
+
 export interface AgentConfig {
   /** Maximum number of agent steps before stopping (safety rail) */
   maxSteps: number
   /** Maximum total tokens per run (safety rail) */
   maxTokensPerRun: number
-  /** Timeout per individual tool execution in ms */
-  toolTimeoutMs: number
+  /**
+   * No per-tool timeout here on purpose. It used to be declared and was never
+   * read: the timeout a tool call actually gets comes from the ToolRegistry
+   * (registry-wide, or the tool's own — see ToolRegistry.getToolTimeoutMs), and
+   * the registry is one instance shared by every run, so a per-run value could
+   * not be honoured without one run changing another run's limits.
+   */
   /** Overall timeout for the entire agent run in ms */
   runTimeoutMs: number
   /** Enable progress recitation: inject step summary into next turn (Manus-inspired) */
@@ -715,6 +748,29 @@ export const IPC_CHANNELS = {
   AGENT_COMPARISON_START: 'agent-comparison:start',
   AGENT_COMPARISON_CANCEL: 'agent-comparison:cancel',
   AGENT_COMPARISON_STEP: 'agent-comparison:step',
+
+  // Coding consent (a sensitive finding in ONE tool result, mid-run)
+  // main → renderer: the question. renderer → main: the answer.
+  CODING_CONSENT_REQUEST: 'coding:consent-request',
+  CODING_CONSENT_RESPOND: 'coding:consent-respond',
+
+  // Coding edits: the user's decision on a finished run's proposed package.
+  // Each takes a run id (and a directory id for accept/undo), never a path.
+  CODING_ACCEPT_EDITS: 'coding:accept-edits',
+  CODING_REJECT_EDITS: 'coding:reject-edits',
+  CODING_UNDO_RUN: 'coding:undo-run',
+  // The package a finished run proposes, as the renderer may see it: paths,
+  // diffs and counts, never file text. Takes a run id, never a path.
+  CODING_GET_PENDING: 'coding:get-pending',
+
+  // Coding mode per project grant. Reading it is open; setting it grants a
+  // capability and is gated like starting a run.
+  CODING_GET_MODE: 'coding:get-mode',
+  CODING_SET_MODE: 'coding:set-mode',
+
+  // Coding audit: the export a compliance officer receives (CSV text). Reads
+  // audit rows, starts nothing, so it is not gated like the channels above.
+  CODING_EXPORT_AUDIT: 'coding:export-audit',
 
   // Subagent Orchestration (Master → N Subtasks → N ReAct → Merge)
   SUBAGENT_DECOMPOSE: 'subagent:decompose',

@@ -27,9 +27,38 @@ Gelten für **jeden** Task; die Anforderungen jedes Tasks schliessen sie stillsc
 - **Feature-Gate:** der Coding-Modus erbt `requireFeature('agentic_mode')` (Pro+). Neue IPC-Kanäle, die Coding auslösen, rufen es ebenfalls.
 - **Keine Shell-Interpretation** in `run_command`: kein `&&`, kein `|`, kein `;`, keine Substitution, `spawn(..., { shell: false })`.
 - **Keine Binärdatei aus `process.env.PATH` zur Laufzeit.** Nur `<projekt>/node_modules/.bin` oder ein in den Einstellungen gesetzter absoluter Pfad.
-- **Blockliste ist absolut** (`.env*`, `*.pem`, `*.key`, `*.p12`, `id_rsa*`, `.git/config`, `*.sqlite`). Kein Dialog, kein Modus hebt sie auf.
+- **Blockliste ist absolut** (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ed25519*`, `id_ecdsa*`, `id_dsa*`, `credentials.json`, `secrets.yaml`, `secrets.yml`, `.npmrc`, `.netrc`, `.git/config`, `*.sqlite`, `*.db`). Kein Dialog, kein Modus hebt sie auf. **Erweitert am 2026-11-19 (R38)** um die Namen, die im Task-8-Bericht als lesbar oder nur zufaellig geblockt aufgefallen waren: `*.pfx` ist das Geschwister von `*.p12`, `id_rsa*` allein ist veraltet (ed25519 ist ssh-keygens Standard), `credentials.json` und `secrets.*` sind nach ihrem Inhalt benannt, `.npmrc`/`.netrc` tragen Tokens, `*.db` ist die andere sqlite-Endung. **Nicht** zu `id_*` verallgemeinern — das fienge `id_generator.ts`.
+  **Zweite Erweiterung am 2026-11-19 (R41), und diesmal nach FAMILIEN statt Instanzen:**
+  `secrets.*` (statt dreier Endungen), **das ganze `.git/`-Verzeichnis** in jeder Tiefe
+  (statt nur `.git/config` — das fing weder `.git/modules/*/config` noch
+  `.git/config.worktree`; ein Agent hat in git-Interna nichts zu lesen, git-Zustand
+  gehoert in git-Befehle), `service-account*.json`, `.docker/config.json`, `.yarnrc.yml`.
+  **Lehre:** R38 trug Instanzen nach, und das Task-8-Review fand sofort die naechsten —
+  darunter zwei Inkonsistenzen in R38 selbst (`secrets.yaml` ja, `.json` nein; `.npmrc`
+  ja, `.yarnrc.yml` nein). Eine Denyliste, die instanzweise waechst, laedt die naechste
+  Instanz ein. Wo die Familie klar definiert ist, gehoert die Familie hinein.
+  `.gitignore` und `.gitattributes` bleiben lesbar, obwohl `.git/` blockt — diese
+  Unterscheidung bekommt einen eigenen Test.
+  **R42:** ein projektrelativer Pfad mit **Doppelpunkt** wird abgelehnt. `a.key::$DATA`
+  und `a.pem:stream` oeffnen auf NTFS den Datenstrom der geblockten Datei und bestehen
+  die Namenspruefung; heute faengt sie nur zufaellig die Endungsliste — und «zufaellig
+  geblockt ist nicht geblockt» war genau die Begruendung fuer R38.
+  **R45/R46/R47 — die `secrets`-Regel, endgueltige Form.** Nach drei Anlaeufen
+  (Glob → Datenendungs-Denyliste → Allowlist) gilt: `secrets` und `secrets.<beliebig>`
+  sind geblockt, **ausser** die letzte Endung ist Code oder Prosa — eine **Allowlist**,
+  damit ein Format, das es noch nicht gibt, abgelehnt wird (R45). Die Ausnahme gilt
+  **nur fuer das letzte Pfadsegment**: ein Ordner `secrets.ts/` ist kein Quelltext, also
+  ist `secrets.ts/api.json` geblockt (R46). Und `sql` zaehlt als **Daten**, nicht als
+  Code: eine `.sql`-Datei ist oft ein generierter Dump (R47).
+  **Die Linie, die alle drei traegt:** ausgenommen sind Endungen, deren **Zweck** von
+  Menschen geschriebener Quelltext oder Prosa ist. **Warum die Ausnahme vertretbar
+  ist:** ein hartcodiertes Geheimnis in Quelltext hat typischerweise eine Form, die der
+  Inhalts-Guard kennt (`sk-ant-…`, `AKIA…`, `password =`). Bei einem SQL-Dump gilt das
+  **nicht** — dort ist der wahrscheinlichste Treffer eine E-Mail, die ist
+  anonymisierbar, also wuerde «anonymisiert senden» die Adressen ersetzen und die
+  Passwort-Hashes mitschicken. Deshalb entscheidet dort der **Name**, nicht der Guard.
 - **Kein `auto`-Modus in Phase 1.** Jede Schreibung wird abgenommen.
-- **Kein Provider-Wechsel mitten im Coding-Run.** Der Run endet stattdessen mit Grund.
+- **Kein Provider-Wechsel mitten im Run — in keinem Run-Typ.** Der Run endet stattdessen mit Grund. (Verschärft am 2026-11-19 gegenüber der ursprünglichen Fassung «mitten im Coding-Run»; Begründung bei Task 4.)
 - **Sprache:** Code und Kommentare englisch, Dokumentation CH-Deutsch mit echten Umlauten, nie `ß`.
 - **Conventional Commits.** Jeder Task endet mit einem Commit.
 
@@ -345,15 +374,15 @@ git commit -m "feat(file-access): add edit permission, require the confirmation 
 Der Kern des Features. Nach diesem Task ist der Nachweis erbracht, **bevor** es ein schreibendes Werkzeug gibt.
 
 **Files:**
-- Create: `src/main/agent/coding-guard.ts`
+- Create: `src/main/agent/loop-guard.ts`
 - Modify: `src/main/agent/agent-executor.ts` — Signatur `execute` (Zeile 127), Guard-Aufruf nach Zeile 264 und **vor** 268, `postflightGuard` nach Zeile 235
-- Test: `tests/unit/coding-guard.test.ts` (neu), `tests/unit/agent-loop-guard.test.ts` (neu)
+- Test: `tests/unit/loop-guard.test.ts` (neu), `tests/unit/agent-loop-guard.test.ts` (neu)
 
 **Interfaces:**
 - Consumes: `guardInput`, `guardDispatch`, `postflightGuard`, `GuardDeps`, `SensitiveScan` aus `src/main/security/request-guard.ts`; `AgentToolResult` aus `src/shared/types.ts`; `CodingRunOptions` aus `src/shared/coding-types.ts` (Task 2).
 - Produces:
   ```ts
-  // src/main/agent/coding-guard.ts
+  // src/main/agent/loop-guard.ts
   export interface ToolResultOrigin { toolName: string; filePath?: string }
   export type LoopGuardOutcome =
     | { kind: 'ok' }
@@ -381,14 +410,16 @@ Der Kern des Features. Nach diesem Task ist der Nachweis erbracht, **bevor** es 
 Verhalten, abschliessend:
 - **Ein `guardInput`-Aufruf pro Ergebnis**, mit `texts: [results[i].content]`. `guardInput` sanitisiert nur `texts[texts.length - 1]` (`request-guard.ts:53`) — ein Array aus drei Ergebnissen liesse zwei davon ungeprüft auf Injection, und Injection in einer Datei, die der Agent selbst gelesen hat, ist die zentrale Coding-Bedrohung.
 - **Vor** `compactToolResult`. Die Kompaktierung ersetzt grosse Ergebnisse durch eine Referenz plus `result.content.substring(0, 200)` — roh. Danach zu prüfen heisst, den Teil zu prüfen, der nicht mehr mitgeht, und den durchzulassen, der bleibt.
-- Danach **ein** `guardDispatch`-Aufruf auf dem verbundenen neuen Inhalt plus Progress-Recitation. Liefert er einen **anderen** Provider zurück und `coding` ist gesetzt → `blocked`, nicht wechseln.
+- Danach **ein** `guardDispatch`-Aufruf auf dem verbundenen neuen Inhalt plus Progress-Recitation. Liefert er einen **anderen** Provider zurück → `blocked`, nicht wechseln.
+
+  **Verschärft am 2026-11-19, nach einem Befund der automatischen Sicherheitsprüfung.** Die ursprüngliche Fassung sperrte den Wechsel nur, wenn `coding` gesetzt war. Das war falsch: `guardInput` bewertet den Sensitivdaten-Scan und die Zustimmung gegen den Provider **vor** dem Dispatch. Ein Run auf einem lokalen Anbieter überspringt den Zweig vollständig (`isCloudProvider` false), Tool-Ergebnisse sammeln sich ungeprüft an, und ein Budget-Fallback auf einen Cloud-Anbieter schickt den ganzen Stapel. Abschnitt 6.1 des Spec führt genau dieses Argument — der Satz, der es auf den Coding-Modus einschränkt, ist damit überholt. **Kosten:** ein Run, dessen Provider-Budget mitten im Lauf erschöpft ist, endet mit Grund statt auf einen Ersatzanbieter zu fallen.
 - `postflightGuard(llmResponse.text, systemPrompt ?? '', deps)` nach jedem LLM-Aufruf; `ok === false` → Run endet.
 - Jedes `blocked` setzt `run.status = 'failed'` und `run.error` auf den Grund, wie der heutige Preflight (Zeile 169-175).
 
 - [ ] **Step 1: Unit-Tests für `guardToolResults` schreiben**
 
 ```ts
-// tests/unit/coding-guard.test.ts
+// tests/unit/loop-guard.test.ts
 it('calls guardInput once per tool result', async () => { /* 3 Ergebnisse -> sanitize 3x aufgerufen */ })
 it('blocks on injection in the FIRST of several results', async () => {
   const out = await guardToolResults([injected, harmless], origins, ctx, deps)
@@ -406,16 +437,16 @@ it('positive control: harmless results pass', async () => {
 
 - [ ] **Step 2: Lauf, der fehlschlägt**
 
-Run: `npx vitest run tests/unit/coding-guard.test.ts`
+Run: `npx vitest run tests/unit/loop-guard.test.ts`
 Expected: FAIL — Modul nicht gefunden
 
-- [ ] **Step 3: `coding-guard.ts` implementieren**
+- [ ] **Step 3: `loop-guard.ts` implementieren**
 
 Keine neue Guard-Logik: `guardInput` je Ergebnis, `guardDispatch` einmal. Reine Orchestrierung, Abhängigkeiten als `GuardDeps` injiziert — damit bleibt die Datei ohne Electron-Modulgraph testbar, wie `request-guard.ts`.
 
 - [ ] **Step 4: Lauf grün**
 
-Run: `npx vitest run tests/unit/coding-guard.test.ts`
+Run: `npx vitest run tests/unit/loop-guard.test.ts`
 Expected: PASS (5 Tests)
 
 - [ ] **Step 5: Die Loop-Tests schreiben — der Nachweis des Features**
@@ -471,7 +502,7 @@ Expected: beide `0`
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src/main/agent/coding-guard.ts src/main/agent/agent-executor.ts tests/unit/coding-guard.test.ts tests/unit/agent-loop-guard.test.ts
+git add src/main/agent/loop-guard.ts src/main/agent/agent-executor.ts tests/unit/loop-guard.test.ts tests/unit/agent-loop-guard.test.ts
 git commit -m "feat(agent): guard every tool result before it reaches the provider"
 ```
 
@@ -637,6 +668,16 @@ git commit -m "feat(coding): keep snapshots and externalized results inside the 
 **Files:**
 - Modify: `src/main/agent/tool-registry.ts` — `registerBuiltIn` (Zeile 70), `getAvailableTools` (105), `executeToolCalls` (185), `executeToolInner` (206)
 - Modify: `src/main/agent/agent-executor.ts:195`, `:264` (Kontext durchreichen)
+- Modify: `src/main/agent/agent-executor.ts` — **Pflicht, nicht optional:** ein Coding-Run
+  ruft `ensureProjectWorkspace(coding.projectPath, runId)` **einmal** am Runbeginn und gibt
+  `workspace.contextDir` als drittes Argument an `compactToolResult` (heute Zeile 431, ohne
+  Ziel). Ohne das bleibt die Auslagerung in `os.tmpdir()`, und damit verlaesst
+  Projekt-Quelltext die Projektgrenze — die Eigenschaft, fuer die Task 6 ueberhaupt
+  existiert. Ausserdem weist der Kompaktierungstext das Modell an, die ausgelagerte Datei
+  mit `read_file` zu lesen; das geht nur innerhalb des Grants, also nur unter `.mingly/`.
+  Der Plan behauptete diese Durchreichung in Task 6 («Der Coding-Pfad uebergibt
+  `workspace.contextDir`»), wies sie aber keinem Task zu. Entscheid R30.
+  **Eine Instanz pro Run**, die Tasks 9 und 11 verbrauchen dieselbe — nicht jeder sein eigenes.
 - Test: `tests/unit/tool-registry.test.ts`
 
 **Interfaces:**
@@ -652,6 +693,11 @@ git commit -m "feat(coding): keep snapshots and externalized results inside the 
   executeToolCalls(toolCalls: AgentToolCall[], ctx?: ToolContext): Promise<AgentToolResult[]>
   ```
 - Produces für Task 9, 10, 12: `ToolContext` wird an jeden Coding-Handler als zweites Argument gegeben: `BuiltInToolHandler = (args: Record<string, unknown>, ctx?: ToolContext) => Promise<string>`.
+
+Ein Test muss belegen, dass die ausgelagerte Datei eines Coding-Runs **unter dem
+Projektpfad** liegt, nicht unter `os.tmpdir()` — und dass ein Nicht-Coding-Run (Vergleich,
+Subagent) unveraendert im Temp-Verzeichnis bleibt. Ein Test, der nur `ensureProjectWorkspace`
+oder nur `compactToolResult` einzeln prueft, bleibt gruen, waehrend die Verdrahtung fehlt.
 
 Ein Werkzeug, dessen Gate `false` sagt, wird **gar nicht angeboten** — nicht angeboten und dann verweigert. Ein angebotenes und verweigertes Werkzeug lehrt das Modell, es trotzdem zu versuchen, und füllt den Kontext mit Fehlern.
 
@@ -736,7 +782,7 @@ it('blocks secrets regardless of depth or mode', () => {
   }
 })
 it('does not block ordinary source files', () => {
-  for (const p of ['src/index.ts', 'README.md', '.env.example.md', 'keyboard.ts']) {
+  for (const p of ['src/index.ts', 'README.md', 'env.example.md', 'keyboard.ts']) {
     expect(isBlockedPath(p)).toBe(false)
   }
 })
@@ -746,7 +792,9 @@ it('detects a null byte in the head as binary', () => {
 })
 ```
 
-`'.env.example.md'` und `'keyboard.ts'` stehen absichtlich da: ein Muster, das an einer Zeichenfolge statt an einer Pfadstruktur hängt, fängt beide — und ein Guard, der falschen Alarm schlägt, wird abgeschaltet. Die Verhaltensmatrix prüft beide Richtungen: greift er, wo er soll, **und** schweigt er, wo er soll.
+`'keyboard.ts'` steht absichtlich da: eine Substring-Suche nach `*.key` fängt «keyboard» — und ein Guard, der falschen Alarm schlägt, wird abgeschaltet. Die Verhaltensmatrix prüft beide Richtungen: greift er, wo er soll, **und** schweigt er, wo er soll.
+
+**Korrektur am 2026-11-19 (Entscheid R37):** hier stand zuvor `'.env.example.md'` in derselben Liste. Das war ein Fehler in diesem Plan, kein Fehlalarm: `.env.example.md` ist wirklich ein Name aus der `.env`-Familie, und `.env*` steht auf der **absoluten** Blockliste. Der Widerspruch wird fail-closed aufgeloest — `.env*` blockt alles, auch `.env.example.md`. Eine Dokumentationsdatei kann man umbenennen (`env.example.md`, ohne Punkt); ein gelesenes Geheimnis nicht zurueckholen. Der strukturelle Punkt, auf den die Zeile hinauswollte, haengt an `keyboard.ts` und bleibt damit erhalten.
 
 - [ ] **Step 2: Lauf, der fehlschlägt**
 
@@ -774,10 +822,39 @@ git commit -m "feat(coding): add the coding read allowlist and the absolute bloc
 **Files:**
 - Create: `src/main/coding/read-tools.ts`
 - Modify: `src/main/agent/tool-registry.ts` (Registrierung in `registerDefaultBuiltIns`)
+- Modify: `src/main/agent/agent-executor.ts:336-338` — **Pflicht, nicht optional:** der
+  Executor baut `origins` dort heute nur aus dem Werkzeugnamen, also bleibt
+  `ToolResultOrigin.filePath` leer. `originForToolCall` unten wird damit gebaut und nie
+  aufgerufen. Der Dialog aus Task 5 und die Notiz `[Content withheld …: <toolName> <filePath>]`
+  nennen die Datei sonst nie — der Nutzer entscheidet dann ueber «irgendeine Datei».
+  Befund des Task-5-Reviews, Entscheid R27.
 - Test: `tests/unit/coding-read-tools.test.ts`
 
 **Interfaces:**
 - Consumes: `ToolContext`, `ToolGate` (Task 7); `isBlockedPath`, `isReadableExtension`, `isProbablyBinary` (Task 8); `isRealPathWithin(requestedPath, allowedDir): Promise<boolean>` aus `src/main/file-access/real-path-guard.ts:91`; `hasPermission` (Task 3); `ProjectWorkspace` (Task 6).
+- **Pflicht, nicht optional (Entscheid R39) — Blockliste ZWEIMAL.** `isBlockedPath` laeuft
+  **vor** der Pfadaufloesung (eine Ablehnung verraet dann nichts ueber das Dateisystem)
+  **und erneut auf dem aufgeloesten `realpath`**. Ohne den zweiten Lauf ist die Blockliste
+  per Symlink zu umgehen: ein Link `src/config.ts -> ../.env` innerhalb des Grants
+  besteht die Namenspruefung (er heisst `config.ts`) **und** die Containment-Pruefung
+  (das Ziel liegt im Grant) — und liefert den Inhalt der `.env`. Befund 2 des
+  Task-8-Berichts, dort korrekt als abgeleitet und nicht gemessen gekennzeichnet. Ein
+  Test muss genau diesen Link legen und die Ablehnung belegen.
+- **Pflicht, nicht optional (Entscheid R40):** `list_files` wendet `isBlockedPath` auf
+  **jeden Eintrag** an. Sonst verraet die Liste selbst, welche geblockten Dateien
+  existieren — die Ablehnung beim Lesen kommt dann zu spaet. Befund 4 des
+  Task-8-Berichts.
+- **Pflicht, nicht optional (Entscheid R33):** `ToolContext` fuehrt den
+  `ProjectWorkspace` nicht — Task 7 definiert ihn als `{ coding? }`, und der Executor
+  haelt die Instanz nur als lokales `contextDir` in `execute`. Dieser Task **erweitert
+  `ToolContext`** um den Arbeitsbereich und laesst den Executor die **eine** Instanz
+  hineingeben, die er schon erzeugt. Ein Handler darf **nicht** sein eigenes
+  `ensureProjectWorkspace` rufen: zwei Instanzen pro Run heisst doppelte
+  Dateisystemarbeit und ein Rennen auf denselben Verzeichnissen. Ein Test muss belegen,
+  dass der Handler denselben Pfad sieht, den der Executor angelegt hat.
+  **Dritter Vorfall derselben Klasse** (R27, R30, R33): ein «Produces fuer Task N»-Block
+  sagt, was gebaut wird, aber nicht, wer es *traegt*. Bei kuenftigen Plaenen gehoert zu
+  jedem produzierten Wert die Zeile, wer ihn durchreicht.
 - Produces:
   ```ts
   export function registerReadTools(registry: ToolRegistry): void
@@ -789,6 +866,20 @@ git commit -m "feat(coding): add the coding read allowlist and the absolute bloc
 Jeder Pfad wird **nach** `realpath` geprüft, nicht davor — ein Symlink im Projekt, der nach draussen zeigt, ist sonst ein Ausbruch. `isRealPathWithin` löst beide Seiten auf und verträgt einen nicht existierenden Namen am Ende (`resolveRealPath` hängt die fehlenden Segmente an den tiefsten existierenden Vorfahren).
 
 Reihenfolge der Prüfungen in `read_file`, abschliessend: Grant vorhanden und `hasPermission(dir,'read')` → `isBlockedPath` → `isRealPathWithin` → `isReadableExtension` → Kopf lesen und `isProbablyBinary` → Inhalt. Blockliste vor der Pfadauflösung, damit eine Ablehnung nichts über das Dateisystem verrät.
+
+Ein weiterer Test muss einen **symlinkierten Projektpfad** verwenden (auf macOS ist
+`/var` genau das) und belegen, dass eine Datei unter `.mingly/context/` die
+Containment-Pruefung von `read_file` passiert. `ensureProjectWorkspace` gibt seine Pfade
+per `path.resolve` zurueck, nicht per `realpath` — laeuft der Projektpfad ueber einen
+Symlink, koennen aufgeloeste und unaufgeloeste Form auseinanderfallen, und dann weist
+`read_file` die eigene Auslagerungsdatei ab, obwohl der Kompaktierungstext dem Modell
+sagt, es solle sie lesen. Vom Task-6-Review als «cannot verify from diff» korrekt offen
+gelassen und hierher weitergegeben; verwandt mit der Memory-Notiz
+`containment-pruefung-bricht-an-der-dateisystemwurzel`.
+
+Ein Test muss belegen, dass ein `read_file`-Ergebnis beim Guard mit **gefuelltem**
+`filePath` ankommt — nicht nur, dass `originForToolCall` den Pfad zurueckgibt. Ein Test
+gegen die Funktion allein wuerde gruen bleiben, waehrend der Executor sie ignoriert.
 
 `list_files` blendet `.mingly/` aus und respektiert `.gitignore`, wenn eine existiert. Die Ausgabe wird auf eine feste Zahl Einträge begrenzt, mit einer Fusszeile, die die Kürzung **nennt** — eine stille Kürzung macht aus einer unvollständigen Liste eine falsche Aussage.
 
@@ -956,6 +1047,71 @@ git commit -m "feat(coding): edit_file proposes a diff instead of writing"
   Kanäle: `CODING_ACCEPT_EDITS: 'coding:accept-edits'`, `CODING_REJECT_EDITS: 'coding:reject-edits'`, `CODING_UNDO_RUN: 'coding:undo-run'`.
 - Produces für Task 14: die drei Kanäle.
 
+**Wie der Aufruf aussehen muss (Entscheid R69, aus dem Task-10-Re-Review).** Drei
+Bedingungen, jede aus einem konkreten Umgehungsweg:
+
+1. **Je Datei pruefen UND schreiben, sequenziell** — nicht erst alle pruefen und dann
+   alle schreiben. Zwei **Hardlink**-Namen derselben Datei bekommen verschiedene
+   Schluessel und bestehen beide die Vorpruefung; schreibt man danach beide, ist die
+   zweite Schreibung gegen einen Inhalt gerechnet, den die erste schon veraendert hat.
+   Sequenziell pruefen-und-schreiben faengt das, weil der Hash der zweiten Datei nach der
+   ersten Schreibung nicht mehr passt.
+2. **Den Pfad erneut aufloesen**, nicht den gespeicherten verwenden. Zwischen Vorschlag
+   und Abnahme kann ein Symlink getauscht worden sein.
+3. **Durch den geoeffneten Deskriptor schreiben**, nicht ueber den Pfad erneut oeffnen —
+   sonst liegt zwischen Pruefung und Schreibung ein weiteres Zeitfenster.
+
+**Pflicht, nicht optional (Entscheid R67): `editStillMatches` muss gerufen werden.**
+Task 10 speichert zu jedem Vorschlag einen `baseSha256` des gelesenen Dateiinhalts und
+den `matchIndex`, und exportiert `editStillMatches(edit, currentContent)`. Dieser Task
+**muss** die Funktion gegen den Inhalt rufen, den er beim Anwenden liest, und bei `false`
+ablehnen — ohne diesen Aufruf ist der Identitaetsbeweis gebaut und unbenutzt.
+
+Die erneute Pruefung, dass `oldText` genau einmal vorkommt, genuegt **nicht**: sie faengt
+eine Nutzeraenderung **anderswo** in der Datei nicht, und zwei verschiedene Runs koennen
+Vorschlaege auf derselben Datei halten (die Ein-Vorschlag-Regel ist run-lokal). Der Hash
+macht aus «wahrscheinlich noch anwendbar» ein **beweisbar dieselbe Datei, gegen die der
+Diff berechnet wurde** — und genau das ist es, was die Abnahme eines Menschen bedeuten
+soll. Ein Test muss belegen, dass eine Aenderung **ausserhalb** des Trefferbereichs die
+Anwendung ablehnt, nicht nur eine Aenderung am Treffer selbst.
+
+**Wann ein Vorschlag noch da ist (Entscheid R63).** Der Vorschlagsspeicher raeumt am
+Runende **nur** auf, wenn der Run `cancelled` oder `failed` war — bei `completed` und
+`max_steps_reached` bleiben die Vorschlaege liegen, denn **genau sie sind die Lieferung,
+die auf die Pruefung wartet**. (Erste Fassung raeumte bei jedem Runende und haette damit
+den Normalfall dieses Features zerstoert: vorschlagen, Run endet, Mensch prueft, Mensch
+nimmt ab.)
+
+Fuer diesen Task folgt daraus zweierlei. Erstens: `CODING_ACCEPT_EDITS` darf einen
+Vorschlag auch **nach** dem Runende annehmen — das ist der Normalfall, nicht die Ausnahme.
+Zweitens: die erneute Pruefung des `oldText` gegen den **aktuellen** Inhalt (Schritt 2
+unten) ist dadurch nicht optional, sondern die einzige Absicherung gegen alles, was
+zwischen Vorschlag und Abnahme passiert ist — auch gegen eine Aenderung durch den Nutzer
+selbst. Pro Datei und Run liegt hoechstens **ein** offener Vorschlag (Entscheid R60), die
+Reihenfolge mehrerer Vorschlaege derselben Datei ist also kein Fall mehr.
+
+**Woher der Handler den `ProjectWorkspace` nimmt (Entscheid R56).** Die Interfaces oben
+sagen, dass dieser Task einen `ProjectWorkspace` **verbraucht**, aber nicht, wer ihn
+**traegt** — zum vierten Mal dieselbe Luecke in diesem Plan (R27, R30, R33, jetzt hier).
+Hier ist sie besonders leicht zu uebersehen, weil der Fall anders liegt als bei den
+Werkzeugen: `CODING_ACCEPT_EDITS` und `CODING_UNDO_RUN` laufen **nach** dem Agent-Run,
+ausgeloest durch den Nutzer, und die Instanz, die der Executor im Lauf hielt, gibt es
+dann nicht mehr.
+
+Also: der IPC-Handler **rekonstruiert** den Arbeitsbereich mit
+`ensureProjectWorkspace(projectPath, runId)`. Das ist zulaessig und unbedenklich, weil die
+Funktion idempotent ist. **Das widerspricht R33 nicht:** dort galt «ein Handler ruft
+`ensureProjectWorkspace` nicht selbst» fuer **Werkzeug**-Handler **waehrend** eines Runs,
+wo eine zweite Instanz ein Rennen auf denselben Verzeichnissen bedeutet. Eine Regel ohne
+Geltungsbereich ist eine Falle fuer den, der sie befolgt — darum steht er hier.
+
+`projectPath` leitet der Handler im **Main-Prozess aus dem Grant** zu `directoryId` ab,
+nie aus dem Renderer (gleiche Regel wie R35 fuer Task 14). Ist der Grant inzwischen
+entzogen, wird **nicht** rekonstruiert und `refused` zurueckgegeben — auch fuer `undoRun`:
+Dateien in ein Verzeichnis zurueckschreiben, fuer das die Erlaubnis fehlt, ist dasselbe
+Schreiben ohne Erlaubnis wie jedes andere. Ein Test muss das fuer **beide** Kanaele
+belegen.
+
 **Eine Quelle der Wahrheit:** der `CODING_ACCEPT_EDITS`-Handler ruft `applyPendingEdits` und erst bei `applied` danach `EditProposalStore.resolve(runId, true)`. Der Store führt keine eigene Schreibung aus, und `applyPendingEdits` verwaltet keine Vorschläge. Bei `refused` bleibt der Vorschlag stehen, damit der Nutzer den Grund sieht und der Agent nichts Falsches gelernt bekommt.
 
 Ablauf, abschliessend:
@@ -1016,6 +1172,17 @@ git commit -m "feat(coding): snapshot, write atomically, and undo a whole run"
 ---
 
 ### Task 12: `run_command` und die Wahrheit im README
+
+**Pflicht, nicht optional (Entscheid R36):** das README benennt ausdruecklich, dass der
+Coding-Modus **Minglys eigene** Werkzeuge abstuft und **nicht** die MCP-Server des
+Nutzers — die bleiben in jedem Modus verfuegbar, auch in `read-only`. Dazu beide Haelften
+der Wahrheit: die **Ergebnisse** jedes MCP-Werkzeugs laufen durch denselben Guard wie
+alles andere (Klassifikation, Residenz, PII, Zustimmung), die **Faehigkeit** eines
+Servers mit Schreibzugriff ist davon aber nicht erfasst. Entscheid von Holger am
+2026-11-19 (eigene MCP-Server sollen erreichbar bleiben); die Begruendung, warum eine
+Abstufung keine belastbare Grundlage hat, steht im Design-Dokument. Ein unausgesprochener
+Spalt in einem Modus, der `read-only` heisst, ist ein falsches Versprechen — deshalb
+Pflicht und nicht Fussnote.
 
 **Files:**
 - Create: `src/main/coding/command-allowlist.ts`, `src/main/coding/run-command.ts`
@@ -1165,11 +1332,83 @@ git commit -m "feat(coding): write an exportable audit entry per accepted change
 
 ### Task 14: Der einzelne Coding-Run in der Oberfläche
 
+**Pflicht, nicht optional (Entscheid R35):** `coding.projectPath` wird im **Main-Prozess**
+aus dem Grant zu `coding.directoryId` abgeleitet und **niemals** aus dem Renderer
+uebernommen. `CodingRunOptions.projectPath` ist heute ein blosser `string` vom Aufrufer,
+und der Store prueft nur den Modus, nicht den Pfad. Ein renderer-gelieferter Pfad wuerde
+den Arbeitsbereich und spaeter alle Lese- und Schreibpfade auf ein beliebiges Verzeichnis
+zeigen lassen — am Grant-System vorbei. Gleiche Klasse wie die Memory-Notiz
+`renderer-kann-verzeichnis-allowlist-selbst-erweitern`. Ein Test muss belegen, dass ein
+Run mit einem `projectPath`, der nicht zum Grant des `directoryId` passt, **abgelehnt**
+wird — nicht korrigiert, abgelehnt. Befund I-3 des Task-7-Reviews.
+
+**Pflicht, nicht optional (Entscheid R75):** eine Ablehnung aus dem Schreibpfad ist die
+**normale Antwort**, kein Fehler. Die IPC-Kanaele von Task 11 liefern
+`{ success, outcome }` mit `success: false`, wenn abgelehnt wurde, und `outcome.reason`
+traegt den Grund. Die Oberflaeche zeigt diesen Grund **an**, statt ihn als Fehler zu
+verschlucken oder durch einen generischen Text zu ersetzen. Die haeufigsten Gruende sind
+kein Defekt, sondern das Feature bei der Arbeit: der Grant wurde entzogen, der Modus
+gesenkt, die Datei hat sich seit dem Vorschlag geaendert, oder ein Ziel liegt in
+`.mingly/`. Wer den Grund nicht liest, sieht nur «ging nicht» und hat keine Chance, es zu
+beheben.
+
+**Pflicht, nicht optional (Entscheid R90): ohne Paket-Digest gibt es kein Accept.**
+Task 11 bindet die Abnahme an die Identitaet des **gezeigten** Pakets: `acceptEditsForRun`
+verlangt einen `expectedDigest` und **lehnt ohne ihn ab**. Das ist Absicht — ein Accept,
+das an den **Run** bindet statt an das **Set**, nimmt Vorschlaege ab, die der Mensch nie
+gesehen hat, und gibt solche frei, die nie geschrieben wurden (beides reproduziert).
+
+Dieser Task muss den Digest also **vom Main-Prozess zur Oberflaeche und zurueck** fuehren:
+zusammen mit der Liste der offenen Vorschlaege ausliefern und beim Abnahmeklick
+unveraendert zurueckgeben. **Solange das fehlt, funktioniert Accept gar nicht** — die
+Mechanik ist fertig, die Verdrahtung nicht.
+
+Und die Ablehnung bei Abweichung ist kein Fehler, sondern eine Aufforderung: die
+Vorschlaege haben sich seit der Anzeige geaendert und muessen **erneut geprueft** werden.
+Die Oberflaeche zeigt dann die neue Liste, statt die alte Abnahme zu wiederholen.
+
+**Pflicht, nicht optional (Entscheid R82): «nichts zu tun» ist keine Verweigerung.**
+Der Schreibpfad liefert drei verschiedene Gruende, und die Oberflaeche darf sie **nicht**
+gleich aussehen lassen:
+
+- *«kein Snapshot fuer diesen Run in diesem Verzeichnis»* heisst **es gibt nichts
+  rueckgaengig zu machen**. Ruhig darstellen; am besten den Knopf gar nicht anbieten.
+- *«keine Aufzeichnung»* heisst, dass dieser Snapshot **nicht von uns stammt** — er kann
+  mit dem Repository mitgeliefert worden sein. Das ist eine echte Verweigerung und
+  gehoert deutlich gezeigt.
+- *«das Manifest hat sich geaendert»* heisst dasselbe eine Stufe schaerfer: die
+  Aufzeichnung existiert, passt aber nicht.
+
+Ein Nutzer, dem «nichts zu tun» als Fehlschlag praesentiert wird, sucht, wo nichts ist;
+einer, dem eine echte Verweigerung als Achselzucken praesentiert wird, uebersieht sie.
+Im Code sind die Gruende bereits getrennt — diese Pflicht betrifft die Darstellung.
+
+**Pflicht, nicht optional (Entscheid R76):** `undoRun` liefert **zwei** Gruppen —
+wiederhergestellt und **uebersprungen, mit Grund**. Uebersprungen wird eine Datei, die
+sich nach dem Anwenden geaendert hat; ihr Inhalt wird bewusst **nicht** ueberschrieben,
+damit spaetere Arbeit des Nutzers nie verloren geht. Die Oberflaeche muss beide Gruppen
+zeigen: ein teilweises Rueckgaengig, das wie ein vollstaendiges aussieht, ist die eine
+Taeuschung, die ein Rettungsweg nie erzeugen darf.
+
+**Pflicht, nicht optional (Entscheid R64):** der Abnahme-Dialog zeigt das Merkmal
+`introducesHiddenCharacters` **auffaellig**, nicht als Fussnote. Ein Vorschlag darf
+Bidi-Overrides oder Nullbreiten-Zeichen enthalten, sodass der abgenommene Code anders
+**liest** als er **ist** — ein Trojan-Source-Angriff, der genau auf dieses Abnahmefenster
+zielt. Der gespeicherte Text bleibt byte-exakt, die **Anzeige** escapt solche Zeichen
+sichtbar als `<U+XXXX>`; die Oberflaeche muss zusaetzlich sagen, **dass** der Vorschlag
+sie einfuehrt. Ein Hinweis, den man uebersehen kann, ist hier kein Hinweis.
+
+**Pflicht, nicht optional (Entscheid R36):** die Modus-Beschriftung in der Oberflaeche
+sagt, dass die Stufe **Minglys eigene** Werkzeuge betrifft und nicht die MCP-Server des
+Nutzers. `read-only` darf nicht als «ohne jedes Risiko» auftreten, solange ein
+MCP-Server mit Schreibzugriff in jedem Modus erreichbar ist. Kurz, an der Stufe selbst,
+nicht in einem Hilfetext, den niemand oeffnet.
+
 Entscheid 1 zieht dieses Stück Oberfläche in Phase 1. Minimal gehalten: kein Workspace, keine Dateibaum-Ansicht, kein Editor — das ist Phase 2.
 
 **Files:**
 - Create: `src/renderer/components/CodingDiffDialog.tsx`, `src/renderer/components/CodingModePicker.tsx`, `src/renderer/stores/coding-store.ts`
-- Modify: `src/renderer/components/MessageInput.tsx` (Umschalter), `src/renderer/components/ChatLayout.tsx` (Dialoge einhängen), `src/renderer/components/SensitiveDataConsentDialog.tsx` (dritte Option)
+- Modify: `src/renderer/components/MessageInput.tsx` (Umschalter), `src/renderer/components/ChatLayout.tsx` (Dialoge einhängen), `src/renderer/components/SensitiveDataConsentDialog.tsx` (dritte Option), `src/renderer/components/FileAccessTab.tsx:57-61` (`getPermissionLabel` kennt `edit` nicht)
 - Test: `tests/unit/coding-store.test.ts`
 
 **Interfaces:**
@@ -1183,6 +1422,7 @@ Zu bauen:
 - **Diff-Dialog**: Paket eines Schritts, Datei und Zeilenzahlen erkennbar, Annehmen / Ablehnen-mit-Grund. Bei Ablehnung wird der Grund zum Tool-Ergebnis für den Agenten.
 - **Dritte Option im Zustimmungs-Dialog**: "diese Datei aus dem Kontext werfen und weiterlaufen", und nur die Optionen anzeigen, die `CodingConsentRequest.offers` nennt — insbesondere `anonymize` nicht, wenn es nicht trägt.
 - **Rückgängig** und **Audit-Export** als Schaltflächen am abgeschlossenen Run.
+- **`getPermissionLabel` muss `edit` nennen** (`FileAccessTab.tsx:57-61`). Die Kaskade prüft heute nur `read`, `create` und `read-create`; ein Grant mit `['read','create','edit']` fällt auf «Read + Create» und die gefährlichste Berechtigung ist unsichtbar. Aufgefallen beim Review von Task 3, dort bewusst nicht behoben (Datei lag ausserhalb) — hier ist es Pflicht, nicht Politur: ein Produkt, dessen Argument «ich kann nachweisen, was der Agent darf» ist, darf eine erteilte Schreibberechtigung nicht verschweigen. Test: ein Grant mit `edit` erzeugt ein Label, das `edit` enthält.
 
 - [ ] **Step 1: Store-Tests schreiben**
 
@@ -1230,12 +1470,20 @@ npx tsc --noEmit > /tmp/tc1.log 2>&1; echo "run1: $?"; npx tsc -p tsconfig.main.
 ```
 `npm run typecheck` verkettet mit `&&`; ein Fehler im zweiten Lauf verschwindet hinter dem ersten. Und: ein grüner Lauf kann **null Dateien** geprüft haben. Einmal mit einem absichtlichen Typfehler in `src/main/coding/path-policy.ts` provozieren und belegen, dass der zweite Lauf rot wird — dann zurücknehmen.
 
-- [ ] **A2: Volle Suite grün, ohne ausgelassene oder gelockerte Tests**
+- [ ] **A2: Volle Suite grün, kein von diesem Plan hinzugefügter Skip**
 
 ```bash
 npx vitest run > /tmp/suite.log 2>&1; echo $?
 ```
-Exit-Code **und** Log. Nie hinter einer Pipe: `$?` gehört dem letzten Glied, und eine Zusammenfassung kann eine Datei, die nicht importiert, als `PASS` zeigen. `grep -c "\.skip\|todo\|xit(" tests/unit/coding-*.test.ts tests/unit/agent-loop-guard.test.ts` muss `0` sein.
+Exit-Code **und** Log. Nie hinter einer Pipe: `$?` gehört dem letzten Glied, und eine Zusammenfassung kann eine Datei, die nicht importiert, als `PASS` zeigen.
+
+**Korrektur am 2026-11-19, gemessen statt angenommen:** die Suite hat **vor** diesem Plan schon 29 übersprungene Tests, alle umgebungsbedingt und keiner weggedrückt — `it.skipIf(process.platform === 'win32')` in `tests/unit/symlink-escape-real-fs.test.ts:288,307`, die 3-Layer-Phase in `tests/red-team/red-team.test.ts:487` (`run3Layer`), und `describe.skipIf(SKIP)` in `tests/integration/privacy-anonymizer-round-trip.test.ts:34` sowie `privacy-ner-integration.test.ts:135` (brauchen ein geladenes NER-Modell). Das ist **nicht prüfbar**, nicht «rot» — die ursprüngliche Formulierung «ohne ausgelassene Tests» war damit nie erfüllbar und hätte am Ende zur Lockerung des Kriteriums gedrängt, also genau zu dem, was es verhindern soll.
+
+Gemessen wird deshalb die **Differenz**, nicht der Absolutwert:
+```bash
+git diff origin/main..HEAD -- tests/ | grep -nE "^\+.*(\.skip|\.todo|xit\(|xdescribe)"
+```
+Muss leer sein. Zusätzlich darf die Zahl der übersprungenen Tests gegenüber `origin/main` nicht steigen.
 
 - [ ] **A3–A4: Der rote Test und seine Positivkontrolle** — `tests/unit/agent-loop-guard.test.ts`, Tests 1 und 2. Die Ausgabe des roten Laufs aus Task 4 Step 6 in die PR-Beschreibung.
 - [ ] **A5: Unbekannter Modus → `off`** — `tests/unit/coding-types.test.ts`

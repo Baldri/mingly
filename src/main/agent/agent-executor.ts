@@ -10,20 +10,44 @@
  * Safety Rails:
  * - Max steps per run (default: 5)
  * - Max tokens per run (default: 50000)
- * - Per-tool timeout (handled by ToolRegistry)
+ * - Per-tool timeout (owned by ToolRegistry, not configurable per run)
  * - Total run timeout (default: 120s)
  * - Cancellation via AbortController
  * - Step-by-step event emission for UI tracking
  */
-import { preflightGuard } from '../security/request-guard'
+import { postflightGuard, preflightGuard } from '../security/request-guard'
 import { getGuardDeps } from '../security/request-guard-deps'
 
 import { nanoid } from 'nanoid'
-import { getToolRegistry, type ToolRegistry } from './tool-registry'
+import { guardToolResults, type SanitizerFlag, type ToolResultOrigin } from './loop-guard'
+import { originForToolCall } from '../coding/read-tools'
+import {
+  buildConsentRequest,
+  getConsentBroker,
+  resolveConsentChoice,
+  type ConsentBroker,
+  type ConsentDecision,
+} from '../coding/consent-broker'
+import type { CodingRunOptions } from '../../shared/coding-types'
+import { getToolRegistry, type ToolContext, type ToolRegistry } from './tool-registry'
+import { StepPaths } from './step-paths'
+import { getEditProposalStore } from '../coding/edit-proposals'
+import { getRunDirectoryRegistry } from '../coding/run-directories'
+import {
+  currentPolicyVersion,
+  logCodingGuardBlocked,
+  logCodingGuardFlagged,
+  markGuardBlocked,
+  markGuardRedirected,
+  recordRunAuditContext
+} from '../coding/coding-audit'
+import { getCodingModeStore } from '../coding/coding-mode-store'
+import { ensureProjectWorkspace } from '../coding/project-workspace'
 import { getAgentContextManager } from './agent-context-manager'
 import { getClientManager } from '../llm-clients/client-manager'
 import type { ToolUseResponse } from '../llm-clients/client-manager'
 import { getCircuitBreaker } from '../security/circuit-breaker'
+import { AGENT_RUN_TIMEOUT_MS } from '../../shared/types'
 import type {
   Message,
   AgentConfig,
@@ -39,8 +63,10 @@ import type {
 const DEFAULT_AGENT_CONFIG: AgentConfig = {
   maxSteps: 5,
   maxTokensPerRun: 50000,
-  toolTimeoutMs: 15000,
-  runTimeoutMs: 120000,
+  // From shared, because mingly_run_command's cumulative command budget is
+  // derived from the same constant: this ceiling ends the run, so a command
+  // budget above it could never be spent (see AGENT_RUN_TIMEOUT_MS).
+  runTimeoutMs: AGENT_RUN_TIMEOUT_MS,
   enableProgressRecitation: true,
   enableErrorPreservation: true
 }
@@ -60,13 +86,26 @@ export type AgentEventHandler = (event: AgentEvent) => void
 
 // ── AgentExecutor ──────────────────────────────────────────────
 
+/**
+ * Collaborators an executor may be built with.
+ *
+ * Only the consent broker so far: it owns a dialog, and a test that drives the
+ * pause must be able to answer — or deliberately not answer — without a
+ * renderer on the other end of the IPC.
+ */
+export interface AgentExecutorDeps {
+  consentBroker?: ConsentBroker
+}
+
 export class AgentExecutor {
   private config: AgentConfig
   private eventHandlers: AgentEventHandler[] = []
   private activeRuns: Map<string, AbortController> = new Map()
+  private readonly consentBroker: ConsentBroker
 
-  constructor(config?: Partial<AgentConfig>) {
+  constructor(config?: Partial<AgentConfig>, deps?: AgentExecutorDeps) {
     this.config = { ...DEFAULT_AGENT_CONFIG, ...config }
+    this.consentBroker = deps?.consentBroker ?? getConsentBroker()
   }
 
   // ── Configuration ────────────────────────────────────────────
@@ -123,13 +162,21 @@ export class AgentExecutor {
    * @param model - Model name
    * @param conversationHistory - Previous messages (optional context)
    * @param systemPrompt - System prompt (optional)
+   * @param coding - Coding-run context (optional). Left out by the comparison
+   *                 and subagent callers, which therefore get no coding run.
+   *                 It selects the coding tool surface (via ToolContext) and the
+   *                 project workspace that externalized results go to. The mode
+   *                 it claims must equal the one the CodingModeStore holds for
+   *                 its directory, otherwise the run ends: the renderer cannot
+   *                 hand itself a mode the store does not give.
    */
   async execute(
     task: string,
     provider: string,
     model: string,
     conversationHistory: Message[] = [],
-    systemPrompt?: string
+    systemPrompt?: string,
+    coding?: CodingRunOptions
   ): Promise<AgentRun> {
     const runId = nanoid()
     const startTime = Date.now()
@@ -175,10 +222,25 @@ export class AgentExecutor {
     }
     provider = preflight.provider
 
-    // Run timeout
-    const runTimeout = setTimeout(() => {
-      abortController.abort()
-    }, this.config.runTimeoutMs)
+    // Run timeout.
+    //
+    // Re-armable, because it is SUSPENDED while a consent dialog is open: the
+    // run gets `runTimeoutMs` of its own work, not of the user's thinking. A
+    // dialog that kills the run would teach the user to click without reading,
+    // which is the opposite of what asking is for.
+    let runTimeout: ReturnType<typeof setTimeout> | undefined
+    /** Total wall time this run spent waiting for a human. */
+    let consentWaitMs = 0
+    const armRunTimeout = (): void => {
+      const spentWorking = Date.now() - startTime - consentWaitMs
+      const remaining = this.config.runTimeoutMs - spentWorking
+      // A non-positive remainder means the budget really is used up outside the
+      // dialog: the timer then fires on the next tick rather than never.
+      runTimeout = setTimeout(() => {
+        abortController.abort()
+      }, Math.max(0, remaining))
+    }
+    armRunTimeout()
 
     try {
       // Verify provider supports tool-use
@@ -189,10 +251,41 @@ export class AgentExecutor {
         )
       }
 
+      // Coding run: verify the claimed mode against the store, then create the
+      // project workspace ONCE. Everything below consumes this single instance.
+      // Fail closed: a store that throws, an unknown directory (reads as `off`)
+      // or a workspace that cannot be created all end the run before any model
+      // call, via the catch below.
+      let toolCtx: ToolContext | undefined
+      let contextDir: string | undefined
+      if (coding) {
+        const storedMode = getCodingModeStore().getMode(coding.directoryId)
+        if (coding.mode !== storedMode) {
+          throw new Error(
+            `Coding mode mismatch: run claims "${String(coding.mode)}" but the stored mode is "${storedMode}"`
+          )
+        }
+        // The main process remembers which directory this run belongs to; the
+        // accept and undo handlers validate the renderer's claim against it.
+        getRunDirectoryRegistry().record(runId, coding.directoryId)
+        // What the apply will need for its audit entries, which it cannot know
+        // later: the provider and model this run acts under (after preflight, so
+        // a fallback is the one recorded) and, below, what the guard did.
+        recordRunAuditContext(runId, { provider, model })
+        // Mode `off` is a plain run: no workspace (creating one could even
+        // throw in a project where a plain run works), no tool context. The
+        // mismatch check above still applies to it.
+        if (storedMode !== 'off') {
+          const workspace = await ensureProjectWorkspace(coding.projectPath, runId)
+          contextDir = workspace.contextDir
+          toolCtx = { coding, workspace }
+        }
+      }
+
       // Get available tools
       const toolRegistry = getToolRegistry()
       toolRegistry.refreshMCPTools()
-      const tools = toolRegistry.getAvailableTools()
+      const tools = toolRegistry.getAvailableTools(toolCtx)
 
       if (tools.length === 0) {
         throw new Error(
@@ -240,6 +333,21 @@ export class AgentExecutor {
           run.totalTokens.output += llmResponse.tokens.output
         }
 
+        // Post-flight output guardrails — every LLM turn, not just the last:
+        // an intermediate turn is what the next tool call is built from.
+        // Tokens are counted first, so a blocked turn still shows its cost.
+        const postflight = postflightGuard(llmResponse.text, systemPrompt ?? '', getGuardDeps())
+        if (!postflight.ok) {
+          // `blocking` is the guard's own answer to which severities blocked.
+          // Re-deriving it here would be a second answer that can drift from
+          // the one that actually ended the run.
+          run.status = 'failed'
+          run.error =
+            'Output blocked by guardrails: ' +
+            postflight.blocking.map((v) => `${v.type} (${v.severity})`).join(', ')
+          break
+        }
+
         // Build step
         const step: AgentStep = {
           stepNumber: stepNum,
@@ -261,11 +369,188 @@ export class AgentExecutor {
         }
 
         // Execute tool calls
-        const rawToolResults = await toolRegistry.executeToolCalls(llmResponse.toolCalls)
+        // One path sink per step, closed once the origins are built: a late write
+        // from a straggler cannot reach this step's origins or the next step's.
+        const stepPaths = new StepPaths()
+        const stepCtx: ToolContext | undefined = toolCtx
+          ? { ...toolCtx, resolvedPaths: stepPaths, runId, stepNumber: stepNum }
+          : undefined
+        const rawToolResults = await toolRegistry.executeToolCalls(llmResponse.toolCalls, stepCtx)
 
-        // Task 4: File-based context — externalize large tool results to temp files
+        // The guard inside the loop. Tool results are content the AGENT
+        // collected; the pre-flight guard above never saw them, yet every
+        // later sendMessageWithTools call ships them to the provider.
+        //
+        // Runs BEFORE compaction: compaction keeps a raw 200-character preview
+        // of the result, and that preview is the part that travels. Checking
+        // afterwards would check what no longer goes out and pass what does.
+        //
+        // Fail closed on `blocked`: the run ends with the reason, like the
+        // pre-flight above. The step is deliberately not pushed and no
+        // step_complete is emitted — blocked content must not travel onwards to
+        // the renderer either. A `consent` finding is the one outcome that does
+        // not end the run: it is put to the user below.
+        // originForToolCall fills ToolResultOrigin.filePath from the path the tool
+        // RESOLVED and read, so the consent dialog and the withheld notice name
+        // the file that was read, not the spelling the model wrote.
+        // Matched BY INDEX: executeToolCalls returns results in call order, and the
+        // provider's call id may repeat or be empty, so it identifies nothing.
+        const origins = rawToolResults.map((_r, index): ToolResultOrigin => {
+          const call = llmResponse.toolCalls[index]
+          if (!call) return { toolName: 'unknown' }
+          return originForToolCall(call, stepPaths.get(String(index)))
+        })
+        stepPaths.close()
+        const guardCtx = { provider, model, conversationId: run.conversationId }
+
+        // A `consent` outcome settles ONE result, then the guard continues over
+        // the rest of the step from the next index. The loop is bounded: every
+        // round moves `guardFrom` forward by at least one, and the dispatch
+        // phase inside the guard always sees the whole, final step content.
+        // What the sanitizer rewrote but the loop forwarded as it was. The
+        // content is NOT replaced on purpose: mingly_edit_file matches its
+        // `oldText` against the real file, so a proposal built from normalised
+        // text would be refused as "not found". The difference from the chat
+        // path, which does send the cleaned text, is therefore recorded rather
+        // than removed — one entry per guard pass that found something, and
+        // never the finding itself. Non-coding runs have no project to record
+        // it against, like coding.guard_blocked above.
+        //
+        // The indexes are collected for EVERY run type, because the step panel
+        // shows every run; only the audit entry is coding-only.
+        const cleanedIndexes = new Set<number>()
+        const noteSanitizerFlags = (flags: readonly SanitizerFlag[]): void => {
+          for (const flag of flags) cleanedIndexes.add(flag.index)
+          if (!coding || flags.length === 0) return
+          try {
+            logCodingGuardFlagged(runId, {
+              projectPath: coding.projectPath,
+              provider,
+              model,
+              policyVersion: currentPolicyVersion(),
+              types: [...new Set(flags.flatMap((flag) => flag.types))]
+            })
+          } catch {
+            // A failing audit store does not change what the guard decided.
+          }
+        }
+
+        let guardFrom = 0
+        let loopGuard = await guardToolResults(
+          rawToolResults,
+          origins,
+          guardCtx,
+          getGuardDeps(),
+          guardFrom,
+        )
+        noteSanitizerFlags(loopGuard.flagged)
+
+        while (loopGuard.kind === 'consent') {
+          // Already aborted — the timeout can fire between the tool call and
+          // here. Asking now would be a dialog for a dead run, and the abort
+          // listener below would never fire for a signal that is already
+          // aborted, so the run would wait for an answer forever.
+          if (abortController.signal.aborted) {
+            run.status = 'cancelled'
+            break
+          }
+
+          const index = loopGuard.index
+          const request = buildConsentRequest({
+            runId,
+            stepNumber: stepNum,
+            origin: loopGuard.origin,
+            scan: loopGuard.scanResult,
+          })
+
+          // Timeout off for the duration of the question, then re-armed with
+          // what is left of the run's OWN time.
+          clearTimeout(runTimeout)
+          const askedAt = Date.now()
+          // An aborted run must not leave the dialog pending: the broker
+          // settles it to 'drop-file' rather than let the promise hang.
+          const onAbort = (): void => this.consentBroker.cancel(runId)
+          abortController.signal.addEventListener('abort', onAbort, { once: true })
+
+          // The fail-closed default, in place before anything can throw.
+          let decision: ConsentDecision = { choice: 'drop-file', decidedBy: 'system' }
+          try {
+            decision = await this.consentBroker.askWithSource(request)
+          } finally {
+            abortController.signal.removeEventListener('abort', onAbort)
+            consentWaitMs += Date.now() - askedAt
+            armRunTimeout()
+          }
+
+          if (abortController.signal.aborted) {
+            run.status = 'cancelled'
+            break
+          }
+
+          const resolution = await resolveConsentChoice({
+            choice: decision.choice,
+            decidedBy: decision.decidedBy,
+            runId,
+            origin: loopGuard.origin,
+            content: rawToolResults[index].content,
+          })
+          rawToolResults[index] = { ...rawToolResults[index], content: resolution.content }
+          // Anonymised or withheld content is a redirect worth a reviewer's eye;
+          // content the user chose to send as it was is not.
+          if (coding && resolution.effect !== 'sent') markGuardRedirected(runId)
+
+          guardFrom = index + 1
+          loopGuard = await guardToolResults(
+            rawToolResults,
+            origins,
+            guardCtx,
+            getGuardDeps(),
+            guardFrom,
+          )
+          noteSanitizerFlags(loopGuard.flagged)
+        }
+
+        // The cancellation inside the loop above has to leave the ReAct loop too.
+        if (run.status === 'cancelled') break
+
+        if (loopGuard.kind === 'blocked') {
+          run.status = 'failed'
+          run.error = loopGuard.reason
+          if (coding && toolCtx) {
+            // Its own audit action. The reason is NOT passed on: it names the
+            // origin and can quote the finding.
+            markGuardBlocked(runId)
+            try {
+              logCodingGuardBlocked(runId, {
+                projectPath: coding.projectPath,
+                provider,
+                model,
+                policyVersion: currentPolicyVersion()
+              })
+            } catch {
+              // A failing audit store does not change what the guard decided.
+            }
+          }
+          break
+        }
+        // `provider` is deliberately NOT reassigned from the guard: a budget or
+        // routing fallback inside the loop is blocked above, for every run type.
+        // Adopting one would send content that guardInput only ever checked
+        // against the previous provider.
+
+        // Task 4: File-based context — externalize large tool results to files.
+        // A coding run externalizes INTO the project workspace (`contextDir`),
+        // so project content never reaches os.tmpdir(); every other run keeps
+        // the temp directory. `contextDir` stays undefined only for non-coding
+        // runs, because a coding run without a workspace has already ended above.
         const contextManager = getAgentContextManager()
-        const toolResults = rawToolResults.map((r) => contextManager.compactToolResult(runId, r))
+        const toolResults = rawToolResults.map((r, index) => {
+          const compacted = contextManager.compactToolResult(runId, r, contextDir)
+          // The flag travels with the result the renderer shows, not with the
+          // content: the step panel renders raw text and now says, next to the
+          // result it concerns, that the sanitizer had something to clean.
+          return cleanedIndexes.has(index) ? { ...compacted, sanitizerCleaned: true as const } : compacted
+        })
         step.toolResults = toolResults
 
         run.steps.push(step)
@@ -321,6 +606,18 @@ export class AgentExecutor {
       clearTimeout(runTimeout)
       this.activeRuns.delete(runId)
       circuitBreaker.endAgentRun(runId)
+      // Proposals: a run that was cancelled or failed was abandoned, so what it
+      // left pending is dropped and can never be accepted later. A run that
+      // completed (or ran out of steps) delivered its package for review; it is
+      // kept, bounded, until the user resolves it.
+      try {
+        getEditProposalStore().endRun(
+          runId,
+          run.status === 'cancelled' || run.status === 'failed' ? 'abandoned' : 'finished'
+        )
+      } catch {
+        // Ignore cleanup errors
+      }
       run.durationMs = Date.now() - startTime
 
       // Task 4: Clean up externalized temp files after run completion
@@ -396,7 +693,7 @@ export class AgentExecutor {
    * Format:
    *   [Progress: Step 2/5]
    *   ✅ Step 1: search_docs → found 3 results
-   *   ✅ Step 2: read_file → read 200 lines
+   *   ✅ Step 2: mingly_read_file → read 200 lines
    *   ⏳ Steps remaining: 3
    */
   private buildProgressRecitation(run: AgentRun, maxSteps: number): string {

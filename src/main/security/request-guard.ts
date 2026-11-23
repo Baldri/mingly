@@ -41,11 +41,27 @@ const INJECTION_BLOCK_SCORE = 80
 
 // ── Phase 1: input guards (injection + sensitive-data/consent) ─────────
 
+/**
+ * What the sanitizer said about the text it was given, on the two outcomes that
+ * do NOT end the call.
+ *
+ * `sanitizedText` is the cleaned string. Whether a caller forwards it is the
+ * caller's decision and the two differ on purpose: the chat path sends the
+ * cleaned text, the agent loop forwards the original bytes because
+ * mingly_edit_file matches its `oldText` against the real file. `warnings`
+ * exists so the loop path can RECORD that difference instead of leaving it
+ * silent — it never carries a found value, only the type names.
+ */
+export interface SanitizerReport {
+  sanitizedText?: string
+  warnings?: { type: string; severity: string }[]
+}
+
 export type InputGuardOutcome =
-  | { kind: 'ok'; sanitizedText?: string }
+  | ({ kind: 'ok' } & SanitizerReport)
   | { kind: 'injection'; riskScore: number; warnings: { type: string; severity: string }[] }
   | { kind: 'sensitive-denied'; reason: string; scanResult: SensitiveScan }
-  | { kind: 'consent'; scanResult: SensitiveScan; request: unknown; response: UploadDecision }
+  | ({ kind: 'consent'; scanResult: SensitiveScan; request: unknown; response: UploadDecision } & SanitizerReport)
 
 export async function guardInput(input: PreflightInput, deps: GuardDeps): Promise<InputGuardOutcome> {
   const texts = input.texts.filter((t) => typeof t === 'string')
@@ -54,6 +70,7 @@ export async function guardInput(input: PreflightInput, deps: GuardDeps): Promis
 
   const san = deps.sanitize(last)
   const sanitizedText = san.sanitized
+  const warnings = san.warnings
   if (!san.safe && san.riskScore >= INJECTION_BLOCK_SCORE) {
     return { kind: 'injection', riskScore: san.riskScore, warnings: san.warnings }
   }
@@ -66,12 +83,15 @@ export async function guardInput(input: PreflightInput, deps: GuardDeps): Promis
         return { kind: 'sensitive-denied', reason: perm.reason ?? 'Sensitive data upload denied.', scanResult }
       }
       if (perm.requiresUserConsent) {
-        return { kind: 'consent', scanResult, request: perm.request, response: perm }
+        // The report travels with a consent outcome too: that result is still
+        // forwarded (as it was, anonymised or withheld) and the caller moves
+        // past it, so a report left out here would be lost for good.
+        return { kind: 'consent', scanResult, request: perm.request, response: perm, sanitizedText, warnings }
       }
     }
   }
 
-  return { kind: 'ok', sanitizedText }
+  return { kind: 'ok', sanitizedText, warnings }
 }
 
 // ── Phase 2: dispatch guards (budget + routing) ────────────────────────
@@ -175,11 +195,19 @@ export async function preflightGuard(input: PreflightInput, deps: GuardDeps): Pr
 
 export interface PostflightResult {
   ok: boolean
+  /** Everything the scan returned, blocking or not. */
   violations: { type: string; severity: string; description: string }[]
+  /**
+   * The subset that made `ok` false. This is the single answer to "which
+   * severity blocks": a caller that reports WHY a run ended reads this instead
+   * of filtering `violations` by severity again, because two independent
+   * answers drift apart and then the message and the behaviour disagree.
+   */
+  blocking: { type: string; severity: string; description: string }[]
 }
 
 export function postflightGuard(output: string, systemPrompt: string, deps: GuardDeps): PostflightResult {
   const scan = deps.scanOutput(output, systemPrompt)
   const blocking = scan.violations.filter((v) => v.severity === 'critical' || v.severity === 'high')
-  return { ok: blocking.length === 0, violations: scan.violations }
+  return { ok: blocking.length === 0, violations: scan.violations, blocking }
 }

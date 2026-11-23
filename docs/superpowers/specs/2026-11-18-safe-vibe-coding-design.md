@@ -281,9 +281,32 @@ getrennt.
 | Stufe | Lesen | Schreiben | Befehle | Gedacht fuer |
 |---|---|---|---|---|
 | `off` | — | — | — | Standard. Mingly ist, was es heute ist. |
-| `read-only` | ja, gefiltert | — | — | "Erklaer mir diese Codebase", ohne jedes Risiko |
+| `read-only` | ja, gefiltert | — | — | "Erklaer mir diese Codebase", ohne dass Mingly selbst schreibt |
 | `propose` | ja | nur als Diff zur Abnahme | — | Der Normalfall fuer B |
 | `propose-run` | ja | nur als Diff zur Abnahme | Allowlist, Ausgabe gefiltert | Tests laufen lassen, Build pruefen |
+
+**Worueber diese Tabelle eine Aussage macht — und worueber nicht.** Die Spalten
+beschreiben **Minglys eigene** Coding-Werkzeuge. Sie sind keine Aussage ueber die
+MCP-Server, die der Nutzer eingerichtet hat: die bleiben in **jedem** Modus verfuegbar,
+auch in `read-only`.
+
+Das ist ein Entscheid, nicht ein Versehen (Holger, 2026-11-19): eigene MCP-Server sind
+eine bewusst eingerichtete Faehigkeit, und sie im Coding-Modus abzuschalten wuerde genau
+dort stoeren, wo man sie am haeufigsten braucht.
+
+Was dadurch **nicht** faellt: jedes MCP-Werkzeug-Ergebnis laeuft durch denselben
+Loop-Guard wie jedes andere selbst eingesammelte Ergebnis — Klassifikation,
+Residenz-Politik, PII-Erkennung, Zustimmung. Der Inhaltsabfluss ist also geregelt.
+Was **offen** bleibt, ist die **Faehigkeit**: ein MCP-Server mit Schreibzugriff kann
+schreiben, auch in `read-only`, und ohne den Vorschlag-und-Abnahme-Weg. Das laesst sich
+nicht sinnvoll abstufen, weil MCP-Server beliebige externe Prozesse mit opaker Semantik
+sind — ein Werkzeug namens `search` kann schreiben, eine Einteilung in «lesend» und
+«schreibend» haette keine belastbare Grundlage.
+
+**Diese Grenze gehoert in das README und in die Modus-Beschriftung der Oberflaeche**, nicht
+nur in dieses Dokument. Ein unausgesprochener Spalt in einem Modus, der `read-only`
+heisst, ist ein falsches Versprechen. **Phase 2:** Vertrauensstufe oder Freigabe **pro
+MCP-Server**, damit die Abstufung eine Grundlage bekommt.
 
 Entschieden:
 
@@ -302,6 +325,11 @@ hergibt** — ein Werkzeug, das die Stufe nicht erlaubt, wird gar nicht erst in
 `getAvailableTools()` angeboten. Begruendung: ein Werkzeug anzubieten und dann zu
 verweigern lehrt das Modell, es trotzdem zu versuchen, und fuellt den Kontext mit
 Fehlern.
+
+Aus derselben Regel folgt: ist das Gate eines Built-ins geschlossen, wird auch ein
+**gleichnamiges** MCP-Werkzeug nicht angeboten. Sonst waere der Name doch im Angebot und
+die Ausfuehrung muesste ihn verweigern — und ein MCP-Werkzeug koennte ein gegatetes
+Built-in beschatten.
 
 - `list_files(pattern?)` — Dateibaum des Projekts. Respektiert `.gitignore`.
 - `read_file(path, offset?, limit?)` — liest **nur** innerhalb des Projekt-Grants,
@@ -403,6 +431,77 @@ ihn selbst in den Chat — dort greift der normale Chat-Guard samt Zustimmung, u
 Entscheidung ist eine bewusste Handlung des Nutzers statt ein Klick in einem Dialog, den
 der Agent ausgeloest hat. Eine ueberschreibbare Blockliste waere ausserdem genau die
 Klickstrecke, die unter Anti-Ziele steht.
+
+**Was der Inhalts-Guard NICHT faengt (gemessen, 2026-11-19).** Dieses Dokument sagt an
+mehreren Stellen, dass der Guard nachfragt, wenn etwas Sensitives im Inhalt steht. Das
+gilt nur fuer Muster, die der Detektor **kennt**, und seine Liste ist schmaler als der
+Satz vermuten laesst. Gemessen an `sensitive-data-detector.ts` (vollstaendige
+Musterliste, Positivkontrolle im selben Lauf) faengt er **nicht**:
+
+- einen base64-`auth`-Block, wie `.docker/config.json` ihn traegt,
+- ein `private_key`-Feld, wie in einem GCP-Service-Account,
+- einen npm- oder yarn-Token,
+- einen **PEM-Header**,
+- ein **JWT**,
+- einen Stripe-**`sk_live_`**-Key: das Muster `\b(sk|pk|api)[-_]?[a-zA-Z0-9]{20,}\b`
+  scheitert, weil der Unterstrich in `sk_live_...` die Zeichenklasse bricht.
+
+Er faengt dagegen `password =`-Zuweisungen, E-Mails, Telefonnummern, Kreditkarten,
+AWS-Keys, `sk-`/`sk-ant-`-Keys, private IP-Adressen und `/Users`-Pfade.
+
+Zwei Folgerungen, die im ganzen Dokument mitzulesen sind. Erstens: **die Blockliste
+traegt mehr Gewicht als der Guard**, weil sie nach dem **Namen** entscheidet und damit
+auch Inhalt erfasst, den kein Muster kennt — darum ist sie absolut und darum wurde sie
+nach Familien statt nach Instanzen erweitert. Zweitens, und unangenehmer: **ein Ergebnis,
+dessen einzige ERKANNTE Fundstelle anonymisierbar ist, kann ein unerkanntes Geheimnis
+durch «anonymisiert senden» tragen** — eine Service-Account-Datei wird ueber ihre
+`client_email` gefunden, der Dialog bietet Anonymisieren an, die Adresse wird ersetzt,
+die Nachpruefung findet nichts mehr, und der `private_key` reist mit. Solange das so ist,
+darf kein Satz in diesem Dokument den Guard als zweite vollwertige Schicht hinter der
+Blockliste darstellen.
+
+**Ein Korrelationsschluessel fuer eine sicherheitsrelevante Anzeige wird LOKAL
+erzeugt.** Der Zustimmungs-Dialog nennt die Datei, ueber die ein Mensch entscheidet, und
+dieser Pfad muss dem Ergebnis zugeordnet werden, zu dem er gehoert. Der Schluessel dafuer
+darf nicht von aussen kommen.
+
+Diese Regel steht hier, weil derselbe Mechanismus sie dreimal gebrochen hat: zuerst war
+der Schluessel die vom Modell geschriebene **Pfad-Schreibweise**, dann wurde der Eintrag
+**beim ersten Nachschlagen geloescht** (womit jedes Paging seinen Pfad verlor), dann war
+der Schluessel die **Aufruf-Id des Providers** — die bei Anthropic direkt aus der Antwort
+stammt und bei einem OpenAI-kompatiblen oder lokalen Anbieter auch **leer** sein kann,
+womit alle Aufrufe eines Schritts auf einen Schluessel kollidieren. Jedes Mal kam der
+Schluessel von aussen, und jedes Mal sah der naechste Schluessel wie die Loesung aus.
+
+Also: der Executor vergibt je Aufruf eine eigene, lokal erzeugte Kennung und verwendet
+sie fuer beide Seiten der Zuordnung. Eine Provider-Id darf mitlaufen, zum Protokollieren,
+aber nichts Sicherheitsrelevantes haengt an ihr. Spaete Schreibzugriffe aus einem
+abgeschlossenen Schritt werden verworfen.
+
+**Was nur vom Modelltext abhaengt, darf unterschiedlich antworten; was vom Dateisystem
+abhaengt, muss identisch antworten.** Die feste Pruefreihenfolge dient dem Satz, dass
+eine Ablehnung nichts ueber das Dateisystem verraet — nicht der Reihenfolge an sich. Eine
+Pruefung, die allein auf der Zeichenkette des Modells arbeitet (etwa die Endung des
+**angefragten** Namens), darf deshalb frueher laufen und darf eine eigene Begruendung
+nennen. Alles, was einen Zustand auf der Platte beruehrt — existiert der Pfad, zeigt der
+Link nach draussen, ist die Datei lesbar —, muss **dieselbe** Antwort geben, sonst wird
+die Ablehnung zum Orakel. Gefunden, weil ein toter Link und ein Link auf eine existierende
+Datei ausserhalb des Grants unterschiedlich antworteten: ein Bit pro Host-Pfad, erfragbar
+mit gepflanzten Links.
+
+**Welche Endungen lesbar sind — ein Entscheid, nicht ein Nebeneffekt (2026-11-19).** Die
+Leseliste enthaelt auch `conf`, `cfg`, `ini` und `properties`. Solche Dateien enthalten
+gelegentlich ein Passwort, und sie sind trotzdem lesbar. Der Unterschied zur `.env` ist
+der **Zweck**: eine `.env` existiert, um Geheimnisse zu halten — sie wird deshalb nie
+gelesen, ohne Dialog und ohne Ausnahme. Eine Konfigurationsdatei existiert, um zu
+konfigurieren, und enthaelt manchmal ein Geheimnis — sie wird gelesen, und findet der
+Inhalts-Guard darin eine Zugangsdaten-Fundstelle, fragt er nach Zustimmung. Die
+Blockliste ist die Schicht fuer «nie», der Guard die Schicht fuer «kommt darauf an».
+
+Dateien **ohne** Endung (`Dockerfile`, `Makefile`, `.gitignore` und aehnliche) stehen auf
+einer eigenen Namensliste, weil eine reine Endungsliste sie alle ablehnen wuerde — und
+das sind genau die Dateien, die jemand braucht, der eine Codebase erklaert bekommen
+will.
 
 ---
 

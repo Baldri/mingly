@@ -201,7 +201,6 @@ export class AgentComparisonService {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 50000,
-      toolTimeoutMs: 15000,
       runTimeoutMs: 120000
     })
 

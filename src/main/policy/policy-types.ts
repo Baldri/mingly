@@ -17,9 +17,9 @@ export const SENSITIVITY_ORDER: Record<PIISensitivity, number> = {
   critical: 3
 }
 
-/** True when `level` reaches or exceeds `threshold`. */
-export function atLeast(level: PIISensitivity, threshold: PIISensitivity): boolean {
-  return SENSITIVITY_ORDER[level] >= SENSITIVITY_ORDER[threshold]
+/** True when `level` reaches or exceeds `threshold` on the given order table. */
+export function atLeast<T extends string>(order: Record<T, number>, level: T, threshold: T): boolean {
+  return order[level] >= order[threshold]
 }
 
 /** Highest level in the list; `low` when the list is empty. */

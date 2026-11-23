@@ -67,7 +67,7 @@ vi.mock('../../src/main/agent/tool-registry', () => ({
         }
       },
       {
-        name: 'read_file',
+        name: 'mingly_read_file',
         description: 'Read a file',
         inputSchema: {
           type: 'object',
@@ -119,7 +119,6 @@ describe('Task 1: Progress Recitation', () => {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000,
       enableProgressRecitation: true
     })
@@ -136,7 +135,7 @@ describe('Task 1: Progress Recitation', () => {
       // Step 2: another tool call
       {
         text: 'Reading file...',
-        toolCalls: [{ id: 'tc-2', name: 'read_file', arguments: { path: '/tmp/data.txt' } }],
+        toolCalls: [{ id: 'tc-2', name: 'mingly_read_file', arguments: { path: '/tmp/data.txt' } }],
         done: false,
         stopReason: 'tool_use',
         tokens: { input: 200, output: 40 }
@@ -163,7 +162,7 @@ describe('Task 1: Progress Recitation', () => {
     expect(progressMsg).toBeDefined()
     expect(progressMsg!.content).toContain('Step 2/5')
     expect(progressMsg!.content).toContain('search_docs')
-    expect(progressMsg!.content).toContain('read_file')
+    expect(progressMsg!.content).toContain('mingly_read_file')
     expect(progressMsg!.content).toContain('Steps remaining:')
     expect(progressMsg!.content).toContain('Do not repeat completed steps')
   })
@@ -172,7 +171,6 @@ describe('Task 1: Progress Recitation', () => {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000,
       enableProgressRecitation: false
     })
@@ -216,7 +214,6 @@ describe('Task 1: Progress Recitation', () => {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000,
       enableProgressRecitation: true
     })
@@ -263,7 +260,6 @@ describe('Task 1: Progress Recitation', () => {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000,
       enableProgressRecitation: true
     })
@@ -326,7 +322,6 @@ describe('Task 2: Error Preservation', () => {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000,
       enableErrorPreservation: true
     })
@@ -375,7 +370,6 @@ describe('Task 2: Error Preservation', () => {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000,
       enableErrorPreservation: false
     })
@@ -417,7 +411,6 @@ describe('Task 3: KV-Cache Optimization', () => {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000
     })
 
@@ -449,7 +442,6 @@ describe('Task 3: KV-Cache Optimization', () => {
     const executor = new AgentExecutor({
       maxSteps: 5,
       maxTokensPerRun: 100000,
-      toolTimeoutMs: 5000,
       runTimeoutMs: 30000
     })
 
@@ -532,7 +524,7 @@ describe('Task 4: AgentContextManager', () => {
     const compacted = manager.compactToolResult('run-1', result)
     expect(compacted.content).toContain('[Large result externalized to file:')
     expect(compacted.content).toContain('200 chars')
-    expect(compacted.content).toContain('read_file')
+    expect(compacted.content).toContain('mingly_read_file')
   })
 
   it('should NOT externalize error results even if large', () => {
@@ -596,6 +588,113 @@ describe('Task 4: AgentContextManager', () => {
 
     const size = manager.getExternalizedSize('run-1')
     expect(size).toBe(200)
+  })
+
+  describe('target dir (coding mode)', () => {
+    let projectDir: string
+    let contextDir: string
+
+    beforeEach(() => {
+      projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-ctx-project-'))
+      contextDir = path.join(projectDir, '.mingly', 'context', 'run-1')
+      fs.mkdirSync(contextDir, { recursive: true })
+    })
+
+    afterEach(() => {
+      fs.rmSync(projectDir, { recursive: true, force: true })
+    })
+
+    const big: AgentToolResult = { toolCallId: 'tc-1', content: 'X'.repeat(200), isError: false }
+
+    function pathFrom(content: string): string {
+      const match = content.match(/externalized to file: (.+?)\]/)
+      expect(match).not.toBeNull()
+      return match![1]
+    }
+
+    it('writes externalized results into the project when a target dir is given', () => {
+      const compacted = manager.compactToolResult('run-1', big, contextDir)
+      const filepath = pathFrom(compacted.content)
+      expect(filepath.startsWith(contextDir + path.sep)).toBe(true)
+      expect(fs.readFileSync(filepath, 'utf-8')).toBe(big.content)
+      expect(fs.statSync(filepath).mode & 0o777).toBe(0o600)
+      // nothing leaked into the temp dir
+      expect(fs.existsSync(tempDir) ? fs.readdirSync(tempDir) : []).toEqual([])
+    })
+
+    it('still uses the temp dir when no target is given', () => {
+      const compacted = manager.compactToolResult('run-1', big)
+      const filepath = pathFrom(compacted.content)
+      expect(filepath.startsWith(tempDir + path.sep)).toBe(true)
+      expect(fs.readdirSync(contextDir)).toEqual([])
+    })
+
+    it('tracks target-dir files so cleanup removes them and size is reported', () => {
+      const compacted = manager.compactToolResult('run-1', big, contextDir)
+      const filepath = pathFrom(compacted.content)
+      expect(manager.getExternalizedSize('run-1')).toBe(200)
+      manager.cleanup('run-1')
+      expect(fs.existsSync(filepath)).toBe(false)
+    })
+
+    it('keeps the content in context and writes nothing when the target is relative', () => {
+      const compacted = manager.compactToolResult('run-1', big, 'relative/dir')
+      expect(compacted).toBe(big)
+      expect(fs.existsSync(path.join(process.cwd(), 'relative'))).toBe(false)
+      expect(fs.existsSync(tempDir) ? fs.readdirSync(tempDir) : []).toEqual([])
+    })
+
+    it('does not fall back to the temp dir when the target is unusable', () => {
+      const blocker = path.join(projectDir, 'blocker')
+      fs.writeFileSync(blocker, 'a file, not a directory')
+      const compacted = manager.compactToolResult('run-1', big, path.join(blocker, 'sub'))
+      expect(compacted).toBe(big)
+      expect(fs.existsSync(tempDir) ? fs.readdirSync(tempDir) : []).toEqual([])
+    })
+
+    describe('compactMessages with a target dir', () => {
+      const msgs = (): Message[] => [
+        { id: 'm-1', role: 'tool', content: 'Y'.repeat(200), toolCallId: 'tc-1' },
+        { id: 'm-2', role: 'tool', content: 'Small', toolCallId: 'tc-2' }
+      ]
+
+      it('writes into the project and nothing into the temp dir', () => {
+        const out = manager.compactMessages('run-1', msgs(), undefined, contextDir)
+        const match = out[0].content.match(/externalized to: (.+?)\]/)
+        expect(match).not.toBeNull()
+        expect(match![1].startsWith(contextDir + path.sep)).toBe(true)
+        expect(fs.readFileSync(match![1], 'utf-8')).toBe('Y'.repeat(200))
+        expect(fs.statSync(match![1]).mode & 0o777).toBe(0o600)
+        expect(out[1].content).toBe('Small')
+        expect(fs.existsSync(tempDir) ? fs.readdirSync(tempDir) : []).toEqual([])
+        manager.cleanup('run-1')
+        expect(fs.readdirSync(contextDir)).toEqual([])
+      })
+
+      it('keeps content in context for a relative, missing or non-directory target', () => {
+        const blocker = path.join(projectDir, 'blocker')
+        fs.writeFileSync(blocker, 'file')
+        for (const bad of ['relative/dir', path.join(projectDir, 'nope'), blocker]) {
+          const out = manager.compactMessages('run-1', msgs(), undefined, bad)
+          expect(out[0].content).toBe('Y'.repeat(200))
+        }
+        expect(fs.existsSync(path.join(projectDir, 'nope'))).toBe(false)
+        expect(fs.existsSync(tempDir) ? fs.readdirSync(tempDir) : []).toEqual([])
+      })
+
+      it('still uses the temp dir when no target is given', () => {
+        const out = manager.compactMessages('run-1', msgs())
+        expect(out[0].content).toContain(tempDir)
+        expect(fs.readdirSync(contextDir)).toEqual([])
+      })
+    })
+
+    it('does not create a missing target dir', () => {
+      const missing = path.join(projectDir, '.mingly', 'context', 'never-created')
+      const compacted = manager.compactToolResult('run-1', big, missing)
+      expect(compacted).toBe(big)
+      expect(fs.existsSync(missing)).toBe(false)
+    })
   })
 
   it('should compact messages array by externalizing large tool results', () => {

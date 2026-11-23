@@ -3,7 +3,7 @@
  *
  * When tool results exceed a size threshold, they are written to temp files
  * and replaced with a compact reference in the conversation context.
- * The agent can read the file later via the read_file built-in tool.
+ * The agent can read the file later via the mingly_read_file built-in tool.
  *
  * This keeps the LLM context window small while allowing unlimited working memory.
  * Inspired by Manus AI's file-system-as-memory architecture.
@@ -47,21 +47,32 @@ export class AgentContextManager {
   /**
    * Process a tool result: if it's large, externalize to file.
    * Returns the (possibly modified) tool result.
+   *
+   * `targetDir` (coding mode) redirects the file into the project workspace so
+   * project content never lands in os.tmpdir(). It is strict: it must be an
+   * absolute path to an EXISTING directory, it is never created here, and on
+   * any problem the result stays in context unchanged. There is deliberately
+   * no fall-back to the temp dir, because that would move the content out of
+   * the project boundary. Without `targetDir` behaviour is unchanged.
    */
-  compactToolResult(runId: string, result: AgentToolResult): AgentToolResult {
+  compactToolResult(runId: string, result: AgentToolResult, targetDir?: string): AgentToolResult {
     // Don't externalize errors (they should stay visible for Error Preservation)
     if (result.isError) return result
 
     // Don't externalize small results
     if (result.content.length <= this.config.compactionThreshold) return result
 
-    // Write to temp file
+    const baseDir = targetDir === undefined ? this.config.tempDir : targetDir
+    if (targetDir !== undefined && !this.isUsableTargetDir(targetDir)) return result
+
+    // Write to file
     const filename = `agent-${runId}-${nanoid(8)}.txt`
-    const filepath = path.join(this.config.tempDir, filename)
+    const filepath = path.join(baseDir, filename)
 
     try {
-      fs.writeFileSync(filepath, result.content, 'utf-8')
-      this.trackFile(runId, filepath)
+      // 0o600 only matters for a target dir (project content); harmless for temp.
+      fs.writeFileSync(filepath, result.content, { encoding: 'utf-8', mode: 0o600 })
+      this.trackFile(runId, filepath, baseDir)
 
       // Replace content with compact reference
       const lineCount = result.content.split('\n').length
@@ -72,7 +83,7 @@ export class AgentContextManager {
           `[Large result externalized to file: ${filepath}]\n` +
           `Size: ${result.content.length} chars, ${lineCount} lines\n` +
           `Preview: ${preview}...\n` +
-          `Use the read_file tool to access the full content if needed.`
+          `Use the mingly_read_file tool to access the full content if needed.`
       }
     } catch {
       // If file write fails, return original result
@@ -83,20 +94,31 @@ export class AgentContextManager {
   /**
    * Compact an existing message array by externalizing large tool results.
    * Used for mid-run compaction when context grows too large.
+   *
+   * `targetDir` has the same strict semantics as in compactToolResult: absolute,
+   * existing, never created, no fall-back to the temp dir.
    */
-  compactMessages(runId: string, messages: Message[], threshold?: number): Message[] {
+  compactMessages(
+    runId: string,
+    messages: Message[],
+    threshold?: number,
+    targetDir?: string
+  ): Message[] {
     const limit = threshold ?? this.config.compactionThreshold
+    const targetUsable = targetDir === undefined || this.isUsableTargetDir(targetDir)
+    const baseDir = targetDir === undefined ? this.config.tempDir : targetDir
     return messages.map((msg) => {
       if (msg.role !== 'tool') return msg
       if (msg.content.length <= limit) return msg
+      if (!targetUsable) return msg
 
       // Externalize this tool result
       const filename = `agent-${runId}-${nanoid(8)}.txt`
-      const filepath = path.join(this.config.tempDir, filename)
+      const filepath = path.join(baseDir, filename)
 
       try {
-        fs.writeFileSync(filepath, msg.content, 'utf-8')
-        this.trackFile(runId, filepath)
+        fs.writeFileSync(filepath, msg.content, { encoding: 'utf-8', mode: 0o600 })
+        this.trackFile(runId, filepath, baseDir)
 
         const lineCount = msg.content.split('\n').length
         const preview = msg.content.substring(0, 200).replace(/\n/g, ' ')
@@ -106,7 +128,7 @@ export class AgentContextManager {
             `[Result externalized to: ${filepath}]\n` +
             `Size: ${msg.content.length} chars, ${lineCount} lines\n` +
             `Preview: ${preview}...\n` +
-            `Use read_file to access full content.`
+            `Use mingly_read_file to access full content.`
         }
       } catch {
         return msg
@@ -174,10 +196,19 @@ export class AgentContextManager {
     }
   }
 
-  private trackFile(runId: string, filepath: string): void {
-    // Validate path stays within tempDir (prevent path traversal)
+  private isUsableTargetDir(dir: string): boolean {
+    if (typeof dir !== 'string' || !path.isAbsolute(dir)) return false
+    try {
+      return fs.statSync(dir).isDirectory()
+    } catch {
+      return false
+    }
+  }
+
+  private trackFile(runId: string, filepath: string, baseDir: string = this.config.tempDir): void {
+    // Validate path stays within the directory it was written to (prevent path traversal)
     const resolved = path.resolve(filepath)
-    const tempDirResolved = path.resolve(this.config.tempDir)
+    const tempDirResolved = path.resolve(baseDir)
     if (!resolved.startsWith(tempDirResolved + path.sep) && resolved !== tempDirResolved) {
       console.warn(`[AgentContextManager] Path escape blocked: ${filepath}`)
       return

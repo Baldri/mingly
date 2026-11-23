@@ -1,4 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { CodingConsentChoice, CodingConsentRequest } from '../../shared/coding-types'
+import { consentOptions } from '../stores/coding-store'
+import { CODING_CONSENT_WAIT_NOTICE, displayText } from '../lib/coding-display'
+import { trapTab } from '../lib/focus-trap'
 import type { RiskLevel } from '../../shared/privacy-types'
 import type { UploadPermissionRequest } from '../../shared/privacy-types'
 
@@ -232,6 +236,121 @@ export function SensitiveDataConsentDialog({
               Send Anyway
             </button>
           )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Coding run: a finding in ONE tool result, mid-run
+// ---------------------------------------------------------------------------
+
+const CODING_CHOICE_LABEL: Record<CodingConsentChoice, { label: string; hint: string; className: string }> = {
+  send: {
+    label: 'Trotzdem senden',
+    hint: 'Das Ergebnis geht unverändert an das Modell.',
+    className: 'bg-blue-600 text-white hover:bg-blue-700 dark:bg-blue-700 dark:hover:bg-blue-600'
+  },
+  anonymize: {
+    label: 'Anonymisiert senden',
+    hint: 'Die Fundstellen werden ersetzt, bevor das Modell das Ergebnis sieht.',
+    className: 'bg-green-600 text-white hover:bg-green-700 dark:bg-green-700 dark:hover:bg-green-600'
+  },
+  'drop-file': {
+    label: 'Diese Datei aus dem Kontext werfen und weiterlaufen',
+    hint: 'Das Modell erhält dieses Ergebnis nicht; der Lauf geht ohne die Datei weiter.',
+    className: 'border border-gray-300 text-gray-800 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700'
+  }
+}
+
+interface CodingConsentDialogProps {
+  request: CodingConsentRequest
+  onChoose: (choice: CodingConsentChoice) => void
+}
+
+/**
+ * The question a coding run asks about one flagged tool result. It shows type
+ * and risk level of each finding, never the value (the request carries none),
+ * and offers exactly the answers the request offers: `anonymize` appears only
+ * when it holds. There is no "cancel" that would leave the question hanging,
+ * and the third option lets the run go on without the file.
+ *
+ * It does NOT claim that the run is paused until the user answers: the broker
+ * settles the question itself after CODING_CONSENT_ANSWER_TIMEOUT_MS and the
+ * run carries on without that file. The deadline is named instead
+ * (CODING_CONSENT_WAIT_NOTICE), derived from the same constant.
+ *
+ * As in the diff dialog, the initial focus goes to the most conservative
+ * answer and Tab is trapped inside: there is no Escape, so a keyboard user
+ * must not be able to wander off behind an overlay while the clock runs.
+ */
+export function CodingConsentDialog({ request, onChoose }: CodingConsentDialogProps) {
+  const options = consentOptions(request)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const safestRef = useRef<HTMLButtonElement>(null)
+  // The last option is `drop-file` in the canonical order: the run goes on
+  // without the file, which is what an expiry would do anyway.
+  const safest = options.length > 0 ? options[options.length - 1] : undefined
+
+  useEffect(() => {
+    safestRef.current?.focus()
+  }, [request.requestId])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+      <div
+        ref={dialogRef}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="coding-consent-title"
+        onKeyDown={(event) => trapTab(event, dialogRef.current)}
+        className="w-full max-w-xl rounded-lg bg-white p-6 shadow-2xl dark:bg-gray-800"
+      >
+        <h2 id="coding-consent-title" className="text-xl font-semibold text-gray-900 dark:text-white">
+          Sensible Daten in einem Werkzeugergebnis
+        </h2>
+        <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+          {CODING_CONSENT_WAIT_NOTICE}
+        </p>
+
+        <div className="mt-4 rounded-lg bg-gray-50 p-3 text-sm dark:bg-gray-900/50">
+          <div>
+            <span className="font-medium">Werkzeug:</span> <span className="font-mono">{displayText(request.toolName)}</span>
+          </div>
+          {request.filePath !== undefined && (
+            <div className="mt-1">
+              <span className="font-medium">Datei:</span> <span className="font-mono text-xs">{displayText(request.filePath)}</span>
+            </div>
+          )}
+        </div>
+
+        <ul className="mt-3 space-y-1 text-sm">
+          {request.matches.map((match, index) => (
+            <li key={index} className="flex justify-between rounded bg-yellow-50 px-3 py-1 dark:bg-yellow-900/20">
+              <span>{displayText(match.type)}</span>
+              <span className="font-mono text-xs">{displayText(match.riskLevel)}</span>
+            </li>
+          ))}
+        </ul>
+
+        <div className="mt-5 space-y-2">
+          {options.length === 0 && (
+            <p className="text-sm text-gray-700 dark:text-gray-300">
+              Für diese Frage ist keine Antwort vorgesehen. Der Lauf geht nach Ablauf der Antwortzeit ohne diese Datei weiter.
+            </p>
+          )}
+          {options.map((choice) => (
+            <button
+              key={choice}
+              ref={choice === safest ? safestRef : undefined}
+              onClick={() => onChoose(choice)}
+              className={`block w-full rounded-lg px-4 py-2 text-left text-sm font-medium ${CODING_CHOICE_LABEL[choice].className}`}
+            >
+              <span className="block">{CODING_CHOICE_LABEL[choice].label}</span>
+              <span className="block text-xs font-normal opacity-80">{CODING_CHOICE_LABEL[choice].hint}</span>
+            </button>
+          ))}
         </div>
       </div>
     </div>

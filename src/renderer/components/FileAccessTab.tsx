@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
-import type { AllowedDirectory, FileAccessPermission } from '../../shared/file-access-types'
+import type { AllowedDirectory } from '../../shared/file-access-types'
 import { ConfirmDialog } from './ConfirmDialog'
+import { getPermissionLabel } from '../lib/coding-display'
 
 export function FileAccessTab() {
   const [directories, setDirectories] = useState<AllowedDirectory[]>([])
@@ -53,14 +54,6 @@ export function FileAccessTab() {
       setPendingRevokeId(null)
     }
   }, [pendingRevokeId])
-
-  const getPermissionLabel = (permissions: FileAccessPermission[]): string => {
-    if (permissions.includes('read-create')) return 'Read + Create'
-    if (permissions.includes('read') && permissions.includes('create')) return 'Read + Create'
-    if (permissions.includes('read')) return 'Read Only'
-    if (permissions.includes('create')) return 'Create Only'
-    return 'Unknown'
-  }
 
   const getLocationIcon = (location: string) => {
     switch (location) {

@@ -46,7 +46,7 @@ export function evaluate(
   // with such a tie is an authoring error, not a case this function
   // arbitrates meaningfully.
   const rule = policy.rules
-    .filter((candidate) => atLeast(classification.level, candidate.minSensitivity))
+    .filter((candidate) => atLeast(SENSITIVITY_ORDER, classification.level, candidate.minSensitivity))
     .reduce<PolicyRule | null>(
       (strictest, current) =>
         strictest === null ||
