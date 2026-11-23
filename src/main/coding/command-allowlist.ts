@@ -24,6 +24,7 @@
  * project code (a test file, an npm script) with the rights of the user.
  */
 
+import * as os from 'os'
 import * as path from 'path'
 import { isBlockedPath, resolvePathSegments } from './path-policy'
 
@@ -100,6 +101,27 @@ type Match = Matched | { refusal: string }
  * Both were measured to be sufficient on their own (git 2.53.0), and a
  * command-line flag outranks `-c`, which outranks the repository's config — so
  * a repository cannot configure its way back in.
+ *
+ * `core.hooksPath` is the one that cannot be moved into the config probe.
+ * `gitConfigIsSafe` (run-command.ts) refuses a repository whose config names a
+ * program, and a hook needs no config entry at all: a file at
+ * `.git/hooks/<name>` is found by its path. Measured on git 2.53.0, a
+ * `post-index-change` hook ran once per allowlisted command — `status` and
+ * `diff --stat` alike, because both refresh the stat cache and write the index
+ * back when a file's mtime moved while its bytes stayed equal. Pointing
+ * hooksPath at `os.devNull` makes the lookup for `<hooksPath>/<name>` find
+ * nothing; git treats the path as an ordinary directory name, so this should
+ * carry to Windows, where it is UNMEASURED (there is no Windows test job).
+ *
+ * Two near misses, both measured, both recorded so they are not retried:
+ *   - `--no-optional-locks` silences `status` but NOT `diff`. It is the
+ *     plausible-looking alternative — a read-only command should not rewrite
+ *     the user's index — and it covers half the surface.
+ *   - Adding `core.hooksPath` to `gitConfigNamesProgram` would gain nothing (a
+ *     hook at the default path has no key to find) and would refuse every
+ *     husky project, which sets exactly that key in the repository's own
+ *     config. A command-line `-c` outranks such a repository's value anyway,
+ *     measured, so the repository keeps working and the hook still does not run.
  */
 const GIT_PREFIX = [
   '-c',
@@ -108,6 +130,8 @@ const GIT_PREFIX = [
   'diff.ignoreSubmodules=all',
   '-c',
   'status.submoduleSummary=false',
+  '-c',
+  `core.hooksPath=${os.devNull}`,
   '--no-pager'
 ]
 

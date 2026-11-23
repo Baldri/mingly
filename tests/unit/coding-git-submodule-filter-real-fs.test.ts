@@ -40,6 +40,12 @@ import { planCommand, type CommandPlan } from '../../src/main/coding/command-all
  * The argv prefix as it is EXPECTED to be, written out by hand. Never imported
  * from the module under test: a shared constant would make this test agree with
  * whatever the code does.
+ *
+ * `core.hooksPath` joined it afterwards, for a defect of its own: a hook at
+ * `.git/hooks/<name>` needs no config entry, so gitConfigIsSafe cannot see it
+ * either. Asserted in tests/unit/coding-git-hook-real-fs.test.ts. It is listed
+ * here because this test pins the WHOLE prefix, and `/dev/null` is spelled out
+ * rather than taken from `os.devNull` because this file does not run on Windows.
  */
 const EXPECTED_GIT_PREFIX = [
   '-c',
@@ -48,6 +54,8 @@ const EXPECTED_GIT_PREFIX = [
   'diff.ignoreSubmodules=all',
   '-c',
   'status.submoduleSummary=false',
+  '-c',
+  'core.hooksPath=/dev/null',
   '--no-pager'
 ]
 
