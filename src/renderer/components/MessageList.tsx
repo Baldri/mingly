@@ -15,6 +15,17 @@ export const MessageList = memo(function MessageList() {
   const streamingContent = useChatStore((state) => state.streamingContent)
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
+  // Every hook this component calls must be called on EVERY render, including
+  // the empty-state render below. These three sat under that early return, so
+  // an empty conversation ran five hooks and the first arriving message ran
+  // eight — React matches hooks by position and tore the renderer down with
+  // #310 ("Rendered more hooks than during the previous render"), or #300 on
+  // the way back to empty. Reading agent state costs nothing when there is no
+  // agent, and the early return is only about what is DRAWN.
+  const agentIsRunning = useAgentStore((state) => state.isRunning)
+  const agentSteps = useAgentStore((state) => state.currentSteps)
+  const agentRun = useAgentStore((state) => state.currentRun)
+
   const displayMessages = useMemo(() => {
     const list = [...messages]
     if (isStreaming && streamingContent) {
@@ -38,11 +49,6 @@ export const MessageList = memo(function MessageList() {
       </div>
     )
   }
-
-  // Agent state for step indicator
-  const agentIsRunning = useAgentStore((state) => state.isRunning)
-  const agentSteps = useAgentStore((state) => state.currentSteps)
-  const agentRun = useAgentStore((state) => state.currentRun)
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
