@@ -6,6 +6,13 @@ import { IPC_CHANNELS } from '../../shared/types'
 import { getBudgetManager } from '../tracking/budget-manager'
 import { getTrackingEngine } from '../tracking/tracking-engine'
 import { getFeatureGateManager } from '../services/feature-gate-manager'
+// Static, not `await import`. The dynamic form made registerLicenseHandlers
+// async for no gain: it broke no import cycle (license-activation pulls only
+// electron, node builtins and feature-gate-manager, which is already imported
+// here), and it left the four license channels registered one microtask after
+// registerBusinessHandlers returned — a window in which the renderer gets
+// Electron's "no handler registered" and the user sees the free tier.
+import { getLicenseActivationService } from '../services/license-activation'
 import { getDeploymentManager } from '../server/deployment-manager'
 import { getHybridOrchestrator } from '../routing/hybrid-orchestrator'
 import { getAutoUpdater } from '../updater/auto-updater'
@@ -144,8 +151,16 @@ export function registerBusinessHandlers(): void {
 /**
  * License handlers use dynamic import (same as original ipc-handlers.ts)
  */
-async function registerLicenseHandlers(): Promise<void> {
-  const { getLicenseActivationService } = await import('../services/license-activation')
+/**
+ * Synchronous on purpose. As an async function its body ran after the caller
+ * had already returned, so the channels below did not exist yet; and because
+ * the caller is `void` and did not await it, a failure of the former dynamic
+ * import would have been an unhandled rejection that removed every license
+ * channel without a word. Both problems are the same missing await, and the
+ * fix is to not need one. Pinned by
+ * tests/unit/business-handlers-license-registration.test.ts.
+ */
+function registerLicenseHandlers(): void {
   const licenseService = getLicenseActivationService()
 
   wrapHandler(IPC_CHANNELS.LICENSE_ACTIVATE, async (key: string, email?: string) => {

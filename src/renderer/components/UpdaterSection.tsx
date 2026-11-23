@@ -6,15 +6,31 @@
 import { useEffect } from 'react'
 import { RefreshCw, Download, ExternalLink, CheckCircle, AlertCircle } from 'lucide-react'
 import { useUpdaterStore } from '../stores/updater-store'
+import { useSubscriptionStore } from '../stores/subscription-store'
 
 export function UpdaterSection() {
   const { status, loadStatus, checkForUpdates, downloadUpdate, installUpdate, openReleasePage, subscribeToStatus } = useUpdaterStore()
+  /**
+   * `autoUpdateEnabled` is decided in the main process from the tier, so the
+   * status this panel holds goes stale the moment a license is activated or
+   * removed. Subscribing to the tier here — rather than having the
+   * subscription store poke the updater store — keeps the dependency where it
+   * is used and covers every way the tier can change, not just the two license
+   * actions. Pinned by tests/unit/updater-section-tier-refresh.test.ts.
+   */
+  const tier = useSubscriptionStore((state) => state.tier)
+
+  // Two effects, not one: the push subscription is set up once, while the
+  // status is re-fetched whenever the tier moves. Folding them together would
+  // tear down and rebuild the subscription on every license change.
+  useEffect(() => {
+    const unsubscribe = subscribeToStatus()
+    return unsubscribe
+  }, [subscribeToStatus])
 
   useEffect(() => {
     loadStatus()
-    const unsubscribe = subscribeToStatus()
-    return unsubscribe
-  }, [loadStatus, subscribeToStatus])
+  }, [loadStatus, tier])
 
   return (
     <div>
