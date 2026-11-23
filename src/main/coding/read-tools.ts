@@ -100,8 +100,8 @@ export interface ReadToolDeps {
   /**
    * Matcher steps one listing may spend, overriding LIST_FILES_WORK_BUDGET.
    * Production never sets it; a test does, so that exhausting the budget costs
-   * milliseconds instead of however long 100M steps happen to take on the
-   * machine running the test. The property under test is the WORK bound and the
+   * milliseconds instead of however long the product's budget happens to take
+   * on the machine running the test. The property under test is the WORK bound and the
    * marker it produces, and that property does not mention a clock — but the
    * default test timeout quietly does, and it fired on a CI runner roughly ten
    * times slower per step than the development machine.
@@ -202,8 +202,27 @@ export async function resolveScope(
  * Total matching work one listing may do, in matcher steps. The per-rule caps
  * bound one rule, not rules x entries, so the budget is global: when it is
  * spent the listing ends and says it is incomplete.
+ *
+ * Sized against latency, not against generosity. The .gitignore comes from the
+ * granted project, so it is untrusted input, and the matching is a synchronous
+ * loop in the Electron main process: whatever the budget allows is time the
+ * window cannot paint. Measured 2026-11-23 on the development machine: 20M
+ * steps cost about 94 ms (independently, 100M cost 481-498 ms, so ~4.9 ns per
+ * step). On ubuntu-latest the same 100M exceeded five seconds, which makes that
+ * runner at least ten times slower per step — a LOWER bound, since the test was
+ * killed at five seconds rather than timed. 20M therefore lands at about a
+ * second there, and proportionally more on anything slower still.
+ *
+ * What the choice costs. An ordinary listing spends about 12.5 steps per
+ * file-times-rule pair (400 files x 6 rules measured under 30k steps; 10k was
+ * already too few). 20M therefore carries roughly 1.6M pairs, which is a
+ * 20 000-file project with a 50-rule .gitignore and headroom to spare. A
+ * project past that no longer gets a complete listing: it gets the INCOMPLETE
+ * marker and the advice to narrow with `pattern`. That advice is sound here,
+ * because the pattern is tested BEFORE the ignore rules of the files it
+ * excludes, so narrowing genuinely buys budget back.
  */
-export const LIST_FILES_WORK_BUDGET = 100_000_000
+export const LIST_FILES_WORK_BUDGET = 20_000_000
 
 class WorkBudgetExceeded extends Error {}
 

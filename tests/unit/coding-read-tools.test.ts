@@ -746,11 +746,13 @@ describe('pattern matching cannot hang the main process', () => {
     // wall-clock bound here.
     //
     // The budget is injected, because the DEFAULT TIMEOUT was a wall-clock
-    // assertion this test never meant to make. At the production 100M the three
-    // tests in this block took about 1.5 s on the development machine (481-498 ms
-    // for this one, 2026-11-19, ~5 ns per step) and over 5 s on a CI runner,
-    // which failed them on time while the property they assert held. The
-    // production figure is pinned in its own test below.
+    // assertion this test never meant to make. At the 100M budget the product
+    // carried then, the three tests in this block took about 1.5 s on the
+    // development machine (481-498 ms for this one, 2026-11-19, ~5 ns per step)
+    // and over 5 s on a CI runner, which failed them on time while the property
+    // they assert held. That measurement is also why the product's budget is now
+    // 20M: see the constant. The production figure is pinned in its own test
+    // below, and this block no longer depends on it.
     registry = bounded()
     // '*' + a long literal run that nearly matches: the two-pointer matcher
     // re-compares the run at every start position, O(pattern x text) per pair.
@@ -811,11 +813,13 @@ describe('pattern matching cannot hang the main process', () => {
     expect(out).not.toContain('node_modules')
   })
 
-  it('production keeps the 100M-step budget; the injected one is a test seam', () => {
+  it('production keeps the 20M-step budget; the injected one is a test seam', () => {
     // Without this, the three tests above would still pass if someone shrank the
     // product's budget to make them fast — the very shortcut they must not invite.
-    // Hand-written from the requirement, not read back through the seam.
-    expect(LIST_FILES_WORK_BUDGET).toBe(100_000_000)
+    // The number is a latency decision with a recorded reason (see the constant),
+    // so it is pinned here rather than left to drift. Hand-written from that
+    // decision, not read back through the seam.
+    expect(LIST_FILES_WORK_BUDGET).toBe(20_000_000)
     expect('workBudget' in defaultReadToolDeps).toBe(false)
   })
 
