@@ -29,7 +29,7 @@ import {
   type ConsentDecision,
 } from '../coding/consent-broker'
 import type { CodingRunOptions } from '../../shared/coding-types'
-import { getToolRegistry, type ToolContext, type ToolRegistry } from './tool-registry'
+import { getToolRegistry, type ToolContext } from './tool-registry'
 import { StepPaths } from './step-paths'
 import { getEditProposalStore } from '../coding/edit-proposals'
 import { getRunDirectoryRegistry } from '../coding/run-directories'
@@ -45,17 +45,13 @@ import { getCodingModeStore } from '../coding/coding-mode-store'
 import { ensureProjectWorkspace } from '../coding/project-workspace'
 import { getAgentContextManager } from './agent-context-manager'
 import { getClientManager } from '../llm-clients/client-manager'
-import type { ToolUseResponse } from '../llm-clients/client-manager'
 import { getCircuitBreaker } from '../security/circuit-breaker'
 import { AGENT_RUN_TIMEOUT_MS } from '../../shared/types'
 import type {
   Message,
   AgentConfig,
   AgentRun,
-  AgentStep,
-  AgentToolCall,
-  AgentToolResult,
-  ToolDefinition
+  AgentStep
 } from '../../shared/types'
 
 // ── Default configuration ──────────────────────────────────────

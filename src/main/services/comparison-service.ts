@@ -32,7 +32,7 @@ export class ComparisonService {
     // Run all models in parallel with Promise.allSettled
     // Stagger by 100ms if same provider to avoid rate limits
     const providerCounts = new Map<string, number>()
-    const promises = models.map((modelConfig, index) => {
+    const promises = models.map((modelConfig) => {
       const prevCount = providerCounts.get(modelConfig.provider) || 0
       providerCounts.set(modelConfig.provider, prevCount + 1)
       const delay = prevCount * 100 // Stagger same-provider requests

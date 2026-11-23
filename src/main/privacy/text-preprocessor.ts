@@ -14,7 +14,6 @@
 const ZERO_WIDTH_CHARS = /[\u200B\u200C\u200D\uFEFF\u00AD\u2060\u180E]/g
 
 /** URL-encoded sequences that commonly appear in PII evasion */
-const URL_ENCODED_PATTERN = /%[0-9A-Fa-f]{2}/g
 
 /** PII-relevant HTML entities */
 const HTML_ENTITY_MAP: Record<string, string> = {

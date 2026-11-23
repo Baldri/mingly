@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron'
 import { IPC_CHANNELS } from '../shared/types'
-import type { LLMProvider, Message } from '../shared/types'
+import type { Message } from '../shared/types'
 import { getClientManager } from './llm-clients/client-manager'
 import { ConversationModel } from './database/models/conversation'
 import { MessageModel } from './database/models/message'

@@ -1,7 +1,5 @@
-import { KEYCHAIN_SERVICE } from '../../shared/constants'
 import type { LLMProvider } from '../../shared/types'
 import { EncryptedStore } from '../utils/encrypted-store'
-import { SimpleStore } from '../utils/simple-store'
 import { app } from 'electron'
 import fs from 'fs'
 import path from 'path'
@@ -10,7 +8,6 @@ import path from 'path'
 const secureStore = new EncryptedStore('secure-keys.enc.json')
 
 export class KeychainManager {
-  private serviceName = KEYCHAIN_SERVICE
   private migrated = false
 
   /**

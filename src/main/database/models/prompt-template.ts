@@ -1,6 +1,6 @@
 import { dbRun, dbAll, dbGet } from '../index'
 import { generateId } from '../../utils/id-generator'
-import type { PromptTemplate, TemplateCategory, TemplateVariable } from '../../../shared/types'
+import type { PromptTemplate, TemplateCategory } from '../../../shared/types'
 
 function rowToTemplate(row: Record<string, any>): PromptTemplate {
   return {

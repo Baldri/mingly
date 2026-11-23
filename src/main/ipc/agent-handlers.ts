@@ -41,7 +41,7 @@ export function registerAgentHandlers(): void {
       task: string,
       provider: string,
       model: string,
-      conversationId?: string,
+      _conversationId?: string,
       conversationHistory?: Message[],
       systemPrompt?: string,
       codingRequest?: unknown

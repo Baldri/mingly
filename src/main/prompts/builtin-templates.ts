@@ -1,4 +1,4 @@
-import type { PromptTemplate, TemplateCategory, TemplateVariable } from '../../shared/types'
+import type { TemplateCategory, TemplateVariable } from '../../shared/types'
 
 interface BuiltinDef {
   name: string

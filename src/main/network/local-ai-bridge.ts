@@ -12,8 +12,6 @@
 
 import { getNetworkAIManager, NetworkAIManager } from './network-ai-manager'
 import { getClientManager, LLMClientManager } from '../llm-clients/client-manager'
-import { GenericOpenAIClient } from '../llm-clients/generic-openai-client'
-import { OllamaClient } from '../llm-clients/ollama-client'
 import { getOllamaLoadBalancer } from './ollama-load-balancer'
 import { buildAPIUrl } from '../../shared/network-ai-types'
 import type { NetworkAIServerConfig } from '../../shared/network-ai-types'

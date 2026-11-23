@@ -78,7 +78,6 @@ function hashString(str: string): number {
 // ── Anonymizer ────────────────────────────────────────────────
 
 export class PIIAnonymizer {
-  private sessionId: string
   private mode: PrivacyMode
   private random: () => number
   /** Maps original PII text → replacement text for consistency */
@@ -93,7 +92,6 @@ export class PIIAnonymizer {
   private fallbackMarkerCounters: Map<PIICategory, number> = new Map()
 
   constructor(sessionId: string, mode: PrivacyMode = 'shield') {
-    this.sessionId = sessionId
     this.mode = mode
     this.random = createSeededRandom(hashString(sessionId))
   }
