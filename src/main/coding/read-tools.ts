@@ -97,6 +97,16 @@ const TOO_LARGE = 'Refused: the file is too large to read.'
 export interface ReadToolDeps {
   /** The persisted grant for a directory id, or undefined. */
   findGrant(directoryId: string): Promise<AllowedDirectory | undefined>
+  /**
+   * Matcher steps one listing may spend, overriding LIST_FILES_WORK_BUDGET.
+   * Production never sets it; a test does, so that exhausting the budget costs
+   * milliseconds instead of however long 100M steps happen to take on the
+   * machine running the test. The property under test is the WORK bound and the
+   * marker it produces, and that property does not mention a clock — but the
+   * default test timeout quietly does, and it fired on a CI runner roughly ten
+   * times slower per step than the development machine.
+   */
+  workBudget?: number
 }
 
 /**
@@ -367,7 +377,10 @@ async function listFiles(
     let truncated = false
     let truncatedReason = ''
     let visited = 0
-    const budget: WorkBudget = { left: LIST_FILES_WORK_BUDGET }
+    // Resolved once: the incomplete-marker branch below compares against the
+    // same number, so an injected budget must move both or neither.
+    const workBudget = deps.workBudget ?? LIST_FILES_WORK_BUDGET
+    const budget: WorkBudget = { left: workBudget }
     // Steps spent on ignore rules for DIRECTORIES: that work precedes any pattern
     // test, so it decides which advice the incomplete marker may give.
     let dirSteps = 0
@@ -452,7 +465,7 @@ async function listFiles(
       truncatedReason = 'matching work budget reached'
       // Mostly spent on directory ignore rules: narrowing cannot help, so say what
       // is true instead of offering a remedy the code knows does not apply.
-      if (dirSteps * 2 > LIST_FILES_WORK_BUDGET) {
+      if (dirSteps * 2 > workBudget) {
         truncatedReason =
           'matching work budget reached while evaluating the .gitignore rules for directories ' +
           '(the cost is in those ignore rules, not in the breadth of the request)'

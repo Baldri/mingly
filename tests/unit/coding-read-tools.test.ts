@@ -13,7 +13,9 @@ import { ToolRegistry, type ToolContext } from '../../src/main/agent/tool-regist
 import {
   registerReadTools,
   originForToolCall,
-  LIST_FILES_MAX_ENTRIES
+  defaultReadToolDeps,
+  LIST_FILES_MAX_ENTRIES,
+  LIST_FILES_WORK_BUDGET
 } from '../../src/main/coding/read-tools'
 import { ensureProjectWorkspace } from '../../src/main/coding/project-workspace'
 import type { AllowedDirectory } from '../../src/shared/file-access-types'
@@ -60,6 +62,23 @@ function write(rel: string, content: string | Buffer): void {
   const full = path.join(project, rel)
   fs.mkdirSync(path.dirname(full), { recursive: true })
   fs.writeFileSync(full, content)
+}
+
+/**
+ * A registry whose matching work budget is small enough to exhaust in
+ * milliseconds. Every claim in the block below is about the budget being spent
+ * and what the listing then says, never about seconds, so the budget's size is
+ * free to be small: 2M is about seventy times what an ordinary 400-file
+ * listing costs (measured 2026-11-23: red at 10k, green at 30k) and is blown
+ * by the first hostile rule-times-file pair.
+ */
+function bounded(workBudget = 2_000_000): ToolRegistry {
+  const r = new ToolRegistry({ toolTimeoutMs: 5000, maxResultChars: 1_000_000 })
+  registerReadTools(r, {
+    findGrant: async (id) => grants.find((g) => g.id === id),
+    workBudget
+  })
+  return r
 }
 
 beforeEach(() => {
@@ -724,9 +743,15 @@ describe('pattern matching cannot hang the main process', () => {
     // marker below is the proof. The budget is the invariant (the same number of
     // steps on every machine); the clock is only its shadow on this hardware, and
     // an assertion on it flaked at 5276 ms under a load average of ~30. Hence no
-    // wall-clock bound here. Record of what the budget costs in time: this test
-    // took 481-498 ms over six runs on the development machine (2026-11-19,
-    // 100M-step budget, ~5 ns per step).
+    // wall-clock bound here.
+    //
+    // The budget is injected, because the DEFAULT TIMEOUT was a wall-clock
+    // assertion this test never meant to make. At the production 100M the three
+    // tests in this block took about 1.5 s on the development machine (481-498 ms
+    // for this one, 2026-11-19, ~5 ns per step) and over 5 s on a CI runner,
+    // which failed them on time while the property they assert held. The
+    // production figure is pinned in its own test below.
+    registry = bounded()
     // '*' + a long literal run that nearly matches: the two-pointer matcher
     // re-compares the run at every start position, O(pattern x text) per pair.
     const rule = '*' + 'a'.repeat(150) + 'b'
@@ -741,6 +766,8 @@ describe('pattern matching cannot hang the main process', () => {
 
   it('budget spent on DIRECTORY ignore rules: says incomplete and does NOT advise a remedy that cannot apply', async () => {
     // Directory-only rules run before any pattern test, so `pattern` cannot help.
+    // Injected budget, for the reason given in the first test of this block.
+    registry = bounded()
     const rule = '*' + 'a'.repeat(150) + 'b/'
     write('.gitignore', Array.from({ length: 300 }, () => rule).join('\n') + '\n')
     for (let i = 0; i < 400; i++) write(`${'a'.repeat(230)}${String(i).padStart(3, '0')}/f.ts`, 'x')
@@ -756,7 +783,10 @@ describe('pattern matching cannot hang the main process', () => {
     // relative and holds on every machine: the SAME tree exhausts the work budget
     // without a pattern and comes back complete with one. (Time on the development
     // machine, 2026-11-19: about 0.5 s for the unnarrowed run, tens of ms narrowed;
-    // recorded only, not asserted.)
+    // recorded only, not asserted.) The relative claim is exactly what survives a
+    // smaller budget, so the injection below strengthens this test rather than
+    // weakening it: both runs now answer in milliseconds on any machine.
+    registry = bounded()
     const rule = '*' + 'a'.repeat(150) + 'b'
     write('.gitignore', Array.from({ length: 300 }, () => rule).join('\n') + '\n')
     for (let i = 0; i < 400; i++) write(`files/${'a'.repeat(230)}${String(i).padStart(3, '0')}`, 'x')
@@ -779,6 +809,14 @@ describe('pattern matching cannot hang the main process', () => {
     expect(out.split('\n').filter((l) => l.startsWith('src/'))).toHaveLength(400)
     expect(out).not.toContain('debug.log')
     expect(out).not.toContain('node_modules')
+  })
+
+  it('production keeps the 100M-step budget; the injected one is a test seam', () => {
+    // Without this, the three tests above would still pass if someone shrank the
+    // product's budget to make them fast — the very shortcut they must not invite.
+    // Hand-written from the requirement, not read back through the seam.
+    expect(LIST_FILES_WORK_BUDGET).toBe(100_000_000)
+    expect('workBudget' in defaultReadToolDeps).toBe(false)
   })
 
   it('.gitignore with a normal rule still ignores (positive control)', async () => {
