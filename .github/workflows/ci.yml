@@ -30,11 +30,22 @@ jobs:
           MINGLY_LICENSE_SECRET: ${{ secrets.MINGLY_LICENSE_SECRET }}
         run: npx tsx scripts/inject-secret.ts
 
-      - name: Type check (main process)
-        run: npx tsc -p tsconfig.main.json --noEmit
-
-      - name: Type check (renderer)
-        run: npx tsc --noEmit
+      # The four tsc runs of `npm run typecheck`, not a hand-copied subset.
+      # This job used to call `tsc -p tsconfig.main.json --noEmit` and
+      # `tsc --noEmit` directly, which is two of the four: #46 added
+      # tsconfig.server.json to the script and #47 added tsconfig.test.json
+      # (156 test files), and neither reached CI.
+      #
+      # Measured 2026-11-23 with the positive control in the same run: a
+      # deliberate type error in src/server/index.ts or in a test file passes
+      # BOTH of those commands with exit 0, while `npm run typecheck` exits 2 —
+      # and the same error in src/main is caught by the main-process command,
+      # so the exit 0s were coverage, not a broken probe.
+      #
+      # Calling the script is also what keeps this job honest the next time a
+      # config is added: the gate follows the script instead of a copy of it.
+      - name: Type check
+        run: npm run typecheck
 
   test:
     name: Test
