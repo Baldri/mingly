@@ -346,7 +346,39 @@ export const useCodingStore = create<CodingState>((set, get) => {
         const entries = await Promise.all(
           grants.map(async (dir) => [dir.id, await readMode(dir.id)] as const)
         )
-        set({ grants, modes: Object.fromEntries(entries) })
+        const modes = Object.fromEntries(entries)
+
+        /**
+         * Loading is passive: it never arms a run.
+         *
+         * The temptation here is real. The mode is persisted per directory and
+         * the selection is not, so after a restart the picker shows a graded
+         * project with nothing selected, and `MessageInput` requires both: the
+         * message goes to the plain chat with no tools. During the manual
+         * acceptance run that cost two full attempts, because the model simply
+         * answered that it had no file access — a defect of the app wearing the
+         * costume of a limitation of the model.
+         *
+         * Selecting the one graded project here would fix that, and it was
+         * written that way first. It is wrong. `loadProjects` runs on every
+         * mount, so it would re-arm the coding tools by itself after every
+         * restart, `propose-run` included — the level whose commands execute
+         * project code. A product whose claim is provable restraint does not
+         * restore write access as a side effect of a refresh.
+         *
+         * The disease was the SILENCE, not the missing selection, and the cure
+         * belongs in the surface: the picker now says "Kein Projekt gewählt –
+         * Coding-Werkzeuge aus" whenever a graded project sits there unchosen.
+         * One deliberate click, every restart, with the state visible.
+         *
+         * The one change loading may make is to DROP a selection whose grant is
+         * gone: keeping it would point the picker at a directory the main
+         * process no longer allows. That direction only ever takes away.
+         */
+        const kept = get().selectedDirectoryId
+        const selectedDirectoryId = grants.some((dir) => dir.id === kept) ? kept : null
+
+        set({ grants, modes, selectedDirectoryId })
       } catch (error) {
         set({ error: errorText(error) })
       }

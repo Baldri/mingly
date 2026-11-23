@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useCodingStore } from '../stores/coding-store'
-import { CODING_MODE_CHOICES } from '../../shared/coding-types'
+import { CODING_MODE_CHOICES, CODING_MODE_ORDER, parseCodingMode } from '../../shared/coding-types'
 import { displayText, getPermissionLabel, isCodingFeatureAllowed } from '../lib/coding-display'
 import { useSubscriptionStore } from '../stores/subscription-store'
 
@@ -82,6 +82,21 @@ export function CodingModePicker() {
   // `propose-run` should not have to open anything to find that out.
   const elevated = currentMode === 'propose-run'
 
+  /**
+   * A graded project exists, but none is selected — so the next message goes
+   * to the plain chat with no coding tools at all.
+   *
+   * This state used to be invisible. The user saw a stored level, sent a
+   * request, and the model answered that it had no file access: a defect of
+   * the app wearing the costume of a limitation of the model. The store now
+   * restores an unambiguous selection by itself; what reaches here is the
+   * ambiguous rest, and ambiguity is exactly what must be said out loud rather
+   * than guessed.
+   */
+  const codingOffDespiteGrades =
+    !selected &&
+    grants.some((g) => CODING_MODE_ORDER[parseCodingMode(modes[g.id])] > 0)
+
   const handleExport = async (): Promise<void> => {
     const csv = await exportAudit()
     if (csv !== null) downloadCsv(`mingly-coding-audit-${new Date().toISOString().slice(0, 10)}.csv`, csv)
@@ -117,6 +132,14 @@ export function CodingModePicker() {
               }`}
             >
               {currentChoice?.label ?? 'Aus'}
+            </span>
+          )}
+          {codingOffDespiteGrades && (
+            <span
+              data-testid="coding-off-despite-grades"
+              className="rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900 dark:bg-amber-900/40 dark:text-amber-200"
+            >
+              Kein Projekt gewählt – Coding-Werkzeuge aus
             </span>
           )}
           <button

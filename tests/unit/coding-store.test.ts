@@ -642,3 +642,75 @@ describe('coding store', () => {
     })
   })
 })
+
+/**
+ * Loading projects must never arm a run — and it must drop a selection whose
+ * grant is gone.
+ *
+ * Measured on 2026-11-23 during the manual acceptance run: the mode is
+ * persisted per directory, the selection is not. After a restart the picker
+ * showed a graded project with nothing selected, `MessageInput` requires BOTH,
+ * and the message went to the plain chat path — no tools, no error, no hint.
+ * Two attempts were spent before the audit log showed only `routing.decision`.
+ *
+ * The first fix selected the one graded project here. That was wrong, and the
+ * existing test "does not start without a selected project" caught it:
+ * `loadProjects` runs on every mount, so it would re-arm the coding tools by
+ * itself after every restart, `propose-run` included. The cure belongs in the
+ * surface instead — see `coding-mode-picker.test.ts`, which pins the warning.
+ */
+describe('coding store: loading is passive', () => {
+  const GRANT_B = { ...GRANT, id: 'd2', path: '/Users/x/other', name: 'other' }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useCodingStore.setState(initialState, true)
+  })
+
+  /** Modes answered per directory id, anything unlisted is `off`. */
+  function withModes(grants: unknown[], modes: Record<string, string>): void {
+    h.api.fileAccess.listDirectories.mockResolvedValue({ success: true, directories: grants })
+    h.api.codingMode.get.mockImplementation(async (id: string) => ({
+      success: true,
+      mode: modes[id] ?? 'off'
+    }))
+  }
+
+  it('selects nothing by itself, even with exactly one graded project', async () => {
+    withModes([GRANT], { d1: 'propose' })
+    await useCodingStore.getState().loadProjects()
+    expect(useCodingStore.getState().selectedDirectoryId).toBeNull()
+  })
+
+  it('selects nothing when several projects are graded', async () => {
+    withModes([GRANT, GRANT_B], { d1: 'propose', d2: 'propose-run' })
+    await useCodingStore.getState().loadProjects()
+    expect(useCodingStore.getState().selectedDirectoryId).toBeNull()
+  })
+
+  it('keeps a selection the user made', async () => {
+    withModes([GRANT, GRANT_B], { d1: 'propose' })
+    useCodingStore.setState({ selectedDirectoryId: 'd1' })
+    await useCodingStore.getState().loadProjects()
+    expect(useCodingStore.getState().selectedDirectoryId).toBe('d1')
+  })
+
+  it('drops a selection whose grant is gone', async () => {
+    // The grant was revoked while the app ran. Keeping the id would leave the
+    // picker pointing at a directory the main process no longer allows.
+    withModes([GRANT_B], { d2: 'propose' })
+    useCodingStore.setState({ selectedDirectoryId: 'd1' })
+    await useCodingStore.getState().loadProjects()
+    expect(useCodingStore.getState().selectedDirectoryId).toBeNull()
+  })
+
+  it('still loads the grants and the modes it was asked for', async () => {
+    // Positive control: the assertions above would also pass if loadProjects
+    // did nothing at all.
+    withModes([GRANT, GRANT_B], { d1: 'propose', d2: 'read-only' })
+    await useCodingStore.getState().loadProjects()
+    const state = useCodingStore.getState()
+    expect(state.grants.map((g) => g.id)).toEqual(['d1', 'd2'])
+    expect(state.modes).toEqual({ d1: 'propose', d2: 'read-only' })
+  })
+})

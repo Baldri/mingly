@@ -240,3 +240,31 @@ describe('CodingModePicker takes no room it does not need', () => {
     expect(container.querySelectorAll('input[name="coding-mode"]').length).toBe(0)
   })
 })
+
+/**
+ * When the store cannot restore a selection by itself — two graded projects,
+ * say — the surface must say so. The silent fallback to a plain chat was the
+ * defect that cost a whole acceptance run: a stored level, no selection, and
+ * a model answering that it had no file access.
+ */
+describe('CodingModePicker says when the coding tools are off despite a graded project', () => {
+  it('warns when a project is graded but none is selected', () => {
+    h.coding.selectedDirectoryId = null
+    h.coding.modes = { d1: 'propose' }
+    render(true)
+    const warning = container.querySelector('[data-testid="coding-off-despite-grades"]')
+    expect(warning?.textContent).toBe('Kein Projekt gewählt – Coding-Werkzeuge aus')
+  })
+
+  it('stays quiet when a project is selected', () => {
+    render(true)
+    expect(container.querySelector('[data-testid="coding-off-despite-grades"]')).toBeNull()
+  })
+
+  it('stays quiet when nothing is graded — that is an ordinary chat, not a warning', () => {
+    h.coding.selectedDirectoryId = null
+    h.coding.modes = { d1: 'off' }
+    render(true)
+    expect(container.querySelector('[data-testid="coding-off-despite-grades"]')).toBeNull()
+  })
+})
