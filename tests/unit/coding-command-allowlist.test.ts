@@ -26,7 +26,20 @@ const ALL = {
 }
 const SCRIPTS = ['build', 'lint', 'test:unit']
 
-const GIT_PREFIX = ['-c', 'core.fsmonitor=false', '--no-pager']
+// Written out by hand, never imported from the module under test. The two
+// submodule entries were added when a filter driver in a submodule's own config
+// turned out to be invisible to gitConfigIsSafe's probe; the behaviour that
+// matters is asserted against real git in
+// tests/unit/coding-git-submodule-filter-real-fs.test.ts.
+const GIT_PREFIX = [
+  '-c',
+  'core.fsmonitor=false',
+  '-c',
+  'diff.ignoreSubmodules=all',
+  '-c',
+  'status.submoduleSummary=false',
+  '--no-pager'
+]
 
 function refusedReason(plan: CommandPlan): string {
   if (plan.kind !== 'refused') throw new Error('expected a refusal, got ' + JSON.stringify(plan))
@@ -97,10 +110,23 @@ describe('planCommand: what runs', () => {
 describe('planCommand: git', () => {
   it('runs status and the name-only diff forms with config-driven execution switched off', () => {
     const cases: Array<[string, string[]]> = [
-      ['git status', [...GIT_PREFIX, 'status']],
-      ['git status --short', [...GIT_PREFIX, 'status', '--short']],
-      ['git diff --stat', [...GIT_PREFIX, 'diff', '--no-ext-diff', '--no-textconv', '--stat']],
-      ['git diff --name-only', [...GIT_PREFIX, 'diff', '--no-ext-diff', '--no-textconv', '--name-only']]
+      ['git status', [...GIT_PREFIX, 'status', '--ignore-submodules=all']],
+      ['git status --short', [...GIT_PREFIX, 'status', '--short', '--ignore-submodules=all']],
+      [
+        'git diff --stat',
+        [...GIT_PREFIX, 'diff', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all', '--stat']
+      ],
+      [
+        'git diff --name-only',
+        [
+          ...GIT_PREFIX,
+          'diff',
+          '--no-ext-diff',
+          '--no-textconv',
+          '--ignore-submodules=all',
+          '--name-only'
+        ]
+      ]
     ]
     for (const [line, args] of cases) {
       expect(planCommand(line, p, ALL)).toEqual({ kind: 'run', file: '/usr/bin/git', args, cwd: p })

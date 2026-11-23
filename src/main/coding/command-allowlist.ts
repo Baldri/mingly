@@ -91,7 +91,25 @@ interface Matched {
 
 type Match = Matched | { refusal: string }
 
-const GIT_PREFIX = ['-c', 'core.fsmonitor=false', '--no-pager']
+/**
+ * The `-c` floor for every git invocation.
+ *
+ * `diff.ignoreSubmodules` and `status.submoduleSummary` are here rather than
+ * only on the commands because a command added later inherits them: the
+ * per-command `--ignore-submodules=all` below is the belt, this is the braces.
+ * Both were measured to be sufficient on their own (git 2.53.0), and a
+ * command-line flag outranks `-c`, which outranks the repository's config — so
+ * a repository cannot configure its way back in.
+ */
+const GIT_PREFIX = [
+  '-c',
+  'core.fsmonitor=false',
+  '-c',
+  'diff.ignoreSubmodules=all',
+  '-c',
+  'status.submoduleSummary=false',
+  '--no-pager'
+]
 
 /**
  * A path argument: relative, no flag, no `..` escape, not on the blocklist.
@@ -171,19 +189,38 @@ function matchTokens(tokens: readonly string[]): Match {
       // They do NOT turn off clean/smudge filters, and no git flag does:
       // measured on git 2.53.0, a `filter.<name>.clean` driver selected by a
       // `.gitattributes` runs for `git diff --stat`, `git diff --name-only` and
-      // `git status [--short]` alike. That one is handled where the repository
-      // is inspected — run-command.ts refuses a config that defines a filter,
-      // a `*command` key or an `include` (see gitConfigIsSafe). Do not write
-      // "configuration that could name a program is switched off" here again:
-      // the switches are a list, not a guarantee.
+      // `git status [--short]` alike. For the GRANTED repository that one is
+      // handled where the repository is inspected — run-command.ts refuses a
+      // config that defines a filter, a `*command` key or an `include` (see
+      // gitConfigIsSafe). Do not write "configuration that could name a program
+      // is switched off" here again: the switches are a list, not a guarantee.
+      //
+      // `--ignore-submodules=all` closes the half of that which gitConfigIsSafe
+      // structurally cannot reach. Its probe lists the config SCOPES of the
+      // superproject (`local`, `worktree`); a submodule keeps its own config in
+      // `.git/modules/<name>/config`, which is none of them. So a
+      // `filter.<name>.clean` placed there is invisible to the probe, while all
+      // three commands below reach into the submodule worktree to classify it
+      // and run the driver on the way — measured four times per run before this
+      // flag, zero with it, with a positive control in the same run
+      // (tests/unit/coding-git-submodule-filter-real-fs.test.ts).
+      //
+      // The price is that a dirty submodule is no longer reported. That is the
+      // right side of the trade: submodule content lies outside the directory
+      // the user graded, so it was never this tool's to describe.
       if (sameArgs(rest, ['status'])) {
-        return { tool: 'git', binary: { kind: 'interpreter', name: 'git' }, args: [...GIT_PREFIX, 'status'], pathArgs: [] }
+        return {
+          tool: 'git',
+          binary: { kind: 'interpreter', name: 'git' },
+          args: [...GIT_PREFIX, 'status', '--ignore-submodules=all'],
+          pathArgs: []
+        }
       }
       if (sameArgs(rest, ['status', '--short'])) {
         return {
           tool: 'git',
           binary: { kind: 'interpreter', name: 'git' },
-          args: [...GIT_PREFIX, 'status', '--short'],
+          args: [...GIT_PREFIX, 'status', '--short', '--ignore-submodules=all'],
           pathArgs: []
         }
       }
@@ -191,7 +228,14 @@ function matchTokens(tokens: readonly string[]): Match {
         return {
           tool: 'git',
           binary: { kind: 'interpreter', name: 'git' },
-          args: [...GIT_PREFIX, 'diff', '--no-ext-diff', '--no-textconv', rest[1]],
+          args: [
+            ...GIT_PREFIX,
+            'diff',
+            '--no-ext-diff',
+            '--no-textconv',
+            '--ignore-submodules=all',
+            rest[1]
+          ],
           pathArgs: []
         }
       }

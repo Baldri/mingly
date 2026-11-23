@@ -163,10 +163,20 @@ describe('mingly_run_command execution', () => {
   })
 
   it('passes git the switches that stop repository config from naming a program', async () => {
+    // The two submodule switches are part of this contract because a filter
+    // driver in a SUBMODULE's own config is invisible to gitConfigIsSafe: its
+    // probe lists the superproject's scopes, and `.git/modules/<name>/config`
+    // is none of them. Asserted against real git, with a positive control, in
+    // tests/unit/coding-git-submodule-filter-real-fs.test.ts — this one only
+    // pins the argv that actually reaches the child process.
+    const prefix =
+      '-c core.fsmonitor=false -c diff.ignoreSubmodules=all -c status.submoduleSummary=false --no-pager'
     fake('git', 'echo "argv:$*"')
-    expect(await run(makeRegistry(), 'git status')).toContain('argv:-c core.fsmonitor=false --no-pager status')
+    expect(await run(makeRegistry(), 'git status')).toContain(
+      `argv:${prefix} status --ignore-submodules=all`
+    )
     expect(await run(makeRegistry(), 'git diff --stat')).toContain(
-      'argv:-c core.fsmonitor=false --no-pager diff --no-ext-diff --no-textconv --stat'
+      `argv:${prefix} diff --no-ext-diff --no-textconv --ignore-submodules=all --stat`
     )
   })
 
