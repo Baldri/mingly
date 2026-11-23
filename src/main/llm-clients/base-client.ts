@@ -43,8 +43,8 @@ export abstract class BaseLLMClient {
    * Calculate cost based on token usage and model
    */
   protected calculateCost(
-    tokens: { prompt: number; completion: number },
-    model: string
+    _tokens: { prompt: number; completion: number },
+    _model: string
   ): number {
     // Override in subclasses with provider-specific pricing
     return 0

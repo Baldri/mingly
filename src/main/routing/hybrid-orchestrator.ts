@@ -18,7 +18,6 @@
 import { getClientManager } from '../llm-clients/client-manager'
 import { getRouter } from './intelligent-router'
 import type {
-  RequestCategory,
   SubTask,
   DelegationProposal,
   DelegationResult,

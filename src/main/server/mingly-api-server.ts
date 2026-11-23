@@ -51,7 +51,9 @@ export class MinglyAPIServer {
   async start(): Promise<void> {
     assertAuthConfig(this.config)
     this.startTime = Date.now()
-    const serviceLayer = getServiceLayer()
+    // Der Aufruf, nicht der Wert: getServiceLayer ist ein Lazy-Singleton und
+    // erzeugt die Instanz hier, vor dem ersten Request.
+    getServiceLayer()
 
     // Create HTTP server
     this.httpServer = createServer(async (req, res) => {

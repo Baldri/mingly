@@ -16,7 +16,6 @@ import type {
   DeploymentConfig,
   DeploymentMode,
   MinglyServerConfig,
-  HybridClientConfig,
   MinglyRemoteServer
 } from '../../shared/deployment-types'
 import { DEFAULT_DEPLOYMENT_CONFIG, DEFAULT_SERVER_CONFIG, DEFAULT_HYBRID_CONFIG } from '../../shared/deployment-types'

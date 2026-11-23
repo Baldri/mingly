@@ -227,7 +227,9 @@ export class FileService {
       const volumeInfos = await Promise.all(
         volumes.map(async (name) => {
           const volumePath = path.join(volumesPath, name)
-          const stats = statSync(volumePath)
+          // Der Aufruf, nicht der Wert: statSync wirft, wenn der Pfad nicht
+          // existiert, und das ist hier die Existenzpruefung.
+          statSync(volumePath)
 
           return {
             name,
@@ -256,20 +258,13 @@ export class FileService {
     )
   }
 
-  /**
-   * Validate path (prevent traversal attacks)
-   */
-  private validatePath(filePath: string): string {
-    const resolved = path.resolve(filePath)
-
-    // Prevent access to system directories
-    const forbidden = ['/etc', '/System', '/private', '/usr', '/bin', '/sbin']
-    if (forbidden.some((dir) => resolved.startsWith(dir))) {
-      throw new Error('Access to system directories is forbidden')
-    }
-
-    return resolved
-  }
+  // No validatePath() here any more. It was private, never called, and a
+  // weaker duplicate of what this class already does: it blocked six system
+  // directories by prefix, while every read, write and list path goes through
+  // isPathAllowed(), which admits ONLY explicitly granted directories. An
+  // allowlist refuses /etc because nothing granted it, not because it is on a
+  // list — so removing the blocklist takes no check away. Measured: the method
+  // had exactly one occurrence in the tree, its own declaration.
 
   /**
    * Clear all allowed paths (called on app restart)

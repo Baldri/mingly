@@ -96,7 +96,6 @@ function buildToolArgs(tool: MCPTool, userMessage: string): Record<string, any> 
   if (!schema || !schema.properties) return {}
 
   const args: Record<string, any> = {}
-  const required: string[] = schema.required || []
 
   for (const [paramName, paramDef] of Object.entries(schema.properties as Record<string, any>)) {
     const paramType = paramDef.type

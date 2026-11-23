@@ -13,7 +13,6 @@
 import { nanoid } from 'nanoid'
 import { AgentExecutor, type AgentEvent } from './agent-executor'
 import { ToolRegistry } from './tool-registry'
-import { getMCPClientManager } from '../mcp/mcp-client-manager'
 import { getClientManager } from '../llm-clients/client-manager'
 import type {
   AgentModelSlot,
@@ -21,8 +20,7 @@ import type {
   TaskDecomposition,
   SubagentResult,
   SubagentSession,
-  Message,
-  ToolDefinition
+  Message
 } from '../../shared/types'
 
 export type SubagentEventHandler = (taskId: string, event: AgentEvent) => void
@@ -277,7 +275,6 @@ export class SubagentOrchestrator {
     // Build synthesis context
     const resultsContext = subtaskResults
       .map((result, idx) => {
-        const taskTitle = result.taskId
         const status = result.run.status
         const finalStep = result.run.steps.find((s) => s.isFinal)
         const answer = finalStep?.response ?? result.run.error ?? 'No result'

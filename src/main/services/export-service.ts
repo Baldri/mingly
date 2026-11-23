@@ -1,4 +1,4 @@
-import type { Message, MessageAttachment } from '../../shared/types'
+import type { Message } from '../../shared/types'
 
 export type ExportFormat = 'markdown' | 'json' | 'html'
 
