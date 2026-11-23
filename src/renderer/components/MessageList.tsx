@@ -15,6 +15,17 @@ export const MessageList = memo(function MessageList() {
   const streamingContent = useChatStore((state) => state.streamingContent)
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
+  // Every hook this component calls must be called on EVERY render, including
+  // the empty-state render below. These three sat under that early return, so
+  // an empty conversation ran five hooks and the first arriving message ran
+  // eight — React matches hooks by position and tore the renderer down with
+  // #310 ("Rendered more hooks than during the previous render"), or #300 on
+  // the way back to empty. Reading agent state costs nothing when there is no
+  // agent, and the early return is only about what is DRAWN.
+  const agentIsRunning = useAgentStore((state) => state.isRunning)
+  const agentSteps = useAgentStore((state) => state.currentSteps)
+  const agentRun = useAgentStore((state) => state.currentRun)
+
   const displayMessages = useMemo(() => {
     const list = [...messages]
     if (isStreaming && streamingContent) {
@@ -27,7 +38,19 @@ export const MessageList = memo(function MessageList() {
     return list
   }, [messages, isStreaming, streamingContent])
 
-  if (displayMessages.length === 0) {
+  /**
+   * The placeholder is for "nothing has happened", not for "nothing was
+   * stored".
+   *
+   * A coding run writes no message: it reports through the step indicator in
+   * this list's footer, and — when it proposes edits — through the diff dialog.
+   * A run that only executes a command answers in prose and proposes nothing,
+   * so with this early return taken on message count alone it had no surface
+   * at all: four model calls in the audit log and "Start a conversation" on
+   * screen. Measured during the A9 acceptance run, twice, before anyone looked
+   * at the database.
+   */
+  if (displayMessages.length === 0 && !agentIsRunning && agentSteps.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-500 dark:text-gray-400 p-8">
         <div className="text-center">
@@ -38,11 +61,6 @@ export const MessageList = memo(function MessageList() {
       </div>
     )
   }
-
-  // Agent state for step indicator
-  const agentIsRunning = useAgentStore((state) => state.isRunning)
-  const agentSteps = useAgentStore((state) => state.currentSteps)
-  const agentRun = useAgentStore((state) => state.currentRun)
 
   return (
     <div className="flex-1 flex flex-col min-h-0">

@@ -5,6 +5,7 @@ import { LoadingSpinner } from './components/LoadingSpinner'
 import { OnboardingTooltip, TourStartButton } from './components/OnboardingTooltip'
 import { useSettingsStore } from './stores/settings-store'
 import { useChatStore } from './stores/chat-store'
+import { shouldShowWelcome } from './lib/welcome-gate'
 
 /** Global Error Boundary — catches render errors and shows recovery UI */
 class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: Error | null }> {
@@ -138,7 +139,15 @@ function App() {
     )
   }
 
-  if (showWelcome && !hasAnyAPIKey) {
+  // `showWelcome` is the state; `shouldShowWelcome` is the rule, and it lives
+  // in one testable place because this gate once had no exit at all.
+  if (
+    shouldShowWelcome({
+      dismissed: !showWelcome,
+      hasCloudApiKey: hasAnyAPIKey,
+      conversationCount: conversations.length
+    })
+  ) {
     return (
       <div className="flex h-screen flex-col bg-white dark:bg-gray-900">
         {/* Header — extra left padding on macOS to avoid traffic lights */}
@@ -199,6 +208,23 @@ function App() {
                 action="Explore"
                 onAction={() => openSettings('integrations')}
               />
+            </div>
+
+            {/*
+              The way out. A cloud API key is one way to use Mingly, not the
+              price of entry: a local model needs none, and demanding one here
+              contradicts what the app is for.
+            */}
+            <div className="mt-8">
+              <button
+                onClick={() => setShowWelcome(false)}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+              >
+                Continue without a cloud key
+              </button>
+              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                Local models run on this machine and need no API key.
+              </p>
             </div>
           </div>
         </main>
