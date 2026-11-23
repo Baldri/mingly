@@ -5,6 +5,7 @@
  * the code under test.
  */
 import { describe, it, expect, vi } from 'vitest'
+import * as os from 'os'
 import { ToolRegistry, type ToolContext } from '../../src/main/agent/tool-registry'
 import {
   planCommand,
@@ -28,9 +29,17 @@ const SCRIPTS = ['build', 'lint', 'test:unit']
 
 // Written out by hand, never imported from the module under test. The two
 // submodule entries were added when a filter driver in a submodule's own config
-// turned out to be invisible to gitConfigIsSafe's probe; the behaviour that
-// matters is asserted against real git in
-// tests/unit/coding-git-submodule-filter-real-fs.test.ts.
+// turned out to be invisible to gitConfigIsSafe's probe; `core.hooksPath` when a
+// hook at `.git/hooks/<name>` turned out to need no config entry at all. Both
+// behaviours are asserted against real git, each with a positive control, in
+// tests/unit/coding-git-submodule-filter-real-fs.test.ts and
+// tests/unit/coding-git-hook-real-fs.test.ts.
+//
+// `os.devNull` rather than a literal `/dev/null`: this file is platform-neutral
+// and runs on Windows too, where the path is spelled differently. It comes from
+// Node, not from the module under test, and WHICH path is the right one is
+// settled by the real-git test above, not here — here only its presence in the
+// argv is.
 const GIT_PREFIX = [
   '-c',
   'core.fsmonitor=false',
@@ -38,6 +47,8 @@ const GIT_PREFIX = [
   'diff.ignoreSubmodules=all',
   '-c',
   'status.submoduleSummary=false',
+  '-c',
+  `core.hooksPath=${os.devNull}`,
   '--no-pager'
 ]
 

@@ -166,11 +166,16 @@ describe('mingly_run_command execution', () => {
     // The two submodule switches are part of this contract because a filter
     // driver in a SUBMODULE's own config is invisible to gitConfigIsSafe: its
     // probe lists the superproject's scopes, and `.git/modules/<name>/config`
-    // is none of them. Asserted against real git, with a positive control, in
-    // tests/unit/coding-git-submodule-filter-real-fs.test.ts — this one only
-    // pins the argv that actually reaches the child process.
+    // is none of them. `core.hooksPath` is part of it for a sharper reason: a
+    // hook at `.git/hooks/<name>` needs no config entry anywhere, so no probe
+    // over config keys can ever see it. Both are asserted against real git,
+    // each with a positive control, in
+    // tests/unit/coding-git-submodule-filter-real-fs.test.ts and
+    // tests/unit/coding-git-hook-real-fs.test.ts — this one only pins the argv
+    // that actually reaches the child process.
     const prefix =
-      '-c core.fsmonitor=false -c diff.ignoreSubmodules=all -c status.submoduleSummary=false --no-pager'
+      '-c core.fsmonitor=false -c diff.ignoreSubmodules=all -c status.submoduleSummary=false ' +
+      `-c core.hooksPath=${os.devNull} --no-pager`
     fake('git', 'echo "argv:$*"')
     expect(await run(makeRegistry(), 'git status')).toContain(
       `argv:${prefix} status --ignore-submodules=all`
