@@ -122,25 +122,67 @@ export class EncryptedStore {
   }
 
   /**
-   * Move a store file we could not read out of the way, once, before the first
-   * write replaces it. Named rather than deleted: whatever went wrong may be
-   * fixable later, and then the ciphertext is still there.
+   * Move a store file we could not read out of the way, before the first write
+   * replaces it. Named rather than deleted: whatever went wrong may be fixable
+   * later, and then the ciphertext is still there.
+   *
+   * Returns false when the bytes are STILL IN PLACE, which means they must not
+   * be overwritten. `loadFailed` then stays set, so the next save tries the
+   * preservation again.
+   *
+   * The first version of this cleared `loadFailed` before attempting the
+   * rename — "a failed rename must not make every later save retry it" — and
+   * saveToDisk wrote regardless. A rename that threw therefore produced exactly
+   * the outcome this mechanism exists to prevent. Retrying two syscalls per
+   * save is the cheaper mistake, so that is the one taken.
    */
-  private preserveUnreadableFile(): void {
-    if (!this.loadFailed) return
-    // Clear first: a failed rename must not make every later save retry it.
-    this.loadFailed = false
-    try {
-      if (!fs.existsSync(this.storePath)) return
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-      fs.renameSync(this.storePath, `${this.storePath}.unreadable-${stamp}`)
-    } catch (error) {
-      console.error('Failed to preserve unreadable encrypted store:', error)
+  private preserveUnreadableFile(): boolean {
+    if (!this.loadFailed) return true
+    if (!fs.existsSync(this.storePath)) {
+      // Nothing to preserve: whatever made the load fail is no longer there.
+      this.loadFailed = false
+      return true
     }
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const kept = `${this.storePath}.unreadable-${stamp}`
+
+    // Rename first: atomic, and it leaves no second copy of the secrets behind.
+    try {
+      fs.renameSync(this.storePath, kept)
+      this.loadFailed = false
+      return true
+    } catch (error) {
+      console.error('[EncryptedStore] Could not rename the unreadable store aside:', error)
+    }
+
+    // A copy preserves the bytes too, and then the original may be replaced.
+    // Attempted separately because the two fail for different reasons: a rename
+    // across devices (EXDEV) or a directory that allows writing a file but not
+    // unlinking one.
+    try {
+      fs.copyFileSync(this.storePath, kept)
+      this.loadFailed = false
+      return true
+    } catch (error) {
+      console.error('[EncryptedStore] Could not copy the unreadable store aside:', error)
+    }
+
+    return false
   }
 
   private saveToDisk(): void {
-    this.preserveUnreadableFile()
+    if (!this.preserveUnreadableFile()) {
+      // Not a silent failure: a write error below is reported the same way, so
+      // this is the contract this class already has. What it buys is that the
+      // user's only copy of their secrets is still on disk afterwards.
+      console.error(
+        '[EncryptedStore] Not writing: the existing store could not be read and could not be ' +
+          'preserved, and writing would destroy the only copy of the stored secrets. ' +
+          `Move ${this.storePath} aside by hand to continue.`
+      )
+      return
+    }
     try {
       fs.writeFileSync(
         this.storePath,

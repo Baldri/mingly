@@ -42,7 +42,15 @@ export interface AtomicWriteOptions {
    * this hook's last read and the rename. Closing it needs a file lock or
    * `renameat`-style APIs, neither of which Node offers. A save that lands in
    * that window is overwritten (the snapshot then holds the pre-save text).
-   * DEBT: one-await content window -> a lock or renameat binding.
+   *
+   * DEBT: the window stays one await wide and a save landing in it is lost
+   * silently -> upgrade when the exported audit shows `changed-since-apply`
+   * under `skippedReasons` in more than one run, or when Node exposes a file
+   * lock or a renameat-style API. The audit counter is the measurable half:
+   * it counts the SAME race one await wider, the part this code CAN detect, so
+   * its rate is the only available estimate of how often the undetectable part
+   * fires. While it stays at zero, nobody is editing during an apply and the
+   * window costs nothing.
    */
   verifyBeforeRename?: () => Promise<void>
 }
