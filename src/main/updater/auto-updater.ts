@@ -195,10 +195,18 @@ export class AutoUpdater extends EventEmitter {
     }
 
     // Initial check after delay
-    setTimeout(() => this.checkForUpdates(), INITIAL_CHECK_DELAY_MS)
+    setTimeout(() => {
+      this.checkForUpdates().catch((err) => {
+        console.warn('[updater] initial check failed:', (err as Error).message)
+      })
+    }, INITIAL_CHECK_DELAY_MS)
 
     // Periodic checks
-    this.checkInterval = setInterval(() => this.checkForUpdates(), CHECK_INTERVAL_MS)
+    this.checkInterval = setInterval(() => {
+      this.checkForUpdates().catch((err) => {
+        console.warn('[updater] periodic check failed:', (err as Error).message)
+      })
+    }, CHECK_INTERVAL_MS)
   }
 
   getStatus(): UpdateStatus {
@@ -272,7 +280,9 @@ export class AutoUpdater extends EventEmitter {
       console.error('[updater] Invalid URL:', url)
       return
     }
-    shell.openExternal(url)
+    shell.openExternal(url).catch((error) => {
+      console.warn('[updater] could not open release page:', (error as Error).message)
+    })
   }
 
   shutdown(): void {

@@ -77,13 +77,13 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
   // Load API keys on mount to fix the "no key" warning on first open
   useEffect(() => {
     if (isOpen && !keysLoaded) {
-      checkAPIKeys().then(() => setKeysLoaded(true))
+      void checkAPIKeys().then(() => setKeysLoaded(true))
     }
   }, [isOpen, keysLoaded, checkAPIKeys])
 
   // Load templates when modal opens
   useEffect(() => {
-    if (isOpen) loadTemplates()
+    if (isOpen) void loadTemplates()
   }, [isOpen, loadTemplates])
 
   // Load RAG-Wissen projects (Team+ tier only)
@@ -154,7 +154,7 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      handleCreate()
+      void handleCreate()
     }
   }
 

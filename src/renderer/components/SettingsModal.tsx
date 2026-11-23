@@ -52,8 +52,8 @@ export function SettingsModal({ isOpen, onClose }: Props) {
 
   useEffect(() => {
     if (isOpen) {
-      loadSettings()
-      checkAPIKeys()
+      void loadSettings()
+      void checkAPIKeys()
     }
   }, [isOpen, loadSettings, checkAPIKeys])
 

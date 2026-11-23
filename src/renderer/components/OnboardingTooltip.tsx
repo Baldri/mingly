@@ -137,7 +137,7 @@ export const TourStartButton = memo(function TourStartButton() {
   const initialize = useOnboardingStore((s) => s.initialize)
 
   useEffect(() => {
-    initialize()
+    void initialize()
   }, [initialize])
 
   const unseenCount = getUnseenTips().length

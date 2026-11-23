@@ -18,7 +18,7 @@
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'http'
-import { WebSocketServer, WebSocket } from 'ws'
+import { WebSocketServer, WebSocket, type RawData } from 'ws'
 import { getServiceLayer, ChatStreamEvent } from '../services/service-layer'
 import type { MinglyServerConfig, APIServerInfo, APIHealthResponse, APIChatRequest } from '../../shared/deployment-types'
 import { checkApiAuth, applyCorsHeaders, assertAuthConfig } from './api-auth'
@@ -56,7 +56,11 @@ export class MinglyAPIServer {
     getServiceLayer()
 
     // Create HTTP server
-    this.httpServer = createServer(async (req, res) => {
+    // createServer() ignores the promise a handler returns, so the handler is
+    // registered as a void-returning wrapper. The outer catch is NOT redundant
+    // with the inner try/catch: sendJSON() itself throws once the headers are
+    // sent, and that rejection would otherwise have nowhere to go.
+    const serveRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
       // CORS headers
       this.setCORSHeaders(res, req)
 
@@ -78,6 +82,11 @@ export class MinglyAPIServer {
         const message = error instanceof Error ? error.message : 'Internal server error'
         this.sendJSON(res, 500, { error: 'InternalServerError', message })
       }
+    }
+    this.httpServer = createServer((req, res) => {
+      serveRequest(req, res).catch((error) => {
+        log.error('Unhandled error in HTTP handler', { error: String(error) })
+      })
     })
 
     // WebSocket server (attached to HTTP server)
@@ -99,7 +108,9 @@ export class MinglyAPIServer {
         this.activeSessions++
         log.info('WebSocket client connected', { activeSessions: this.activeSessions })
 
-        ws.on('message', async (data) => {
+        // Same as the HTTP handler above: ws.on() ignores the returned
+        // promise, and ws.send() in the catch throws on a closed socket.
+        const handleMessage = async (data: RawData): Promise<void> => {
           try {
             const message = JSON.parse(data.toString())
             await this.handleWSMessage(ws, message)
@@ -107,6 +118,11 @@ export class MinglyAPIServer {
             const errorMsg = error instanceof Error ? error.message : 'Invalid message'
             ws.send(JSON.stringify({ type: 'error', error: errorMsg }))
           }
+        }
+        ws.on('message', (data) => {
+          handleMessage(data).catch((error) => {
+            log.error('Unhandled error in WebSocket handler', { error: String(error) })
+          })
         })
 
         ws.on('close', () => {

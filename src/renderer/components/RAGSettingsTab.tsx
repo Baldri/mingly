@@ -132,7 +132,7 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
   })
 
   useEffect(() => {
-    loadData()
+    void loadData()
   }, [])
 
   const loadData = useCallback(async () => {
@@ -259,7 +259,8 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
         setWissenConfig({ ...wissenConfig, ...updates })
         showStatus('Server configuration saved', 'success')
         // Re-check health with new config
-        setTimeout(checkWissenHealth, 500)
+        // checkWissenHealth() catches its own failures, so `void` is honest here.
+        setTimeout(() => void checkWissenHealth(), 500)
       } else {
         showStatus('Failed to save server configuration', 'error')
       }
@@ -279,7 +280,8 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
         // Refresh status
         const status = await window.electronAPI.docmind?.getStatus()
         if (status?.success) setDocMindStatus(status)
-        setTimeout(checkWissenHealth, 500)
+        // checkWissenHealth() catches its own failures, so `void` is honest here.
+        setTimeout(() => void checkWissenHealth(), 500)
       } else {
         showStatus('DocMind initialization failed', 'error')
       }
@@ -493,7 +495,7 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
                 defaultValue={ragServerName}
                 onBlur={(e) => {
                   const name = e.target.value.trim()
-                  useSettingsStore.getState().updateSettings({ ragServerName: name || undefined })
+                  void useSettingsStore.getState().updateSettings({ ragServerName: name || undefined })
                 }}
                 placeholder="RAG-Wissen"
                 className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"

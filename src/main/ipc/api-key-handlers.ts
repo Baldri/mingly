@@ -46,7 +46,7 @@ export function registerApiKeyHandlers(): void {
   })
 
   // Initialize keys from keychain at startup
-  initializeAPIKeys(keychainManager, clientManager)
+  void initializeAPIKeys(keychainManager, clientManager)
 }
 
 async function initializeAPIKeys(keychainManager: KeychainManager, clientManager: ReturnType<typeof getClientManager>): Promise<void> {

@@ -9,7 +9,7 @@ export function FileAccessTab() {
   const [pendingRevokeId, setPendingRevokeId] = useState<string | null>(null)
 
   useEffect(() => {
-    loadDirectories()
+    void loadDirectories()
   }, [])
 
   const loadDirectories = async () => {

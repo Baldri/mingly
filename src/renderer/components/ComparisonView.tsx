@@ -40,7 +40,7 @@ export const ComparisonView = memo(function ComparisonView({ onClose }: { onClos
 
   const handleRun = useCallback(() => {
     if (prompt.trim()) {
-      runComparison(prompt.trim())
+      void runComparison(prompt.trim())
     }
   }, [runComparison, prompt])
 

@@ -165,12 +165,12 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
     updated.add(tipId)
     set({ seenTips: updated, activeTip: null })
 
-    // Persist via settings.update
-    try {
-      window.electronAPI.settings.update({ onboardingSeenTips: [...updated] } as any)
-    } catch {
-      // non-critical
-    }
+    // Persist via settings.update. The former try/catch around this could
+    // never fire: the call is async, so a rejected IPC invoke passed straight
+    // through it. The catch has to be on the promise.
+    window.electronAPI.settings.update({ onboardingSeenTips: [...updated] } as any).catch(() => {
+      // non-critical: the tip reappears on the next start
+    })
   },
 
   startTour: (category) => {
@@ -210,11 +210,9 @@ export const useOnboardingStore = create<OnboardingState>((set, get) => ({
 
   resetAllTips: () => {
     set({ seenTips: new Set(), activeTip: null, isTourActive: false, tourIndex: 0 })
-    try {
-      window.electronAPI.settings.update({ onboardingSeenTips: [] } as any)
-    } catch {
-      // non-critical
-    }
+    window.electronAPI.settings.update({ onboardingSeenTips: [] } as any).catch(() => {
+      // non-critical: the tips reappear on the next start
+    })
   },
 
   getUnseenTips: (category) => {

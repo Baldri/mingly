@@ -48,7 +48,7 @@ export const PrivacyShield = memo(function PrivacyShield({ inputText }: PrivacyS
 
     clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => {
-      detectPreview(inputText)
+      void detectPreview(inputText)
     }, DETECT_DELAY)
 
     return () => clearTimeout(timerRef.current)

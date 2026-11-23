@@ -30,7 +30,7 @@ export const IntegrationsTab = memo(function IntegrationsTab() {
   const [obsidianError, setObsidianError] = useState<string | null>(null)
 
   useEffect(() => {
-    loadStatus()
+    void loadStatus()
   }, [])
 
   const loadStatus = async () => {

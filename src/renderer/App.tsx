@@ -68,7 +68,7 @@ function App() {
 
   useEffect(() => {
     // Initialize app with loading state
-    Promise.all([loadSettings(), checkAPIKeys(), loadConversations()])
+    void Promise.all([loadSettings(), checkAPIKeys(), loadConversations()])
       .finally(() => setIsLoading(false))
 
     // Listen for new conversation events
@@ -122,7 +122,7 @@ function App() {
       <Suspense fallback={<LoadingSpinner label="Loading setup..." />}>
         <SetupWizard
           onComplete={() => {
-            checkAPIKeys()
+            void checkAPIKeys()
             setShowWelcome(false)
           }}
         />

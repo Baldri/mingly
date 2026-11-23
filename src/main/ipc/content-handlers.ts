@@ -171,7 +171,7 @@ export async function registerContentHandlers(): Promise<void> {
     const attachments: MessageAttachment[] = []
 
     for (const filePath of paths) {
-      const att = await processImageFile(filePath)
+      const att = processImageFile(filePath)
       attachments.push(att)
     }
 
