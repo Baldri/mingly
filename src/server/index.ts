@@ -158,8 +158,17 @@ async function main() {
     process.exit(0)
   }
 
-  process.on('SIGTERM', () => shutdown('SIGTERM'))
-  process.on('SIGINT', () => shutdown('SIGINT'))
+  // process.on() ignores the returned promise. shutdown() wraps both of its
+  // steps, so it should not reject — but if it ever does, the signal must
+  // still end the process instead of leaving it running without a server.
+  const onSignal = (signal: string) => () => {
+    shutdown(signal).catch((err) => {
+      log.error('Shutdown failed', { signal, error: String(err) })
+      process.exit(1)
+    })
+  }
+  process.on('SIGTERM', onSignal('SIGTERM'))
+  process.on('SIGINT', onSignal('SIGINT'))
 
   // Handle uncaught errors
   process.on('uncaughtException', (err) => {

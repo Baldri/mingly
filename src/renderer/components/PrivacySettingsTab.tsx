@@ -126,7 +126,7 @@ const PrivacyModeSwitcher = memo(function PrivacyModeSwitcher() {
 
   const handleModeChange = useCallback((newMode: PrivacyMode) => {
     if (conversationId) {
-      setMode(conversationId, newMode)
+      void setMode(conversationId, newMode)
     }
   }, [conversationId, setMode])
 
@@ -180,7 +180,7 @@ const NERModelSection = memo(function NERModelSection() {
   const downloadNerModel = usePrivacyStore((s) => s.downloadNerModel)
   const deleteNerModel = usePrivacyStore((s) => s.deleteNerModel)
 
-  useEffect(() => { loadNerStatus() }, [loadNerStatus])
+  useEffect(() => { void loadNerStatus() }, [loadNerStatus])
 
   const statusConfig = {
     not_downloaded: { label: 'Nicht installiert', color: 'bg-gray-400', textColor: 'text-gray-600 dark:text-gray-400' },
@@ -298,7 +298,7 @@ export function PrivacySettingsTab() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    loadData()
+    void loadData()
   }, [])
 
   const loadData = async () => {

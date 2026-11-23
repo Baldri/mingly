@@ -53,7 +53,7 @@ export const NetworkAIServersTab = memo(function NetworkAIServersTab() {
   })
 
   useEffect(() => {
-    loadServers()
+    void loadServers()
   }, [])
 
   const loadServers = async () => {

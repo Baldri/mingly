@@ -29,7 +29,7 @@ export const AnalyticsTab = memo(function AnalyticsTab() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    loadData()
+    void loadData()
   }, [timeRange])
 
   const loadData = async () => {

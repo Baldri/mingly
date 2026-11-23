@@ -120,7 +120,7 @@ export const useTemplateStore = create<TemplateState>((set, get) => ({
       filter: { ...state.filter, ...filter },
     }))
     // Reload with new filter
-    get().loadTemplates()
+    void get().loadTemplates()
   },
 
   exportTemplates: async () => {

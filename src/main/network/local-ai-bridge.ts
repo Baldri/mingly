@@ -63,7 +63,14 @@ export class LocalAIBridge {
     }
 
     // Start periodic refresh (every 60 seconds)
-    this.refreshInterval = setInterval(() => this.refreshAll(), 60_000)
+    this.refreshInterval = setInterval(() => {
+      // refreshAll() can reject: its registerServer() call is outside the
+      // try/catch. A rejection from a 60s timer is nobody's to observe, and in
+      // the main process an unhandled rejection is fatal by default.
+      this.refreshAll().catch((err) => {
+        console.warn('[LocalAIBridge] periodic refresh failed:', (err as Error).message)
+      })
+    }, 60_000)
   }
 
   /**

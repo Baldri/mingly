@@ -14,7 +14,7 @@ export const ConversationSidebar = memo(function ConversationSidebar() {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
 
   useEffect(() => {
-    loadConversations()
+    void loadConversations()
   }, [loadConversations])
 
   const handleDelete = useCallback((id: string, e: React.MouseEvent | React.KeyboardEvent) => {
@@ -173,7 +173,7 @@ const SidebarTierBadge = memo(function SidebarTierBadge() {
   const loadTier = useSubscriptionStore((state) => state.loadTier)
 
   useEffect(() => {
-    loadTier()
+    void loadTier()
   }, [loadTier])
 
   const tierLabel = tier.charAt(0).toUpperCase() + tier.slice(1)

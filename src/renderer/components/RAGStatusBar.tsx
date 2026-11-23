@@ -13,8 +13,10 @@ export const RAGStatusBar = memo(function RAGStatusBar() {
 
   // Initial check + polling
   useEffect(() => {
-    checkHealth()
-    const id = setInterval(checkHealth, POLL_INTERVAL)
+    // `void`, not `.catch`: checkHealth() wraps everything it awaits, so it
+    // resolves even when every probe fails. A catch here would be dead code.
+    void checkHealth()
+    const id = setInterval(() => void checkHealth(), POLL_INTERVAL)
     return () => clearInterval(id)
   }, [checkHealth])
 

@@ -62,7 +62,7 @@ export const AgentComparisonView = memo(function AgentComparisonView({
 
   const handleRun = useCallback(() => {
     if (prompt.trim()) {
-      runComparison(prompt.trim())
+      void runComparison(prompt.trim())
     }
   }, [runComparison, prompt])
 

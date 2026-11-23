@@ -72,8 +72,8 @@ export function SettingsPage({ onBack, initialTab }: Props) {
   const { t } = useTranslation()
 
   useEffect(() => {
-    loadSettings()
-    checkAPIKeys()
+    void loadSettings()
+    void checkAPIKeys()
   }, [loadSettings, checkAPIKeys])
 
   const handleSaveAPIKey = async (provider: string) => {
@@ -381,7 +381,7 @@ function SubscriptionSection() {
   } = useSubscriptionStore()
 
   useEffect(() => {
-    loadTier()
+    void loadTier()
   }, [loadTier])
 
   const tierLabel = tier.charAt(0).toUpperCase() + tier.slice(1)

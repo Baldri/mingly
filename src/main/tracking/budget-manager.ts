@@ -88,7 +88,7 @@ export class BudgetManager {
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
 
     const tracking = getTrackingEngine()
-    const summary = await tracking.getSummary(monthStart)
+    const summary = tracking.getSummary(monthStart)
 
     // Build per-provider status
     const byProvider: Record<string, { spent: number; limit: number; percentage: number; warning: boolean; exceeded: boolean }> = {}

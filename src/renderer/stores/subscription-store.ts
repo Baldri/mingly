@@ -125,7 +125,7 @@ export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
         isLoading: false
       })
       // Reload features
-      get().loadAllFeatures()
+      void get().loadAllFeatures()
     } catch (err) {
       set({ isLoading: false, error: (err as Error).message })
     }

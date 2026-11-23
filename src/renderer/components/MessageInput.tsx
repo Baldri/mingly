@@ -66,7 +66,11 @@ export const MessageInput = memo(function MessageInput({ viewMode }: MessageInpu
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
-      handleSend()
+      // handleSend() can reject: startRun() in coding-store awaits without a
+      // try/catch of its own.
+      handleSend().catch((error) => {
+        console.error('Send failed:', error)
+      })
     }
   }, [handleSend])
 

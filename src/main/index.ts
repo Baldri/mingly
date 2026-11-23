@@ -7,6 +7,7 @@ import { getDeploymentManager } from './server/deployment-manager'
 import { getLocalAIBridge } from './network/local-ai-bridge'
 import { getDocMindIntegration } from './integrations/docmind-integration'
 import { getAutoUpdater } from './updater/auto-updater'
+import { runQuitCleanup } from './quit-cleanup'
 import { applyEnvFile } from './config/env-file'
 import { applyInfomaniakConfig, resolveInfomaniakProductId } from './config/infomaniak-config'
 import {
@@ -98,10 +99,17 @@ function createWindow(): void {
 
   // Load the app
   if (process.env.NODE_ENV === 'development' || !app.isPackaged) {
-    mainWindow.loadURL('http://localhost:5173')
+    // loadURL/loadFile reject when the renderer fails to load (dev server
+    // down, missing bundle). Unobserved, that is a blank window with nothing
+    // in the log to say why.
+    mainWindow.loadURL('http://localhost:5173').catch((error) => {
+      logger.error('Failed to load dev renderer', { error: String(error) })
+    })
     mainWindow.webContents.openDevTools()
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    mainWindow.loadFile(join(__dirname, '../renderer/index.html')).catch((error) => {
+      logger.error('Failed to load renderer bundle', { error: String(error) })
+    })
   }
 
   mainWindow.on('closed', () => {
@@ -196,6 +204,12 @@ app.whenReady().then(async () => {
     }
   })
 })
+  // Not every step above is wrapped — registerIPCHandlers() is not — so this
+  // chain can reject. Without a handler the only trace would be the generic
+  // unhandledRejection log below, after startup has already half-finished.
+  .catch((error) => {
+    logger.error('Startup failed', { error: String(error) })
+  })
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
@@ -203,16 +217,38 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', async () => {
-  // Before closeDatabase below: a pass scheduled after it would find no
-  // database.
-  stopTranscriptionScheduler()
-  getAutoUpdater().shutdown()
-  getLocalAIBridge().shutdown()
-  await getDocMindIntegration().disconnectMCP()
-  await getDeploymentManager().shutdown()
-  await getMCPClientManager().shutdown()
-  closeDatabase()
+let quitCleanupStarted = false
+
+app.on('before-quit', (event) => {
+  // Electron does not await a 'before-quit' listener, so the cleanup cannot
+  // just be awaited here — the previous `async` listener could be cut short at
+  // its first `await`, with closeDatabase() never reached. See quit-cleanup.ts
+  // for why that loses data.
+  //
+  // Instead the quit is held back exactly once, the cleanup runs to completion
+  // (or to its timeout), and then the app quits for real. The flag is what lets
+  // that second pass through.
+  if (quitCleanupStarted) return
+  quitCleanupStarted = true
+  event.preventDefault()
+
+  runQuitCleanup(
+    {
+      stopTranscriptionScheduler,
+      stopAutoUpdater: () => getAutoUpdater().shutdown(),
+      stopLocalAIBridge: () => getLocalAIBridge().shutdown(),
+      disconnectDocMind: () => getDocMindIntegration().disconnectMCP(),
+      shutdownDeploymentManager: () => getDeploymentManager().shutdown(),
+      shutdownMCPClients: () => getMCPClientManager().shutdown(),
+      closeDatabase,
+    },
+    {
+      onError: (step, error) =>
+        logger.warn(`Shutdown step failed: ${step}`, { error: String(error) }),
+    },
+  )
+    .catch((error) => logger.error('Quit cleanup failed', { error: String(error) }))
+    .finally(() => app.quit())
 })
 
 // Handle errors

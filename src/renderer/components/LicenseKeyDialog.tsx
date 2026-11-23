@@ -48,7 +48,7 @@ const LicenseKeyDialog: React.FC = () => {
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !isLoading) {
-      handleActivate()
+      void handleActivate()
     }
     if (e.key === 'Escape') {
       closeLicenseDialog()

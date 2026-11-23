@@ -197,7 +197,7 @@ const MAX_SHARE_FIELD_LENGTH = 1024
  * path the user never saw. Rejected rather than stripped: a share name that
  * needs a control character is a malformed payload, not a naming choice.
  */
-// eslint-disable-next-line no-control-regex
+// The control characters in this class are the point of it, see above.
 const CONTROL_OR_BIDI_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/
 
 type FieldResult = { ok: true; value: string } | { ok: false; error: string }

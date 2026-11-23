@@ -20,7 +20,7 @@ export function RoutingModeToggle() {
   const toggle = () => {
     const next = mode === 'manual' ? 'auto' : 'manual'
     setMode(next)
-    updateSettings({ routingMode: next })
+    void updateSettings({ routingMode: next })
   }
 
   const isAuto = mode === 'auto'

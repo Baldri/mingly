@@ -62,7 +62,7 @@ export function TemplatesTab() {
   const importInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    loadTemplates()
+    void loadTemplates()
   }, [loadTemplates])
 
   const filteredTemplates = filter.favoriteOnly

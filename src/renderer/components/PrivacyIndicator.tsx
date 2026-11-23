@@ -43,7 +43,7 @@ export const PrivacyIndicator = memo(function PrivacyIndicator() {
 
   useEffect(() => {
     if (conversationId) {
-      loadMode(conversationId)
+      void loadMode(conversationId)
     }
   }, [conversationId, loadMode])
 

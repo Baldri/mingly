@@ -29,7 +29,7 @@ export function UpdaterSection() {
   }, [subscribeToStatus])
 
   useEffect(() => {
-    loadStatus()
+    void loadStatus()
   }, [loadStatus, tier])
 
   return (

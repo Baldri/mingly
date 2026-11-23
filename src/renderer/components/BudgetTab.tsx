@@ -32,7 +32,7 @@ export const BudgetTab = memo(function BudgetTab() {
   const [globalLimit, setGlobalLimit] = useState(50)
 
   useEffect(() => {
-    loadStatus()
+    void loadStatus()
   }, [])
 
   const loadStatus = async () => {

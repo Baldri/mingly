@@ -24,7 +24,9 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null
 function resolveDataDir(dataDir?: string): string {
   if (dataDir) return dataDir
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // Deliberate `require`: lazy, so the headless server path below still
+    // works in a process that has no Electron. Not enforced by any rule today
+    // (@typescript-eslint/no-require-imports would be the one).
     const { app } = require('electron')
     return app.getPath('userData')
   } catch {

@@ -266,8 +266,7 @@ function mapLabel(label: string): string | null {
   return map[label] ?? null
 }
 
-// Message handler
-parentPort?.on('message', async (msg: WorkerMessage) => {
+async function handleMessage(msg: WorkerMessage): Promise<void> {
   switch (msg.type) {
     case 'init':
       await initPipeline(msg.modelId, msg.cacheDir)
@@ -280,4 +279,19 @@ parentPort?.on('message', async (msg: WorkerMessage) => {
       process.exit(0)
       break
   }
+}
+
+// Message handler
+parentPort?.on('message', (msg: WorkerMessage) => {
+  // worker_threads ignores the promise a listener returns. Failing loudly is
+  // what the parent needs here: initPipeline() has no try/catch of its own,
+  // and ner-detector.ts rejects its init on the Worker's 'error' event. The
+  // re-throw outside the promise chain keeps that channel without relying on
+  // Node's --unhandled-rejections default. A 'detect' failure never reaches
+  // this point; detect() reports it in-protocol.
+  handleMessage(msg).catch((error: unknown) => {
+    setImmediate(() => {
+      throw error instanceof Error ? error : new Error(String(error))
+    })
+  })
 })

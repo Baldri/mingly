@@ -30,11 +30,22 @@ jobs:
           MINGLY_LICENSE_SECRET: ${{ secrets.MINGLY_LICENSE_SECRET }}
         run: npx tsx scripts/inject-secret.ts
 
-      - name: Type check (main process)
-        run: npx tsc -p tsconfig.main.json --noEmit
-
-      - name: Type check (renderer)
-        run: npx tsc --noEmit
+      # The four tsc runs of `npm run typecheck`, not a hand-copied subset.
+      # This job used to call `tsc -p tsconfig.main.json --noEmit` and
+      # `tsc --noEmit` directly, which is two of the four: #46 added
+      # tsconfig.server.json to the script and #47 added tsconfig.test.json
+      # (156 test files), and neither reached CI.
+      #
+      # Measured 2026-11-23 with the positive control in the same run: a
+      # deliberate type error in src/server/index.ts or in a test file passes
+      # BOTH of those commands with exit 0, while `npm run typecheck` exits 2 —
+      # and the same error in src/main is caught by the main-process command,
+      # so the exit 0s were coverage, not a broken probe.
+      #
+      # Calling the script is also what keeps this job honest the next time a
+      # config is added: the gate follows the script instead of a copy of it.
+      - name: Type check
+        run: npm run typecheck
 
   test:
     name: Test
@@ -71,18 +82,43 @@ jobs:
           path: coverage/
           retention-days: 7
 
-  # NO lint job, deliberately. There was one: `npm run lint --if-present`, with
-  # no `lint` script in package.json and no linter in devDependencies. It did a
-  # full `npm ci` and then nothing, and reported a green check named "Lint" on
-  # every pull request — a check that asserts a standard nobody is holding.
+  # This job replaces the empty one removed in #44, which ran
+  # `npm run lint --if-present` with no lint script and no linter installed and
+  # reported a green "Lint" check on every pull request.
   #
-  # Do not restore it as it was. A lint job is worth having only together with a
-  # linter, and introducing one is its own piece of work: measured on this tree,
-  # `no-explicit-any` alone — which CLAUDE.md makes binding — has 332 hits in 80
-  # files, and going green on a tolerance list is exactly what CLAUDE.md forbids.
-  # Choosing the rule set is a decision for the maintainer, not a side effect of
-  # a CI cleanup. There are also 6 `eslint-disable` comments in the tree that do
-  # nothing today; they will start mattering the moment a linter arrives.
+  # It is real now: eslint.config.mjs enables three typed rules
+  # (no-floating-promises, no-misused-promises, await-thenable) over src/ and
+  # tests/, with no baseline and no tolerance list. `--max-warnings 0` is part
+  # of the script, so a stale eslint-disable directive fails the job too.
+  #
+  # Adding a rule to that config means fixing its findings in the same pull
+  # request. `no-explicit-any` is the obvious next candidate and the reason the
+  # rule set starts at three: 340 hits in 73 files, measured 2026-11-23.
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Typed rules need a complete program: _license-secret.ts is generated
+      # and gitignored, and without it the main-process tsconfig has an
+      # unresolved import.
+      - name: Inject license secret
+        env:
+          MINGLY_LICENSE_SECRET: ${{ secrets.MINGLY_LICENSE_SECRET }}
+        run: npx tsx scripts/inject-secret.ts
+
+      - name: Lint
+        run: npm run lint
 
   build:
     name: Build (${{ matrix.os }})

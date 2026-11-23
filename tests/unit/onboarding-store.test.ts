@@ -3,12 +3,17 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// Mock electronAPI — the store uses settings.get() (no args) and settings.update()
+// Mock electronAPI — the store uses settings.get() (no args) and settings.update().
+//
+// `update` must RESOLVE, not return undefined: the real one is an
+// ipcRenderer.invoke and hands back a promise. While the double returned
+// undefined, dismissTip() could leave that promise floating and the test still
+// passed — the double was hiding the thing the test was there to cover.
 const mockElectronAPI = {
   settings: {
     get: vi.fn(),
     set: vi.fn(),
-    update: vi.fn()
+    update: vi.fn().mockResolvedValue({ success: true })
   }
 }
 
@@ -19,6 +24,9 @@ const { useOnboardingStore, ONBOARDING_TIPS } = await import('../../src/renderer
 describe('OnboardingStore', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // clearAllMocks keeps implementations, but a test that overrides `update`
+    // should not leak into the next one.
+    mockElectronAPI.settings.update.mockResolvedValue({ success: true })
     useOnboardingStore.setState({
       seenTips: new Set(),
       activeTip: null,

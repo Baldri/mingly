@@ -109,7 +109,11 @@ const MessageBubble = memo(function MessageBubble({ message, isStreaming }: Mess
   const isUser = message.role === 'user'
 
   const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(message.content)
+    // Rejects when the clipboard permission is denied; the UI below would
+    // otherwise show "copied" for something that was not copied.
+    navigator.clipboard.writeText(message.content).catch((error) => {
+      console.warn('Copy to clipboard failed:', error)
+    })
   }, [message.content])
 
   const hasMetadata = !isUser && !isStreaming && (message.provider || message.tokens || message.cost)

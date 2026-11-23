@@ -25,7 +25,7 @@ export function OrchestratorSettingsTab() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    loadConfig().finally(() => setLoading(false))
+    void loadConfig().finally(() => setLoading(false))
   }, [loadConfig])
 
   if (loading || !config) {
@@ -37,19 +37,19 @@ export function OrchestratorSettingsTab() {
   }
 
   const handleToggle = () => {
-    updateConfig({ enabled: !config.enabled })
+    void updateConfig({ enabled: !config.enabled })
   }
 
   const handleThresholdChange = (value: number) => {
-    updateConfig({ delegationThreshold: value })
+    void updateConfig({ delegationThreshold: value })
   }
 
   const handleAutoApproveChange = (value: number) => {
-    updateConfig({ autoApproveThreshold: value })
+    void updateConfig({ autoApproveThreshold: value })
   }
 
   const handleMaxSubTasksChange = (value: number) => {
-    updateConfig({ maxSubTasks: value })
+    void updateConfig({ maxSubTasks: value })
   }
 
   const handlePreferredModelChange = (category: string, selected: string) => {
@@ -67,7 +67,7 @@ export function OrchestratorSettingsTab() {
         model: option.model,
       }
     }
-    updateConfig({ preferredModels: updated })
+    void updateConfig({ preferredModels: updated })
   }
 
   return (

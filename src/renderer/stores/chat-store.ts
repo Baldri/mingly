@@ -169,7 +169,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       window.electronAPI.onMessageComplete(() => {
         console.log('[ChatStore] Message complete!')
-        get().completeStreaming()
+        void get().completeStreaming()
       })
 
       window.electronAPI.onMessageError((errorMsg: string) => {

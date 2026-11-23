@@ -72,7 +72,8 @@ interface AgentAPI {
 }
 
 function getAgentAPI(): AgentAPI | null {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // Deliberate `any`: the agent surface is not in the window.electronAPI
+  // type yet, and the null check below is the real guard.
   const api = (window as any).electronAPI
   return api?.agent ?? null
 }

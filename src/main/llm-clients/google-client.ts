@@ -160,7 +160,9 @@ export class GoogleClient {
       })
 
       const result = await chat.sendMessage(currentParts)
-      const response = await result.response
+      // Non-streaming result: `response` is the value. Only the streaming
+      // variant (GenerateContentStreamResult) carries a Promise here.
+      const response = result.response
       return response.text()
     } catch (error) {
       console.error('Google API error:', error)

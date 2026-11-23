@@ -37,7 +37,7 @@ export const MCPServersTab = memo(function MCPServersTab() {
   const [formError, setFormError] = useState<string | null>(null)
 
   useEffect(() => {
-    loadServers()
+    void loadServers()
   }, [])
 
   const loadServers = async () => {

@@ -208,13 +208,16 @@ export class OllamaLoadBalancer {
   startHealthChecks(): void {
     if (this.healthCheckInterval) return
 
-    this.healthCheckInterval = setInterval(
-      () => this.healthCheck(),
-      OllamaLoadBalancer.HEALTH_CHECK_INTERVAL_MS
-    )
+    this.healthCheckInterval = setInterval(() => {
+      this.healthCheck().catch((err) => {
+        console.warn(`[LoadBalancer] health check failed: ${(err as Error).message}`)
+      })
+    }, OllamaLoadBalancer.HEALTH_CHECK_INTERVAL_MS)
 
     // Run initial check
-    this.healthCheck()
+    this.healthCheck().catch((err) => {
+      console.warn(`[LoadBalancer] initial health check failed: ${(err as Error).message}`)
+    })
   }
 
   /**

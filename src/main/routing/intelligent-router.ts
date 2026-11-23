@@ -62,7 +62,7 @@ export class IntelligentRouter {
 
   constructor() {
     this.ollama = new Ollama({ host: 'http://localhost:11434' })
-    this.checkOllamaAvailability()
+    void this.checkOllamaAvailability()
   }
 
   /**

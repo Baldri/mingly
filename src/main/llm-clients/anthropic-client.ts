@@ -69,7 +69,8 @@ export class AnthropicClient {
       }))
 
       // Stream the response
-      const stream = await this.client.messages.stream({
+      // messages.stream() returns a MessageStream, not a Promise.
+      const stream = this.client.messages.stream({
         model,
         max_tokens: 4096,
         temperature,
