@@ -157,9 +157,29 @@ describe('CodingModePicker without agentic_mode', () => {
   })
 })
 
+/**
+ * Click the one control that opens and closes the level choice. Its label
+ * changes with the state ("Ändern" when closed, "Fertig" when open), so the
+ * helper looks for either — a test that only knew one of them would stop
+ * working the moment it succeeded.
+ */
+function toggleLevels(): void {
+  const toggle = buttonWith('Ändern') ?? buttonWith('Fertig')
+  if (!toggle) throw new Error('no expand/collapse button found')
+  act(() => {
+    toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+}
+
+/** Open the level choice the way a user does. */
+function expand(): void {
+  toggleLevels()
+}
+
 describe('CodingModePicker with agentic_mode (positive control)', () => {
-  it('offers the level choice and the project select', () => {
+  it('offers the level choice and the project select once expanded', () => {
     render(true)
+    expand()
     expect(container.querySelectorAll('input[name="coding-mode"]').length).toBeGreaterThan(0)
     expect(container.querySelector('#coding-project')).not.toBeNull()
   })
@@ -167,6 +187,56 @@ describe('CodingModePicker with agentic_mode (positive control)', () => {
   it('offers undo and the export as well', () => {
     render(true)
     expect(buttonWith('Rückgängig machen')).toBeDefined()
+    expand()
     expect(buttonWith('Audit-Protokoll exportieren')).toBeDefined()
+  })
+})
+
+/**
+ * The block sits ABOVE the message input. Expanded it is four levels of three
+ * lines each, and on an ordinary window that pushed the text field off the
+ * bottom of the screen — the user could not type at all. A control for an
+ * occasional decision must not cost the surface the app exists for.
+ */
+describe('CodingModePicker takes no room it does not need', () => {
+  it('shows no level choice until asked', () => {
+    render(true)
+    expect(container.querySelectorAll('input[name="coding-mode"]').length).toBe(0)
+    expect(container.querySelector('#coding-project')).toBeNull()
+  })
+
+  it('names the current level while collapsed', () => {
+    render(true)
+    const summary = container.querySelector('[data-testid="coding-mode-summary"]')
+    expect(summary?.textContent).toBe('Vorschlagen')
+  })
+
+  it('marks the raised level while collapsed, so nobody has to open it to find out', () => {
+    h.coding.modes = { d1: 'propose-run' }
+    render(true)
+    const summary = container.querySelector('[data-testid="coding-mode-summary"]')
+    expect(summary?.textContent).toBe('Vorschlagen und ausführen')
+    expect(summary?.className).toContain('amber')
+  })
+
+  it('keeps undo reachable while collapsed — a state that needs an answer must not hide', () => {
+    render(true)
+    expect(container.querySelectorAll('input[name="coding-mode"]').length).toBe(0)
+    expect(buttonWith('Rückgängig machen')).toBeDefined()
+  })
+
+  it('still shows the C1 disclosure at the moment of choosing', () => {
+    render(true)
+    expand()
+    // Hand-written from the requirement, not read back from the component.
+    expect(container.textContent).toContain('ohne Diff und ohne Ihre Zustimmung')
+  })
+
+  it('collapses again on a second click', () => {
+    render(true)
+    toggleLevels()
+    expect(container.querySelectorAll('input[name="coding-mode"]').length).toBeGreaterThan(0)
+    toggleLevels()
+    expect(container.querySelectorAll('input[name="coding-mode"]').length).toBe(0)
   })
 })

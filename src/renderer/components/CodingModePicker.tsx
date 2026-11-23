@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useCodingStore } from '../stores/coding-store'
 import { CODING_MODE_CHOICES } from '../../shared/coding-types'
 import { displayText, getPermissionLabel, isCodingFeatureAllowed } from '../lib/coding-display'
@@ -62,6 +62,26 @@ export function CodingModePicker() {
   const selected = grants.find((g) => g.id === selectedDirectoryId) ?? null
   const currentMode = selected ? (modes[selected.id] ?? 'off') : 'off'
 
+  /**
+   * Collapsed by default, and that is not a preference.
+   *
+   * This block sits ABOVE the message input (`MessageInput.tsx`), and expanded
+   * it is four levels of three lines each. On an ordinary window it pushed the
+   * text field off the bottom of the screen: the user could not type at all.
+   * A control for an occasional decision must not cost the permanent surface
+   * the app exists for.
+   *
+   * Choosing a level still happens expanded, which is what keeps the C1
+   * disclosure intact: the sentence that says what `propose-run` really does
+   * is on screen at the moment of choosing. The summary below reports the
+   * level, it never sets one.
+   */
+  const [expanded, setExpanded] = useState(false)
+  const currentChoice = CODING_MODE_CHOICES.find((c) => c.mode === currentMode) ?? null
+  // The raised level stays visible while collapsed: someone who left it on
+  // `propose-run` should not have to open anything to find that out.
+  const elevated = currentMode === 'propose-run'
+
   const handleExport = async (): Promise<void> => {
     const csv = await exportAudit()
     if (csv !== null) downloadCsv(`mingly-coding-audit-${new Date().toISOString().slice(0, 10)}.csv`, csv)
@@ -82,7 +102,35 @@ export function CodingModePicker() {
       )}
 
       {allowed && (
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-gray-700 dark:text-gray-300">Coding-Projekt</span>
+          <span className="min-w-0 flex-1 truncate text-gray-600 dark:text-gray-400">
+            {selected ? displayText(selected.name) : 'keines · normaler Chat'}
+          </span>
+          {selected && (
+            <span
+              data-testid="coding-mode-summary"
+              className={`rounded px-2 py-0.5 text-xs font-medium ${
+                elevated
+                  ? 'bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200'
+                  : 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200'
+              }`}
+            >
+              {currentChoice?.label ?? 'Aus'}
+            </span>
+          )}
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            className="flex-shrink-0 rounded border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+          >
+            {expanded ? 'Fertig' : 'Ändern'}
+          </button>
+        </div>
+      )}
+
+      {allowed && expanded && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
           <label htmlFor="coding-project" className="font-medium text-gray-700 dark:text-gray-300">
             Coding-Projekt
           </label>
@@ -110,7 +158,7 @@ export function CodingModePicker() {
         </div>
       )}
 
-      {allowed && selected && (
+      {allowed && expanded && selected && (
         <>
           <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
             Berechtigung des Verzeichnisses: <span className="font-medium">{getPermissionLabel(selected.permissions)}</span>
@@ -241,14 +289,30 @@ export function CodingModePicker() {
         </div>
       )}
 
-      <div className="mt-2">
-        <button
-          onClick={() => void handleExport()}
-          className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
-        >
-          Audit-Protokoll exportieren (CSV)
-        </button>
-      </div>
+      {/*
+        The export folds away for an entitled user, because it is an occasional
+        act and every row it costs here is a row the chat does not get.
+
+        `!allowed` is NOT part of that trade. Ruling 8b: a lapsed subscription
+        must never strand someone with files an agent changed and no way to
+        account for them. Such a user gets no summary row and therefore no
+        "Ändern" button, so folding the export behind `expanded` alone would
+        put it out of reach exactly when it matters most. It stays rendered.
+
+        The error, the applied box and the undo result sit outside this block
+        for the same reason: a state that needs an answer must be visible
+        without opening anything.
+      */}
+      {(!allowed || expanded) && (
+        <div className="mt-2">
+          <button
+            onClick={() => void handleExport()}
+            className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+          >
+            Audit-Protokoll exportieren (CSV)
+          </button>
+        </div>
+      )}
     </div>
   )
 }
