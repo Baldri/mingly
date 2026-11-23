@@ -17,6 +17,17 @@ interface Props {
   onClose: () => void
 }
 
+/**
+ * The name a conversation gets when the user does not type one.
+ *
+ * The title used to be a precondition: Create was disabled and `handleCreate`
+ * returned early while it was empty, so there was no way to just start. It is
+ * a label, and the user can rename it afterwards. The same string is what the
+ * API path already falls back to (src/main/server/mingly-api-server.ts), so
+ * conversations created either way end up named the same.
+ */
+const DEFAULT_CONVERSATION_TITLE = 'New Conversation'
+
 const CLOUD_PROVIDERS = [
   { id: 'anthropic', name: 'Claude (Anthropic)', group: 'cloud' },
   { id: 'openai', name: 'ChatGPT (OpenAI)', group: 'cloud' },
@@ -127,10 +138,9 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
   }, [provider, localModels])
 
   const handleCreate = async () => {
-    if (!title.trim()) return
     const project = ragProjects.find((p) => p.id === selectedProjectId)
     await createConversation(
-      title.trim(), provider, model,
+      title.trim() || DEFAULT_CONVERSATION_TITLE, provider, model,
       selectedTemplateId || undefined,
       selectedProjectId || undefined,
       project?.collection_name
@@ -192,14 +202,14 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium mb-1">
-              Conversation Title
+              Conversation Title <span className="text-gray-400 font-normal">(optional)</span>
             </label>
             <input
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="e.g., Code Review Help"
+              placeholder="e.g., Code Review Help — or leave empty"
               className="w-full px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
               autoFocus
             />
@@ -344,7 +354,7 @@ export function NewConversationModal({ isOpen, onClose }: Props) {
             </button>
             <button
               onClick={handleCreate}
-              disabled={!title.trim() || !hasAPIKey}
+              disabled={!hasAPIKey}
               className="px-4 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               Create
