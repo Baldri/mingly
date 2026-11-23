@@ -38,7 +38,19 @@ export const MessageList = memo(function MessageList() {
     return list
   }, [messages, isStreaming, streamingContent])
 
-  if (displayMessages.length === 0) {
+  /**
+   * The placeholder is for "nothing has happened", not for "nothing was
+   * stored".
+   *
+   * A coding run writes no message: it reports through the step indicator in
+   * this list's footer, and — when it proposes edits — through the diff dialog.
+   * A run that only executes a command answers in prose and proposes nothing,
+   * so with this early return taken on message count alone it had no surface
+   * at all: four model calls in the audit log and "Start a conversation" on
+   * screen. Measured during the A9 acceptance run, twice, before anyone looked
+   * at the database.
+   */
+  if (displayMessages.length === 0 && !agentIsRunning && agentSteps.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-500 dark:text-gray-400 p-8">
         <div className="text-center">

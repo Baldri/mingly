@@ -92,3 +92,33 @@ describe('MessageList keeps its hook count', () => {
     expect(container.querySelector('[data-testid="virtuoso"]')).not.toBeNull()
   })
 })
+
+/**
+ * The empty-state placeholder must not swallow a running agent.
+ *
+ * A coding run stores no message. It reports through the step indicator in the
+ * list footer, and through the diff dialog when it proposes edits. A run that
+ * only executes a command proposes nothing and answers in prose — so while the
+ * early return fired on message count alone, such a run had no surface at all.
+ * Measured on 2026-11-23: four model calls in the audit log, "Start a
+ * conversation" on screen, twice in a row.
+ */
+describe('MessageList shows a running agent even with no stored messages', () => {
+  it('replaces the placeholder once the agent is running', async () => {
+    const { useAgentStore } = await import('../../src/renderer/stores/agent-store')
+    mount()
+    expect(container.textContent).toContain('Start a conversation')
+
+    act(() => { useAgentStore.setState({ isRunning: true }) })
+
+    expect(container.textContent).not.toContain('Start a conversation')
+    useAgentStore.setState({ isRunning: false, currentSteps: [] })
+  })
+
+  it('keeps the placeholder when nothing is happening', () => {
+    // Positive control: without it the assertion above would also pass if the
+    // placeholder had simply been deleted.
+    mount()
+    expect(container.textContent).toContain('Start a conversation')
+  })
+})
