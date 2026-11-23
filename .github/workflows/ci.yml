@@ -71,23 +71,18 @@ jobs:
           path: coverage/
           retention-days: 7
 
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Lint
-        run: npm run lint --if-present
+  # NO lint job, deliberately. There was one: `npm run lint --if-present`, with
+  # no `lint` script in package.json and no linter in devDependencies. It did a
+  # full `npm ci` and then nothing, and reported a green check named "Lint" on
+  # every pull request — a check that asserts a standard nobody is holding.
+  #
+  # Do not restore it as it was. A lint job is worth having only together with a
+  # linter, and introducing one is its own piece of work: measured on this tree,
+  # `no-explicit-any` alone — which CLAUDE.md makes binding — has 332 hits in 80
+  # files, and going green on a tolerance list is exactly what CLAUDE.md forbids.
+  # Choosing the rule set is a decision for the maintainer, not a side effect of
+  # a CI cleanup. There are also 6 `eslint-disable` comments in the tree that do
+  # nothing today; they will start mattering the moment a linter arrives.
 
   build:
     name: Build (${{ matrix.os }})
