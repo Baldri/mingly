@@ -389,7 +389,7 @@ function StepLocalModels({
         if (!cancelled) setIsScanning(false)
       }
     }
-    scan()
+    void scan()
     return () => { cancelled = true }
   }, [])
 
@@ -655,9 +655,11 @@ function StepRAG({
         onToggle(true)
       }
     }
-    detect()
+    void detect()
     return () => { cancelled = true }
-  }, [isFree]) // eslint-disable-line react-hooks/exhaustive-deps
+    // Intentionally keyed on `isFree` only: re-running this probe on every
+    // change of onToggle/setStatus would re-detect on each render.
+  }, [isFree])
 
   const handleSelectDirectory = async () => {
     try {
