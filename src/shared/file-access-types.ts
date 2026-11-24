@@ -81,12 +81,20 @@ export function survivingPermissions(dir: AllowedDirectory): FileAccessPermissio
 }
 
 /**
- * Does the entry carry a usable confirmation marker? Fails closed: anything
- * but a positive finite number counts as absent. Kept as the single place
- * this is decided.
+ * Is the value a usable confirmation timestamp? Fails closed: anything but a
+ * positive finite number counts as absent. Kept as the single place this is
+ * decided, shared by file-access grants and interpreter entries.
+ */
+export function isConfirmationTimestamp(value: unknown): boolean {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
+/**
+ * Does the entry carry a usable confirmation marker? Delegates to
+ * isConfirmationTimestamp, the rule itself.
  */
 export function hasConfirmationMarker(dir: AllowedDirectory): boolean {
-  return typeof dir.confirmedAt === 'number' && Number.isFinite(dir.confirmedAt) && dir.confirmedAt > 0
+  return isConfirmationTimestamp(dir.confirmedAt)
 }
 
 /**
