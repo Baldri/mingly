@@ -34,6 +34,7 @@ import { StringDecoder } from 'string_decoder'
 import type { ToolRegistry, ToolContext, ToolGate } from '../agent/tool-registry'
 import { CODING_MODE_ORDER, parseCodingMode } from '../../shared/coding-types'
 import { AGENT_RUN_TIMEOUT_MS } from '../../shared/types'
+import { isConfirmationTimestamp } from '../../shared/file-access-types'
 import { atLeast } from '../policy/policy-types'
 import { isRealPathWithin, resolveRealPath } from '../file-access/real-path-guard'
 import { SimpleStore } from '../utils/simple-store'
@@ -104,17 +105,26 @@ const runGate: ToolGate = (ctx) => {
 
 /**
  * The interpreters the user confirmed in the settings, as absolute paths.
- * Anything that is not a string for a known name is dropped here; the planner
- * then checks absoluteness again.
+ * An entry counts only when it is a string for a known name, is absolute, and
+ * carries a confirmation marker in `confirmedAt`. Without the marker an entry
+ * cannot be told apart from one a compromised renderer wrote. Pure reader: it
+ * never writes, and an unusable marker reads as "not confirmed".
  */
 export function readInterpreterPaths(backing: { get(key: string, d?: unknown): unknown }): Record<string, string> {
   const stored = backing.get('paths', {})
+  const markers = backing.get('confirmedAt', {})
   const out: Record<string, string> = {}
   if (typeof stored !== 'object' || stored === null || Array.isArray(stored)) return out
+  const marked = typeof markers === 'object' && markers !== null && !Array.isArray(markers)
+    ? (markers as Record<string, unknown>)
+    : {}
   for (const name of INTERPRETER_NAMES) {
     if (!Object.prototype.hasOwnProperty.call(stored, name)) continue
+    if (!Object.prototype.hasOwnProperty.call(marked, name)) continue
     const value = (stored as Record<string, unknown>)[name]
-    if (typeof value === 'string') out[name] = value
+    if (typeof value !== 'string' || !path.isAbsolute(value)) continue
+    if (!isConfirmationTimestamp(marked[name])) continue
+    out[name] = value
   }
   return out
 }

@@ -1254,12 +1254,45 @@ describe('parseGitConfigScopes', () => {
 })
 
 describe('readInterpreterPaths', () => {
-  const backing = (paths: unknown) => ({ get: () => paths })
+  const backing = (paths: unknown, confirmedAt: unknown = {}) => ({
+    get: (key: string) => (key === 'paths' ? paths : confirmedAt)
+  })
+  const ok = { npm: 1764000000000, git: 1764000000000, pytest: 1764000000000 }
 
-  it('keeps only known names with string values', () => {
+  it('keeps only known names with string values, and only when confirmed', () => {
     expect(
-      readInterpreterPaths(backing({ npm: '/a/npm', git: 5, pytest: '/a/pytest', node: '/a/node', rm: '/bin/rm' }))
+      readInterpreterPaths(
+        backing({ npm: '/a/npm', git: 5, pytest: '/a/pytest', node: '/a/node', rm: '/bin/rm' }, ok)
+      )
     ).toEqual({ npm: '/a/npm', pytest: '/a/pytest' })
+  })
+
+  it('drops an entry without a marker', () => {
+    expect(readInterpreterPaths(backing({ npm: '/a/npm' }, {}))).toEqual({})
+  })
+
+  it('fails closed on an unusable marker', () => {
+    for (const bad of [0, 'x', NaN, null]) {
+      expect(readInterpreterPaths(backing({ npm: '/a/npm' }, { npm: bad }))).toEqual({})
+    }
+  })
+
+  it('drops a relative path even when confirmed', () => {
+    expect(readInterpreterPaths(backing({ npm: 'npm' }, ok))).toEqual({})
+  })
+
+  it('ignores an unknown name even with a valid marker', () => {
+    expect(
+      readInterpreterPaths(
+        backing({ node: '/a/node', rm: '/bin/rm' }, { node: 1764000000000, rm: 1764000000000 })
+      )
+    ).toEqual({})
+  })
+
+  it('writes nothing', () => {
+    const set = vi.fn()
+    readInterpreterPaths({ get: () => ({}), set } as never)
+    expect(set).not.toHaveBeenCalled()
   })
 
   it('returns nothing for a stored value that is not a map, and ignores the prototype', () => {
