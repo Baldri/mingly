@@ -32,11 +32,13 @@
  * the identity check.
  */
 
-import { app } from 'electron'
+import { app, dialog } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
 import { isPathSafe } from '../../shared/file-access-types'
-import { INTERPRETER_NAMES } from './run-command'
+import type { InterpreterState } from '../../shared/coding-interpreter-types'
+import { SimpleStore } from '../utils/simple-store'
+import { INTERPRETER_NAMES, readInterpreterPaths } from './run-command'
 
 /**
  * The basenames a chosen file may carry for `name`.
@@ -167,4 +169,105 @@ export function validateChosenFile(name: string, chosenPath: string): string | n
   if (isPathSafe(target, realUserData)) return null
 
   return chosenPath
+}
+
+// ---------------------------------------------------------------------------
+// Read, write and remove
+//
+// `coding-interpreters.json` has exactly two keys, `paths` and `confirmedAt`.
+// An entry without a usable marker simply stays in `paths` and is not honoured;
+// nothing is parked. This is deliberate and differs from FileAccessManager,
+// which must mutate a list at startup — here the entry can just sit there.
+// ---------------------------------------------------------------------------
+
+const STORE_FILE = 'coding-interpreters.json'
+
+function isKnownName(name: string): boolean {
+  return INTERPRETER_NAMES.some((known) => known === name)
+}
+
+/** A stored map as a plain record; anything else reads as empty. */
+function recordOf(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {}
+}
+
+/**
+ * One entry per interpreter name, in `INTERPRETER_NAMES` order, for the
+ * settings page. `confirmed` is decided by `readInterpreterPaths`, the same
+ * reader the run tool uses, so the page cannot claim an entry is honoured when
+ * the run tool would drop it. The `existsSync` is acceptable here because this
+ * runs when the settings page opens, not on every command.
+ */
+export function listInterpreters(): InterpreterState[] {
+  const store = SimpleStore.create(STORE_FILE)
+  const stored = recordOf(store.get('paths', {}))
+  const honoured = readInterpreterPaths(store)
+  return INTERPRETER_NAMES.map((name) => {
+    const value = Object.prototype.hasOwnProperty.call(stored, name) ? stored[name] : undefined
+    const storedPath = typeof value === 'string' ? value : null
+    return {
+      name,
+      path: storedPath,
+      confirmed: Object.prototype.hasOwnProperty.call(honoured, name),
+      found: storedPath !== null && fs.existsSync(storedPath)
+    }
+  })
+}
+
+/**
+ * Let the user pick the program for `name` and store it if the trust boundary
+ * accepts it. Resolves true only when something was written.
+ *
+ * The dialog is opened without a parent window, the way FileAccessManager does
+ * it. A cancelled dialog is not an error and writes nothing; neither does a
+ * pick `validateChosenFile` refuses.
+ */
+export async function chooseInterpreter(name: string): Promise<boolean> {
+  if (!isKnownName(name)) return false
+
+  const store = SimpleStore.create(STORE_FILE)
+  const paths = recordOf(store.get('paths', {}))
+  const confirmedAt = recordOf(store.get('confirmedAt', {}))
+
+  const current = Object.prototype.hasOwnProperty.call(paths, name) ? paths[name] : undefined
+  const options: Electron.OpenDialogOptions = {
+    properties: ['openFile'],
+    title: `Select ${name}`,
+    message: `Select the program Mingly should run as ${name}`
+  }
+  if (typeof current === 'string' && path.isAbsolute(current)) {
+    options.defaultPath = path.dirname(current)
+  }
+
+  const result = await dialog.showOpenDialog(options)
+  if (result.canceled || result.filePaths.length === 0) return false
+
+  const accepted = validateChosenFile(name, result.filePaths[0])
+  if (accepted === null) return false
+
+  // The path first: without its marker it is inert, so an interrupted write
+  // never leaves an honoured entry the user did not confirm.
+  paths[name] = accepted
+  store.set('paths', paths)
+  confirmedAt[name] = Date.now()
+  store.set('confirmedAt', confirmedAt)
+  return true
+}
+
+/** Clear the entry for `name` from both maps. False for a name that is not an interpreter. */
+export function removeInterpreter(name: string): boolean {
+  if (!isKnownName(name)) return false
+
+  const store = SimpleStore.create(STORE_FILE)
+  const paths = recordOf(store.get('paths', {}))
+  const confirmedAt = recordOf(store.get('confirmedAt', {}))
+  delete paths[name]
+  delete confirmedAt[name]
+  // The marker first: the reverse order could leave a marker next to a path
+  // that is about to be replaced.
+  store.set('confirmedAt', confirmedAt)
+  store.set('paths', paths)
+  return true
 }

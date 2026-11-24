@@ -68,8 +68,8 @@
  * compared).
  */
 
-import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
-import { chmodSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import path from 'path'
 
 /** The names this module must accept — written out, never imported. */
@@ -92,18 +92,25 @@ const dirs = vi.hoisted(() => {
   return { root, userDataReal, userDataLink }
 })
 
+const showOpenDialog = vi.hoisted(() => vi.fn())
+
 vi.mock('electron', () => ({
   app: {
     getPath: (name: string) => (name === 'userData' ? dirs.userDataLink : dirs.root)
-  }
+  },
+  dialog: { showOpenDialog }
 }))
 
 import {
   allowedBasenames,
   basenameIsAllowed,
+  chooseInterpreter,
+  listInterpreters,
+  removeInterpreter,
   validateChosenFile
 } from '../../src/main/coding/interpreter-settings'
 import { INTERPRETER_NAMES } from '../../src/main/coding/run-command'
+import { SimpleStore } from '../../src/main/utils/simple-store'
 
 /** An executable regular file at `target`, parents created. */
 function makeExecutable(target: string): void {
@@ -275,5 +282,186 @@ describe('validateChosenFile', () => {
   // of the containment check can refuse this one.
   it('refuses a symlink that sits inside userData and points out', () => {
     expect(validateChosenFile('npm', path.join(dirs.userDataReal, 'sub', 'npm'))).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Reading, writing and removing — the layer around the trust boundary.
+//
+// Mutation table, measured 2026-11-25 (each rule inverted alone, file re-run,
+// source restored afterwards):
+//   `canceled` not checked                  -> 1 red: `writes nothing when the dialog is cancelled`
+//   validation result ignored               -> 2 red: refused-result test and its untouched-entry twin
+//   unknown-name guard removed in choose    -> 1 red: `refuses an unknown name without opening a dialog`
+//   confirmedAt not written                 -> 1 red: `writes paths[name] and confirmedAt[name]`
+//   found no longer asks the filesystem     -> 1 red: `reports found:false when ... no longer exists`
+//   confirmed taken from the path alone     -> 2 red: no-marker and unusable-marker tests
+//   remove leaves confirmedAt behind        -> 1 red: `removeInterpreter clears both keys`
+//   defaultPath always passed               -> 1 red: the no-defaultPath dialog test
+// ---------------------------------------------------------------------------
+
+const STORE_FILE = path.join(dirs.userDataReal, 'coding-interpreters.json')
+const NOW = 1764000000000
+
+/** Seed the store file as it would sit on disk, then force a fresh load. */
+function seedStore(content: unknown): void {
+  writeFileSync(STORE_FILE, JSON.stringify(content))
+  SimpleStore._resetForTesting()
+}
+
+function storeOnDisk(): { paths?: Record<string, string>; confirmedAt?: Record<string, number> } {
+  return JSON.parse(readFileSync(STORE_FILE, 'utf-8'))
+}
+
+function dialogReturns(filePaths: string[], canceled = false): void {
+  showOpenDialog.mockResolvedValueOnce({ canceled, filePaths })
+}
+
+describe('interpreter settings: read, write, remove', () => {
+  beforeEach(() => {
+    rmSync(STORE_FILE, { force: true })
+    SimpleStore._resetForTesting()
+    showOpenDialog.mockReset()
+  })
+
+  it('lists all three names, unset when the store is empty', () => {
+    expect(listInterpreters()).toEqual([
+      { name: 'npm', path: null, confirmed: false, found: false },
+      { name: 'git', path: null, confirmed: false, found: false },
+      { name: 'pytest', path: null, confirmed: false, found: false }
+    ])
+  })
+
+  it('reports an entry with a marker as confirmed and found', () => {
+    seedStore({ paths: { git: at('bin', 'git') }, confirmedAt: { git: NOW } })
+    expect(listInterpreters().find((s) => s.name === 'git')).toEqual({
+      name: 'git', path: at('bin', 'git'), confirmed: true, found: true
+    })
+  })
+
+  it('reports an entry without a marker as confirmed:false but keeps its path', () => {
+    seedStore({ paths: { npm: at('bin', 'npm') } })
+    expect(listInterpreters().find((s) => s.name === 'npm')).toEqual({
+      name: 'npm', path: at('bin', 'npm'), confirmed: false, found: true
+    })
+  })
+
+  it('reports confirmed:false for an unusable marker', () => {
+    seedStore({ paths: { npm: at('bin', 'npm') }, confirmedAt: { npm: 'yesterday' } })
+    expect(listInterpreters().find((s) => s.name === 'npm')?.confirmed).toBe(false)
+  })
+
+  it('reports found:false when the stored path no longer exists', () => {
+    const gone = at('gone', 'pytest')
+    seedStore({ paths: { pytest: gone }, confirmedAt: { pytest: NOW } })
+    expect(existsSync(gone)).toBe(false)
+    expect(listInterpreters().find((s) => s.name === 'pytest')).toEqual({
+      name: 'pytest', path: gone, confirmed: true, found: false
+    })
+  })
+
+  it('writes paths[name] and confirmedAt[name] on a valid choice', async () => {
+    dialogReturns([at('bin', 'npm')])
+    const before = Date.now()
+    await expect(chooseInterpreter('npm')).resolves.toBe(true)
+    const disk = storeOnDisk()
+    expect(disk.paths).toEqual({ npm: at('bin', 'npm') })
+    expect(disk.confirmedAt?.npm).toBeGreaterThanOrEqual(before)
+    expect(disk.confirmedAt?.npm).toBeLessThanOrEqual(Date.now())
+    expect(Object.keys(disk).sort()).toEqual(['confirmedAt', 'paths'])
+    expect(listInterpreters()[0]).toEqual({ name: 'npm', path: at('bin', 'npm'), confirmed: true, found: true })
+  })
+
+  it('keeps the other entries when one name is chosen', async () => {
+    seedStore({ paths: { git: at('bin', 'git') }, confirmedAt: { git: NOW } })
+    dialogReturns([at('bin', 'npm')])
+    await chooseInterpreter('npm')
+    const disk = storeOnDisk()
+    expect(disk.paths).toEqual({ git: at('bin', 'git'), npm: at('bin', 'npm') })
+    expect(disk.confirmedAt?.git).toBe(NOW)
+  })
+
+  it('opens the dialog with openFile, no parent window and no defaultPath when nothing is stored', async () => {
+    dialogReturns([], true)
+    await chooseInterpreter('git')
+    expect(showOpenDialog).toHaveBeenCalledTimes(1)
+    const args = showOpenDialog.mock.calls[0]
+    expect(args).toHaveLength(1) // no BrowserWindow first argument
+    expect(args[0].properties).toEqual(['openFile'])
+    expect(typeof args[0].title).toBe('string')
+    expect(typeof args[0].message).toBe('string')
+    expect('defaultPath' in args[0]).toBe(false)
+  })
+
+  it('starts the dialog in the directory of the stored entry', async () => {
+    seedStore({ paths: { git: at('bin', 'git') } })
+    dialogReturns([], true)
+    await chooseInterpreter('git')
+    expect(showOpenDialog.mock.calls[0][0].defaultPath).toBe(at('bin'))
+  })
+
+  it('writes nothing when the dialog is cancelled', async () => {
+    // Positive control: the same call with a valid pick DOES write, so the
+    // empty file below is not a spy or a store that never worked.
+    dialogReturns([at('bin', 'npm')])
+    await chooseInterpreter('npm')
+    expect(existsSync(STORE_FILE)).toBe(true)
+    rmSync(STORE_FILE)
+    SimpleStore._resetForTesting()
+
+    // A cancelled dialog that still carries a valid-looking path.
+    dialogReturns([at('bin', 'npm')], true)
+    await expect(chooseInterpreter('npm')).resolves.toBe(false)
+    expect(showOpenDialog).toHaveBeenCalledTimes(2)
+    expect(existsSync(STORE_FILE)).toBe(false)
+  })
+
+  it('writes nothing when the dialog returns no file', async () => {
+    dialogReturns([])
+    await expect(chooseInterpreter('npm')).resolves.toBe(false)
+    expect(existsSync(STORE_FILE)).toBe(false)
+  })
+
+  it('writes nothing when validation refuses the dialog result', async () => {
+    // `ls` is executable and absolute, but not an npm.
+    expect(validateChosenFile('npm', at('bin', 'ls'))).toBeNull()
+    dialogReturns([at('bin', 'ls')])
+    await expect(chooseInterpreter('npm')).resolves.toBe(false)
+    expect(showOpenDialog).toHaveBeenCalledTimes(1)
+    expect(existsSync(STORE_FILE)).toBe(false)
+  })
+
+  it('leaves an existing entry untouched when the new choice is refused', async () => {
+    seedStore({ paths: { npm: at('bin', 'npm') }, confirmedAt: { npm: NOW } })
+    dialogReturns([at('bin', 'ls')])
+    await expect(chooseInterpreter('npm')).resolves.toBe(false)
+    expect(storeOnDisk()).toEqual({ paths: { npm: at('bin', 'npm') }, confirmedAt: { npm: NOW } })
+  })
+
+  it('refuses an unknown name without opening a dialog', async () => {
+    await expect(chooseInterpreter('rm')).resolves.toBe(false)
+    expect(showOpenDialog).not.toHaveBeenCalled()
+    expect(existsSync(STORE_FILE)).toBe(false)
+  })
+
+  it('removeInterpreter clears both keys and only that name', () => {
+    seedStore({
+      paths: { npm: at('bin', 'npm'), git: at('bin', 'git') },
+      confirmedAt: { npm: NOW, git: NOW }
+    })
+    expect(removeInterpreter('npm')).toBe(true)
+    expect(storeOnDisk()).toEqual({ paths: { git: at('bin', 'git') }, confirmedAt: { git: NOW } })
+    expect(listInterpreters()[0]).toEqual({ name: 'npm', path: null, confirmed: false, found: false })
+  })
+
+  it('removeInterpreter also clears an unconfirmed entry', () => {
+    seedStore({ paths: { npm: at('bin', 'npm') } })
+    expect(removeInterpreter('npm')).toBe(true)
+    expect(storeOnDisk().paths).toEqual({})
+  })
+
+  it('removeInterpreter refuses an unknown name and writes nothing', () => {
+    expect(removeInterpreter('rm')).toBe(false)
+    expect(existsSync(STORE_FILE)).toBe(false)
   })
 })
