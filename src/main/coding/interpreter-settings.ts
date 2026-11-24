@@ -228,10 +228,14 @@ export async function chooseInterpreter(name: string): Promise<boolean> {
   if (!isKnownName(name)) return false
 
   const store = SimpleStore.create(STORE_FILE)
-  const paths = recordOf(store.get('paths', {}))
-  const confirmedAt = recordOf(store.get('confirmedAt', {}))
 
-  const current = Object.prototype.hasOwnProperty.call(paths, name) ? paths[name] : undefined
+  // Only `current` is read before the dialog, and only for `defaultPath`. The
+  // maps that get written back are read AFTER it: the dialog has no parent
+  // window, so the settings page stays usable while it is open, and a snapshot
+  // taken here would overwrite a removal or a second choice made meanwhile —
+  // resurrecting a revoked interpreter along with its confirmation marker.
+  const stored = recordOf(store.get('paths', {}))
+  const current = Object.prototype.hasOwnProperty.call(stored, name) ? stored[name] : undefined
   const options: Electron.OpenDialogOptions = {
     properties: ['openFile'],
     title: `Select ${name}`,
@@ -246,6 +250,10 @@ export async function chooseInterpreter(name: string): Promise<boolean> {
 
   const accepted = validateChosenFile(name, result.filePaths[0])
   if (accepted === null) return false
+
+  // No `await` between this read and the writes below.
+  const paths = recordOf(store.get('paths', {}))
+  const confirmedAt = recordOf(store.get('confirmedAt', {}))
 
   // The path first: without its marker it is inert, so an interrupted write
   // never leaves an honoured entry the user did not confirm.

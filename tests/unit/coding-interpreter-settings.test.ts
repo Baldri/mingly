@@ -298,6 +298,11 @@ describe('validateChosenFile', () => {
 //   confirmed taken from the path alone     -> 2 red: no-marker and unusable-marker tests
 //   remove leaves confirmedAt behind        -> 1 red: `removeInterpreter clears both keys`
 //   defaultPath always passed               -> 1 red: the no-defaultPath dialog test
+//   (2026-11-25, fix round 1) store maps read BEFORE the dialog await:
+//   both maps                               -> 2 red: removal-during-dialog and lost-choice tests
+//   only confirmedAt                        -> 2 red (same two)
+//   only paths                              -> 2 red (same two)
+//   Both tests were red against the unfixed source first (2 failed | 37 passed).
 // ---------------------------------------------------------------------------
 
 const STORE_FILE = path.join(dirs.userDataReal, 'coding-interpreters.json')
@@ -436,6 +441,39 @@ describe('interpreter settings: read, write, remove', () => {
     dialogReturns([at('bin', 'ls')])
     await expect(chooseInterpreter('npm')).resolves.toBe(false)
     expect(storeOnDisk()).toEqual({ paths: { npm: at('bin', 'npm') }, confirmedAt: { npm: NOW } })
+  })
+
+  // The dialog is deliberately not tied to a window, so the settings page stays
+  // usable while it is open. Whatever happens in that gap must survive: the
+  // mock performs the interleaved action itself, which pins the window
+  // deterministically.
+  it('does not undo a removal made while the dialog was open', async () => {
+    seedStore({
+      paths: { git: at('bin', 'git') },
+      confirmedAt: { git: NOW }
+    })
+    showOpenDialog.mockImplementationOnce(async () => {
+      expect(removeInterpreter('git')).toBe(true) // the revocation, mid-dialog
+      return { canceled: false, filePaths: [at('bin', 'npm')] }
+    })
+    await expect(chooseInterpreter('npm')).resolves.toBe(true)
+    const disk = storeOnDisk()
+    expect(disk.paths).toEqual({ npm: at('bin', 'npm') })
+    expect(Object.keys(disk.confirmedAt ?? {})).toEqual(['npm'])
+    expect(listInterpreters().find((e) => e.name === 'git')?.confirmed).toBe(false)
+  })
+
+  it('does not lose a choice completed while another dialog was open', async () => {
+    showOpenDialog.mockImplementationOnce(async () => {
+      // A second choice runs to completion inside the first one's dialog.
+      dialogReturns([at('bin', 'npm')])
+      await expect(chooseInterpreter('npm')).resolves.toBe(true)
+      return { canceled: false, filePaths: [at('bin', 'git')] }
+    })
+    await expect(chooseInterpreter('git')).resolves.toBe(true)
+    const disk = storeOnDisk()
+    expect(disk.paths).toEqual({ npm: at('bin', 'npm'), git: at('bin', 'git') })
+    expect(Object.keys(disk.confirmedAt ?? {}).sort()).toEqual(['git', 'npm'])
   })
 
   it('refuses an unknown name without opening a dialog', async () => {
