@@ -14,6 +14,7 @@ import { wrapHandler, requirePermission } from './ipc-utils'
 import type { NetworkAIServerConfig } from '../../shared/network-ai-types'
 import type { FileAccessRequest, FileAccessPermission } from '../../shared/file-access-types'
 import { parseNetworkShareConfig } from '../../shared/file-access-types'
+import { listInterpreters, chooseInterpreter, removeInterpreter } from '../coding/interpreter-settings'
 
 export function registerInfrastructureHandlers(): void {
   const networkAIManager = getNetworkAIManager()
@@ -148,6 +149,20 @@ export function registerInfrastructureHandlers(): void {
   wrapHandler(IPC_CHANNELS.NETWORK_AI_GET_MODELS, async (serverId: string) => {
     return { success: true, models: await networkAIManager.getModels(serverId) }
   })
+
+  // ========================================
+  // Coding Interpreter Settings
+  // ========================================
+  // Name only, never a path: the dialog is opened by the main process and the
+  // trust boundary in interpreter-settings decides what is stored. Do not add
+  // a verb that stores or confirms a path without that dialog. Each handler
+  // forwards exactly one argument, so extra renderer arguments are dropped.
+
+  wrapHandler(IPC_CHANNELS.CODING_INTERPRETERS_LIST, () => listInterpreters())
+
+  wrapHandler(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, (name: string) => chooseInterpreter(name))
+
+  wrapHandler(IPC_CHANNELS.CODING_INTERPRETERS_REMOVE, (name: string) => removeInterpreter(name))
 
   // ========================================
   // File Access Management

@@ -168,6 +168,17 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.NETWORK_AI_GET_MODELS, serverId)
   },
 
+  // Coding interpreter settings: names only, the main process opens the dialog
+  codingInterpreters: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.CODING_INTERPRETERS_LIST),
+
+    choose: (name: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, name),
+
+    remove: (name: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.CODING_INTERPRETERS_REMOVE, name)
+  },
+
   // File Access Management
   fileAccess: {
     requestDirectory: (permissions: string[]) =>
