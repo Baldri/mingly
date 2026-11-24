@@ -85,7 +85,7 @@ const HEADER_RESERVE = 400
 const PACKAGE_JSON_MAX_BYTES = 1024 * 1024
 const MAX_SCRIPTS = 500
 const BUDGET_MAX_RUNS = 200
-const INTERPRETER_NAMES = ['npm', 'git', 'pytest'] as const
+export const INTERPRETER_NAMES = ['npm', 'git', 'pytest'] as const
 
 const BUDGET_SPENT = 'Refused: this run has used up its command budget.'
 
