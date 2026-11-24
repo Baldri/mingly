@@ -40,6 +40,7 @@
  * Which test pins which rule was MEASURED, not assumed: each rule was inverted
  * in the implementation on its own and this file re-run.
  *
+ *   isAbsolute dropped                  -> 1 red: `refuses a relative path`
  *   name compared on the RESOLVED path  -> 1 red: the nvm symlink test
  *   the RESOLVED path returned for storage -> 3 red: the nvm symlink test and,
  *       because os.tmpdir() on macOS lies under /var -> /private/var, the two
@@ -57,14 +58,18 @@
  *       basenameIsAllowed — because on a POSIX host the win32 branch itself is
  *       unobservable through validateChosenFile.
  *
- * The first five were measured on 2026-11-24, the two case-folding rows on
- * 2026-11-25, when the name-on-resolved row was re-measured against the moved
- * comparison and still stood. The source was restored from a byte-identical
- * copy after every mutation (`shasum` compared).
+ * The five containment and resolution rows were measured on 2026-11-24, the two
+ * case-folding rows on 2026-11-25, when the name-on-resolved row was
+ * re-measured against the moved comparison and still stood. The isAbsolute row
+ * is from 2026-11-25 as well, and it is the reason this table is kept: the
+ * relative-path test as first written left isAbsolute at ZERO coverage (the
+ * mutation turned nothing red), which is exactly what a missing row means. The
+ * source was restored from a byte-identical copy after every mutation (`shasum`
+ * compared).
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
-import { chmodSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'fs'
+import { chmodSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import path from 'path'
 
 /** The names this module must accept — written out, never imported. */
@@ -203,7 +208,20 @@ describe('validateChosenFile', () => {
   })
 
   it('refuses a relative path', () => {
-    expect(validateChosenFile('npm', path.join('bin', 'npm'))).toBeNull()
+    // The relative spelling must point at a file that would otherwise be
+    // ACCEPTED, so that isAbsolute is the only check it can fail. A relative
+    // path into nowhere (the first version of this test used `bin/npm`, which
+    // does not exist under the test runner's cwd) is refused by realpath
+    // instead, and the test then stays green with isAbsolute deleted —
+    // measured, 20/20 passed. Same instrument rule as the directory fixture.
+    const relative = path.relative(process.cwd(), at('bin', 'npm'))
+    // Positive control, in the same run: the spelling is really relative and
+    // really reaches the accepted file. Without it, "refused" could just mean
+    // "nothing there".
+    expect(path.isAbsolute(relative)).toBe(false)
+    expect(realpathSync(relative)).toBe(realpathSync(at('bin', 'npm')))
+
+    expect(validateChosenFile('npm', relative)).toBeNull()
   })
 
   it('refuses a basename that does not match', () => {
