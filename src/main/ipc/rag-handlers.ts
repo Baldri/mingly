@@ -9,6 +9,7 @@ import { IPC_CHANNELS } from '../../shared/types'
 import { getRAGHttpClient } from '../rag/rag-http-client'
 import { getContextInjector } from '../rag/context-injector'
 import { getRAGWissenClient } from '../rag/rag-wissen-client'
+import { parseRAGWissenConfigUpdate } from '../rag/rag-wissen-config-update'
 import { wrapHandler, requireFeature } from './ipc-utils'
 
 export function registerRAGHandlers(): void {
@@ -50,9 +51,10 @@ export function registerRAGHandlers(): void {
 
   wrapHandler(IPC_CHANNELS.RAG_WISSEN_GET_CONFIG, () => { requireFeature('shared_rag'); return { success: true, config: ragWissenClient.getConfig() } })
 
-  wrapHandler(IPC_CHANNELS.RAG_WISSEN_UPDATE_CONFIG, (updates: any) => {
+  wrapHandler(IPC_CHANNELS.RAG_WISSEN_UPDATE_CONFIG, (updates: unknown) => {
     requireFeature('shared_rag')
-    ragWissenClient.updateConfig(updates)
+    // The settings decide where the API key is sent, so the renderer's payload is validated, not spread.
+    ragWissenClient.updateConfig(parseRAGWissenConfigUpdate(updates))
     return { success: true, config: ragWissenClient.getConfig() }
   })
 

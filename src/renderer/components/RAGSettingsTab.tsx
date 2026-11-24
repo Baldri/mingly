@@ -133,6 +133,7 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
   const [serverForm, setServerForm] = useState({
     host: 'localhost',
     port: '8001',
+    protocol: 'http' as 'http' | 'https',
     apiMode: 'jsonrpc' as 'rest' | 'jsonrpc',
     /** Only ever holds what the user is typing right now; the stored key is not sent back */
     apiKey: ''
@@ -163,6 +164,7 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
         setServerForm({
           host: wc.host || 'localhost',
           port: String(wc.port || 8001),
+          protocol: wc.protocol || 'http',
           apiMode: wc.apiMode || 'jsonrpc',
           apiKey: ''
         })
@@ -257,6 +259,7 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
       const configUpdates: Partial<RAGWissenConfig> = {
         host: serverForm.host,
         port,
+        protocol: serverForm.protocol,
         apiMode: serverForm.apiMode,
         enabled: true
       }
@@ -534,7 +537,20 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
               </p>
             </div>
 
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-4 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Protocol
+                </label>
+                <select
+                  value={serverForm.protocol}
+                  onChange={(e) => setServerForm({ ...serverForm, protocol: e.target.value as 'http' | 'https' })}
+                  className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                >
+                  <option value="http">http</option>
+                  <option value="https">https</option>
+                </select>
+              </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                   Host
@@ -605,7 +621,9 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
                 )}
               </div>
               <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
-                Sent as a Bearer token to this server only, and stored encrypted on this device.
+                Stored encrypted on this device and sent as a Bearer token only to this protocol, host and
+                port, and only over https or to this computer. Changing protocol, host or port removes the
+                saved key; enter it again.
               </p>
             </div>
 

@@ -9,7 +9,25 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-import { describeWissenStatus, isWissenUsable } from '../../src/shared/rag-wissen-status'
+import { describeWissenStatus, isWissenUsable, sendsKeyInCleartext } from '../../src/shared/rag-wissen-status'
+
+describe('sendsKeyInCleartext', () => {
+  it('is false for a server on this computer, where http never leaves the machine', () => {
+    for (const host of ['localhost', '127.0.0.1', '::1', '[::1]', 'LOCALHOST']) {
+      expect(sendsKeyInCleartext({ protocol: 'http', host })).toBe(false)
+    }
+  })
+
+  it('is true for http to any other host, because the key would cross the network unencrypted', () => {
+    for (const host of ['192.168.1.10', 'nas.local', 'rag.example.ch', '127.0.0.1.example.ch']) {
+      expect(sendsKeyInCleartext({ protocol: 'http', host })).toBe(true)
+    }
+  })
+
+  it('is false over https, wherever the server is', () => {
+    expect(sendsKeyInCleartext({ protocol: 'https', host: 'rag.example.ch' })).toBe(false)
+  })
+})
 
 describe('isWissenUsable', () => {
   it('is true for a reachable server whose credentials work', () => {
@@ -27,6 +45,10 @@ describe('isWissenUsable', () => {
 
   it('is false when the server refused the key we have', () => {
     expect(isWissenUsable({ success: true, auth: 'rejected' })).toBe(false)
+  })
+
+  it('is false when a stored key is withheld because the connection is not encrypted', () => {
+    expect(isWissenUsable({ success: true, auth: 'withheld' })).toBe(false)
   })
 
   it('is false for an unreachable server and for no answer at all', () => {
@@ -53,6 +75,13 @@ describe('describeWissenStatus', () => {
     expect(describeWissenStatus({ success: true, auth: 'rejected' })).toEqual({
       usable: false,
       label: 'Reachable, but the API key was rejected'
+    })
+  })
+
+  it('tells the user to switch to https when the key is withheld', () => {
+    expect(describeWissenStatus({ success: true, auth: 'withheld' })).toEqual({
+      usable: false,
+      label: 'Reachable, but the API key was not sent: the connection is not encrypted (use https)'
     })
   })
 

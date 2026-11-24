@@ -19,7 +19,7 @@
 
 import { SimpleStore } from '../utils/simple-store'
 import { EncryptedStore } from '../utils/encrypted-store'
-import type { RAGWissenAuthState } from '../../shared/rag-wissen-status'
+import { sendsKeyInCleartext, type RAGWissenAuthState } from '../../shared/rag-wissen-status'
 
 export interface RAGWissenConfig {
   host: string
@@ -89,6 +89,33 @@ const DEFAULT_CONFIG: RAGWissenConfig = {
 
 const API_KEY_SECRET = 'rag-wissen-api-key'
 
+/** What the secret store holds: the key and the one origin it may be sent to. */
+interface StoredApiKey {
+  key: string
+  origin: string
+}
+
+function parseStoredApiKey(raw: string | undefined): StoredApiKey | undefined {
+  if (!raw) return undefined
+  try {
+    const value: unknown = JSON.parse(raw)
+    if (
+      typeof value === 'object' &&
+      value !== null &&
+      'key' in value &&
+      'origin' in value &&
+      typeof value.key === 'string' &&
+      typeof value.origin === 'string' &&
+      value.key !== ''
+    ) {
+      return { key: value.key, origin: value.origin }
+    }
+  } catch {
+    // not JSON: not an entry this version wrote, so not honoured
+  }
+  return undefined
+}
+
 const store = SimpleStore.create()
 
 /**
@@ -120,11 +147,20 @@ export class RAGWissenClient {
 
   updateConfig(updates: RAGWissenConfigUpdate): void {
     const { apiKey, ...rest } = updates
-    if (apiKey !== undefined) this.storeApiKey(apiKey)
+    const previousOrigin = this.baseUrl
 
     // hasApiKey is derived from the secret store, never taken from the caller.
     this.config = { ...this.config, ...rest, hasApiKey: this.config.hasApiKey }
     this.baseUrl = `${this.config.protocol}://${this.config.host}:${this.config.port}`
+
+    if (apiKey !== undefined) {
+      this.storeApiKey(apiKey) // bound to the destination as it is after this update
+    } else if (this.config.hasApiKey && this.baseUrl !== previousOrigin) {
+      // The key was entered for another server. Keeping it would send it to the new
+      // destination on the next request, so it goes; the user types it again.
+      this.storeApiKey('')
+    }
+
     store.set('rag_wissen_config', this.config)
   }
 
@@ -134,10 +170,15 @@ export class RAGWissenClient {
     return this.injectedSecrets ?? getDefaultSecrets()
   }
 
+  /**
+   * The key is stored together with the origin (protocol://host:port) it was
+   * entered for and is only ever sent to exactly that origin.
+   */
   private storeApiKey(apiKey: string): void {
     const trimmed = apiKey.trim()
     if (trimmed) {
-      this.secrets().set(API_KEY_SECRET, trimmed)
+      const entry: StoredApiKey = { key: trimmed, origin: this.baseUrl }
+      this.secrets().set(API_KEY_SECRET, JSON.stringify(entry))
       this.config = { ...this.config, hasApiKey: true }
     } else {
       this.secrets().delete(API_KEY_SECRET)
@@ -145,10 +186,19 @@ export class RAGWissenClient {
     }
   }
 
-  /** The secret store is only touched when a key was stored, so no keychain access for users without one. */
+  /** A key is stored but must not be sent: it would cross a network in clear text. */
+  private keyWithheld(): boolean {
+    return this.config.hasApiKey && sendsKeyInCleartext(this.config)
+  }
+
+  /**
+   * The key to attach to a request, or undefined. The secret store is only
+   * touched when a key was stored, so no keychain access for users without one.
+   */
   private apiKey(): string | undefined {
-    if (!this.config.hasApiKey) return undefined
-    return this.secrets().get(API_KEY_SECRET) || undefined
+    if (!this.config.hasApiKey || this.keyWithheld()) return undefined
+    const stored = parseStoredApiKey(this.secrets().get(API_KEY_SECRET))
+    return stored && stored.origin === this.baseUrl ? stored.key : undefined
   }
 
   private headers(base: Record<string, string> = {}): Record<string, string> {
@@ -158,6 +208,9 @@ export class RAGWissenClient {
 
   private httpError(status: number): string {
     if (status === 401 || status === 403) {
+      if (this.keyWithheld()) {
+        return `HTTP ${status} — the API key was not sent because the connection is not encrypted; switch this server to https`
+      }
       return `HTTP ${status} — the server requires a valid API key (Settings → Knowledge Base → API key)`
     }
     return `HTTP ${status}`
@@ -215,7 +268,8 @@ export class RAGWissenClient {
       })
       if (response.ok) return 'ok'
       if (response.status === 401 || response.status === 403) {
-        return this.config.hasApiKey ? 'rejected' : 'required'
+        if (!this.config.hasApiKey) return 'required'
+        return this.keyWithheld() ? 'withheld' : 'rejected'
       }
       return 'unknown'
     } catch {

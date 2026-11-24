@@ -281,4 +281,142 @@ describe('RAGWissenClient — REST mode against the core API', () => {
       expect(client.getConfig().hasApiKey).toBe(true)
     })
   })
+
+  describe('the key never travels unencrypted to another machine', () => {
+    const REMOTE = 'rag.example.test'
+
+    function remoteClient(protocol: 'http' | 'https'): RAGWissenClientType {
+      const client = new mod.RAGWissenClient(
+        { host: REMOTE, port: 8000, protocol, apiMode: 'rest' },
+        { secrets: secrets.api }
+      )
+      client.updateConfig({ apiKey: VALID_KEY })
+      return client
+    }
+
+    /** Answers by URL and records the headers of every request. */
+    function stubRemote(): { headersSeen: unknown[] } {
+      const headersSeen: unknown[] = []
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+          headersSeen.push(init?.headers)
+          const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+          if (url.endsWith('/health')) return new Response(JSON.stringify({ status: 'ready' }), { status: 200 })
+          return new Response(JSON.stringify({ detail: 'Authentication required' }), { status: 401 })
+        })
+      )
+      return { headersSeen }
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals()
+    })
+
+    it('withholds the key for http to a non-local host, and says why', async () => {
+      const { headersSeen } = stubRemote()
+
+      const result = await remoteClient('http').search('Retrieval')
+
+      expect(JSON.stringify(headersSeen)).not.toContain(VALID_KEY)
+      expect(result.success).toBe(false)
+      expect(result.error).toMatch(/https/i)
+    })
+
+    it('reports the withheld key as its own auth state, not as "rejected"', async () => {
+      stubRemote()
+
+      const result = await remoteClient('http').healthCheck()
+
+      expect(result).toMatchObject({ success: true, auth: 'withheld' })
+    })
+
+    it('sends the key over https', async () => {
+      const { headersSeen } = stubRemote()
+
+      await remoteClient('https').search('Retrieval')
+
+      expect(JSON.stringify(headersSeen)).toContain(`Bearer ${VALID_KEY}`)
+    })
+  })
+
+  describe('the key belongs to the server it was entered for', () => {
+    let other: FakeServer
+
+    beforeEach(async () => {
+      other = await startCoreApi()
+    })
+
+    afterEach(async () => {
+      await other.close()
+    })
+
+    it('is not sent to a new port when the destination changes without a new key', async () => {
+      const client = clientForServer()
+      client.updateConfig({ apiKey: VALID_KEY })
+
+      client.updateConfig({ port: other.port })
+      const result = await client.search('Retrieval')
+
+      expect(other.seen.every((r) => r.authorization === undefined)).toBe(true)
+      expect(result.success).toBe(false)
+      expect(client.getConfig().hasApiKey).toBe(false)
+    })
+
+    it('is not sent to a new host either', async () => {
+      const client = clientForServer()
+      client.updateConfig({ apiKey: VALID_KEY })
+
+      client.updateConfig({ host: 'localhost', port: other.port })
+      await client.search('Retrieval')
+
+      expect(other.seen.every((r) => r.authorization === undefined)).toBe(true)
+    })
+
+    it('is removed from the secret store, not merely ignored', () => {
+      const client = clientForServer()
+      client.updateConfig({ apiKey: VALID_KEY })
+
+      client.updateConfig({ port: other.port })
+
+      expect(secrets.store.size).toBe(0)
+    })
+
+    it('is kept when an update restates the same destination', async () => {
+      const client = clientForServer()
+      client.updateConfig({ apiKey: VALID_KEY })
+
+      client.updateConfig({ host: '127.0.0.1', port: server.port, protocol: 'http' })
+
+      expect(client.getConfig().hasApiKey).toBe(true)
+      expect((await client.search('Retrieval')).success).toBe(true)
+    })
+
+    it('follows the user when the new key is entered together with the new destination', async () => {
+      const client = clientForServer()
+      client.updateConfig({ apiKey: VALID_KEY })
+
+      client.updateConfig({ port: other.port, apiKey: VALID_KEY })
+      const result = await client.search('Retrieval')
+
+      expect(result.success).toBe(true)
+      expect(other.seen.find((r) => r.method === 'POST')?.authorization).toBe(`Bearer ${VALID_KEY}`)
+    })
+
+    it('is not honoured when the stored entry names a different origin than the configured one', async () => {
+      // A secret store entry copied from another server, or tampered with.
+      secrets.store.set(
+        'rag-wissen-api-key',
+        JSON.stringify({ key: VALID_KEY, origin: `http://127.0.0.1:${other.port}` })
+      )
+      const client = new mod.RAGWissenClient(
+        { host: '127.0.0.1', port: server.port, protocol: 'http', apiMode: 'rest', hasApiKey: true },
+        { secrets: secrets.api }
+      )
+
+      await client.search('Retrieval')
+
+      expect(server.seen.every((r) => r.authorization === undefined)).toBe(true)
+    })
+  })
 })
