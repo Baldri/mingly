@@ -359,7 +359,7 @@ export interface AppSettings {
   ragEnabled?: boolean
   /** Routing mode: manual (user picks model) or auto (Gemma routes) */
   routingMode?: 'manual' | 'auto'
-  /** Custom display name for the external RAG server (default: "RAG-Wissen") */
+  /** Custom display name for the external RAG server (default: see DEFAULT_RAG_SERVER_NAME) */
   ragServerName?: string
   /**
    * Infomaniak AI product id. The Swiss endpoint's base URL contains it

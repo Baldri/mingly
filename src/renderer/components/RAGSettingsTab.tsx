@@ -1,6 +1,8 @@
 import { useState, useEffect, memo, useCallback } from 'react'
 import type { DiscoveredService } from '../../shared/types'
 import { useSettingsStore } from '../stores/settings-store'
+import { resolveRagServerName } from '../../shared/rag-server-name'
+import { describeWissenStatus, type RAGWissenHealthResult } from '../../shared/rag-wissen-status'
 
 interface RAGContextConfig {
   enabled: boolean
@@ -19,6 +21,8 @@ interface RAGWissenConfig {
   enabled: boolean
   defaultCollection: string
   apiMode: 'rest' | 'jsonrpc'
+  /** An API key is stored (the key itself never reaches the renderer) */
+  hasApiKey?: boolean
 }
 
 interface DocMindStatus {
@@ -70,7 +74,7 @@ Toggle.displayName = 'Toggle'
 
 export const RAGSettingsTab = memo(function RAGSettingsTab() {
   const settings = useSettingsStore((s) => s.settings)
-  const ragServerName = settings?.ragServerName || 'RAG-Wissen'
+  const ragServerName = resolveRagServerName(settings?.ragServerName)
 
   // Context injection config
   const [config, setConfig] = useState<RAGContextConfig>({
@@ -98,7 +102,8 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
 
   // Server statuses
   const [ragHttpOnline, setRagHttpOnline] = useState<boolean | null>(null)
-  const [wissenOnline, setWissenOnline] = useState<boolean | null>(null)
+  const [wissenHealth, setWissenHealth] = useState<RAGWissenHealthResult | null>(null)
+  const wissenStatus = describeWissenStatus(wissenHealth)
 
   const [collections, setCollections] = useState<CollectionInfo[]>([])
   const [loading, setLoading] = useState(true)
@@ -128,7 +133,9 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
   const [serverForm, setServerForm] = useState({
     host: 'localhost',
     port: '8001',
-    apiMode: 'jsonrpc' as 'rest' | 'jsonrpc'
+    apiMode: 'jsonrpc' as 'rest' | 'jsonrpc',
+    /** Only ever holds what the user is typing right now; the stored key is not sent back */
+    apiKey: ''
   })
 
   useEffect(() => {
@@ -156,7 +163,8 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
         setServerForm({
           host: wc.host || 'localhost',
           port: String(wc.port || 8001),
-          apiMode: wc.apiMode || 'jsonrpc'
+          apiMode: wc.apiMode || 'jsonrpc',
+          apiKey: ''
         })
       }
 
@@ -184,10 +192,9 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
 
   const checkWissenHealth = async () => {
     try {
-      const result = await window.electronAPI.ragWissen.health()
-      setWissenOnline(result.success === true)
+      setWissenHealth(await window.electronAPI.ragWissen.health())
     } catch {
-      setWissenOnline(false)
+      setWissenHealth({ success: false })
     }
   }
 
@@ -247,16 +254,20 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
         return
       }
 
-      const updates: Partial<RAGWissenConfig> = {
+      const configUpdates: Partial<RAGWissenConfig> = {
         host: serverForm.host,
         port,
         apiMode: serverForm.apiMode,
         enabled: true
       }
+      // An empty field means "leave the stored key alone"; removing it is a separate action.
+      const typedKey = serverForm.apiKey.trim()
+      const updates = typedKey ? { ...configUpdates, apiKey: typedKey } : configUpdates
 
       const result = await window.electronAPI.ragWissen.updateConfig(updates)
       if (result.success) {
-        setWissenConfig({ ...wissenConfig, ...updates })
+        setWissenConfig(result.config ?? { ...wissenConfig, ...configUpdates })
+        setServerForm((form) => ({ ...form, apiKey: '' }))
         showStatus('Server configuration saved', 'success')
         // Re-check health with new config
         // checkWissenHealth() catches its own failures, so `void` is honest here.
@@ -266,6 +277,24 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
       }
     } catch {
       showStatus('Failed to save server configuration', 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleRemoveApiKey = async () => {
+    try {
+      setSaving(true)
+      const result = await window.electronAPI.ragWissen.updateConfig({ apiKey: '' })
+      if (result.success) {
+        if (result.config) setWissenConfig(result.config)
+        showStatus('API key removed', 'success')
+        setTimeout(() => void checkWissenHealth(), 500)
+      } else {
+        showStatus('Failed to remove API key', 'error')
+      }
+    } catch {
+      showStatus('Failed to remove API key', 'error')
     } finally {
       setSaving(false)
     }
@@ -413,7 +442,7 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
         <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900/50">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <StatusDot status={wissenOnline} />
+              <StatusDot status={wissenStatus.usable} />
               <div>
                 <p className="text-sm font-medium text-gray-900 dark:text-white">
                   {ragServerName} Server
@@ -424,7 +453,7 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
                   )}
                 </p>
                 <p className="text-xs text-gray-500 dark:text-gray-400">
-                  {wissenOnline ? 'Connected' : 'Offline'} — {wissenConfig.host}:{wissenConfig.port} ({wissenConfig.apiMode})
+                  {wissenStatus.label} — {wissenConfig.host}:{wissenConfig.port} ({wissenConfig.apiMode})
                 </p>
               </div>
             </div>
@@ -497,7 +526,7 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
                   const name = e.target.value.trim()
                   void useSettingsStore.getState().updateSettings({ ragServerName: name || undefined })
                 }}
-                placeholder="RAG-Wissen"
+                placeholder="e.g. DocMind, or a name of your own"
                 className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
               />
               <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
@@ -547,21 +576,54 @@ export const RAGSettingsTab = memo(function RAGSettingsTab() {
               </div>
             </div>
 
+            {/* API Key */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                API Key <span className="font-normal text-gray-400">(optional)</span>
+              </label>
+              <div className="mt-1 flex gap-2">
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={serverForm.apiKey}
+                  onChange={(e) => setServerForm({ ...serverForm, apiKey: e.target.value })}
+                  placeholder={
+                    wissenConfig.hasApiKey
+                      ? 'A key is saved — type a new one to replace it'
+                      : 'Only needed if the server requires authentication'
+                  }
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+                />
+                {wissenConfig.hasApiKey && (
+                  <button
+                    onClick={handleRemoveApiKey}
+                    disabled={saving}
+                    className="whitespace-nowrap rounded-lg border border-red-300 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20"
+                  >
+                    Remove key
+                  </button>
+                )}
+              </div>
+              <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                Sent as a Bearer token to this server only, and stored encrypted on this device.
+              </p>
+            </div>
+
             <p className="text-xs text-gray-500 dark:text-gray-400">
-              <strong>JSON-RPC:</strong> Standard MCP protocol via HTTP (default port 8001).{' '}
-              <strong>REST:</strong> Native DocMind FastAPI endpoints (default port 8000).
+              <strong>JSON-RPC:</strong> MCP-over-HTTP, as served by Mingly&apos;s own RAG server (default port 8001).{' '}
+              <strong>REST:</strong> DocMind FastAPI endpoints (default port 8000), usually protected by an API key.
             </p>
 
             {/* Presets */}
             <div className="flex gap-2">
               <button
-                onClick={() => setServerForm({ host: 'localhost', port: '8001', apiMode: 'jsonrpc' })}
+                onClick={() => setServerForm((form) => ({ ...form, host: 'localhost', port: '8001', apiMode: 'jsonrpc' }))}
                 className="rounded-md border border-gray-300 px-3 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-gray-800"
               >
                 Default (8001 JSON-RPC)
               </button>
               <button
-                onClick={() => setServerForm({ host: 'localhost', port: '8000', apiMode: 'rest' })}
+                onClick={() => setServerForm((form) => ({ ...form, host: 'localhost', port: '8000', apiMode: 'rest' }))}
                 className="rounded-md border border-purple-300 px-3 py-1 text-xs font-medium text-purple-600 hover:bg-purple-50 dark:border-purple-800 dark:text-purple-400 dark:hover:bg-purple-900/20"
               >
                 DocMind (8000 REST)
