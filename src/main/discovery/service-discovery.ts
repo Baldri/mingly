@@ -20,7 +20,9 @@ interface DiscoveryOptions {
 const LOCAL_RAG_ENDPOINTS = [
   { name: 'Qdrant', provider: 'qdrant', port: 6333, path: '/collections', check: (d: any) => Array.isArray(d?.result?.collections) },
   { name: 'ChromaDB', provider: 'chromadb', port: 8000, path: '/api/v1/heartbeat', check: () => true },
-  { name: 'RAG-Wissen', provider: 'rag-wissen', port: 8080, path: '/health', check: () => true },
+  // The retrieval server (src.api_server) listens on 8000 and serves /health at the root.
+  // Port 8080 is the separate RAG-Wissen *Admin* API: it has no /health, only /api/v1/health.
+  { name: 'RAG-Wissen', provider: 'rag-wissen', port: 8000, path: '/health', check: () => true },
   { name: 'DocMind REST', provider: 'docmind', port: 3100, path: '/health', check: () => true },
   { name: 'DocMind REST (alt)', provider: 'docmind', port: 8000, path: '/health', check: () => true },
 ]
@@ -80,23 +82,33 @@ class ServiceDiscovery {
   }
 
   private async discoverLocalRAG(timeout: number): Promise<DiscoveredService[]> {
-    const results: DiscoveredService[] = []
-
-    const checks = LOCAL_RAG_ENDPOINTS.map(async (endpoint) => {
-      const url = `http://localhost:${endpoint.port}${endpoint.path}`
-      const status = await this.probe(url, timeout, endpoint.check)
-      results.push({
-        type: 'rag',
-        location: 'local',
-        name: endpoint.name,
-        url: `http://localhost:${endpoint.port}`,
-        status,
-        provider: endpoint.provider,
+    // Probe in parallel, then walk the table in order: the first entry that finds a
+    // server on a given URL names it. Several table rows can point at the same port
+    // (RAG-Wissen and "DocMind REST (alt)" are the same FastAPI app on 8000), and one
+    // server must not be listed twice under two names.
+    const probed = await Promise.all(
+      LOCAL_RAG_ENDPOINTS.map(async (endpoint) => {
+        const url = `http://localhost:${endpoint.port}`
+        const status = await this.probe(`${url}${endpoint.path}`, timeout, endpoint.check)
+        const service: DiscoveredService = {
+          type: 'rag',
+          location: 'local',
+          name: endpoint.name,
+          url,
+          status,
+          provider: endpoint.provider,
+        }
+        return service
       })
-    })
+    )
 
-    await Promise.allSettled(checks)
-    return results
+    const onlineUrls = new Set<string>()
+    return probed.filter((service) => {
+      if (service.status !== 'online') return true
+      if (onlineUrls.has(service.url)) return false
+      onlineUrls.add(service.url)
+      return true
+    })
   }
 
   private async discoverLocalMCP(): Promise<DiscoveredService[]> {
