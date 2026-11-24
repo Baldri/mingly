@@ -38,7 +38,7 @@
  *     on /tmp, which on macOS resolves to /private/tmp.
  *
  * Which test pins which rule was MEASURED, not assumed: each rule was inverted
- * in the implementation on its own and this file re-run (2026-11-24).
+ * in the implementation on its own and this file re-run.
  *
  *   name compared on the RESOLVED path  -> 1 red: the nvm symlink test
  *   the RESOLVED path returned for storage -> 3 red: the nvm symlink test and,
@@ -49,6 +49,18 @@
  *   userData left unresolved            -> 3 red: all three userData tests
  *   chosen-side containment dropped     -> 1 red: the link inside userData
  *   target-side containment dropped     -> 1 red: the link pointing into userData
+ *   win32 comparison made case-exact    -> 1 red: `folds case on win32`
+ *   case folded on EVERY platform       -> 2 red: `does not fold case on darwin`
+ *       and the end-to-end `refuses an upper-case NPM on a POSIX host`. That
+ *       second one is also the only available proof of the WIRING — that
+ *       validateChosenFile's spelling decision really runs through
+ *       basenameIsAllowed — because on a POSIX host the win32 branch itself is
+ *       unobservable through validateChosenFile.
+ *
+ * The first five were measured on 2026-11-24, the two case-folding rows on
+ * 2026-11-25, when the name-on-resolved row was re-measured against the moved
+ * comparison and still stood. The source was restored from a byte-identical
+ * copy after every mutation (`shasum` compared).
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
@@ -81,7 +93,11 @@ vi.mock('electron', () => ({
   }
 }))
 
-import { allowedBasenames, validateChosenFile } from '../../src/main/coding/interpreter-settings'
+import {
+  allowedBasenames,
+  basenameIsAllowed,
+  validateChosenFile
+} from '../../src/main/coding/interpreter-settings'
 import { INTERPRETER_NAMES } from '../../src/main/coding/run-command'
 
 /** An executable regular file at `target`, parents created. */
@@ -116,6 +132,10 @@ beforeAll(() => {
   mkdirSync(at('as-dir', 'npm'), { recursive: true })
   // A link with no target.
   link(at('dangling', 'npm'), at('does-not-exist', 'npm'))
+  // An upper-case NPM with no lower-case sibling: on a case-insensitive
+  // filesystem a sibling would make this the SAME file and realpath would
+  // hand back the other spelling.
+  makeExecutable(at('upper', 'NPM'))
   // A space and a non-ASCII character in the chosen path.
   makeExecutable(at('mit Lücke', 'äöü', 'npm'))
   // Inside userData: a plain file, a payload a link outside points at, and a
@@ -138,6 +158,31 @@ describe('allowedBasenames', () => {
 
   it('allows the bare name, .cmd and .exe on win32', () => {
     expect(allowedBasenames('npm', 'win32')).toEqual(['npm', 'npm.cmd', 'npm.exe'])
+  })
+})
+
+describe('basenameIsAllowed', () => {
+  it('folds case on win32', () => {
+    // Windows filesystems are case-insensitive: NPM.CMD and npm.cmd are the
+    // same file there, so refusing one spelling is not strictness, only
+    // inconsistency about which spelling the dialog happened to return.
+    expect(basenameIsAllowed('npm', 'NPM.CMD', 'win32')).toBe(true)
+    expect(basenameIsAllowed('npm', 'Npm.Cmd', 'win32')).toBe(true)
+    expect(basenameIsAllowed('npm', 'NPM', 'win32')).toBe(true)
+  })
+
+  it('does not fold case on darwin', () => {
+    // The negative control. Without it the win32 case does not show that the
+    // distinction hangs on the PLATFORM rather than on case folding everywhere.
+    expect(basenameIsAllowed('npm', 'NPM', 'darwin')).toBe(false)
+    expect(basenameIsAllowed('npm', 'npm', 'darwin')).toBe(true)
+  })
+
+  it('still refuses another program on win32', () => {
+    // Folding case is not a free pass: an implementation that lower-cased and
+    // then matched loosely would pass both tests above and fail this one.
+    expect(basenameIsAllowed('npm', 'ls.cmd', 'win32')).toBe(false)
+    expect(basenameIsAllowed('npm', 'npm.bat', 'win32')).toBe(false)
   })
 })
 
@@ -179,8 +224,14 @@ describe('validateChosenFile', () => {
 
   it('refuses npm.cmd on a POSIX host', () => {
     // This suite runs on POSIX only, as coding-git-hook-real-fs.test.ts states
-    // for itself. The win32 half of the rule is pinned on allowedBasenames.
+    // for itself. The win32 halves of the rule are pinned on allowedBasenames
+    // and basenameIsAllowed.
     expect(validateChosenFile('npm', at('bin', 'npm.cmd'))).toBeNull()
+  })
+
+  it('refuses an upper-case NPM on a POSIX host', () => {
+    // The wiring: case folding must not reach the trust boundary off win32.
+    expect(validateChosenFile('npm', at('upper', 'NPM'))).toBeNull()
   })
 
   // Pins the name comparison AND the stored value against the chosen path.

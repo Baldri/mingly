@@ -48,10 +48,39 @@ import { INTERPRETER_NAMES } from './run-command'
  *
  * Windows needs the extensions because the shim a package manager installs
  * there IS `npm.cmd`; `shell: false` means the extension is not appended for us.
+ * How a chosen basename is COMPARED against this list is `basenameIsAllowed`.
  */
 export function allowedBasenames(name: string, platform: NodeJS.Platform): string[] {
   if (platform === 'win32') return [name, `${name}.cmd`, `${name}.exe`]
   return [name]
+}
+
+/**
+ * Does `basename` name the program `name` on `platform`?
+ *
+ * The one comparison rule, and the only one `validateChosenFile` uses, so the
+ * spelling question is decided in a single place.
+ *
+ * ON WIN32 THE COMPARISON FOLDS CASE. Windows filesystems are
+ * case-insensitive: `NPM.CMD` and `npm.cmd` are the SAME FILE there, so
+ * accepting one spelling and refusing the other is not stricter, only
+ * inconsistent about which spelling the dialog happened to return. The set of
+ * files that get through does not change, and nothing else is relaxed — the
+ * file must still be absolute, regular, executable, one of the allowed names
+ * and outside userData.
+ *
+ * Off win32 the comparison stays exact, because there two spellings really can
+ * be two different files and strictness costs nothing.
+ *
+ * `toLowerCase`, not `toLocaleLowerCase`: the fold must not depend on the
+ * user's locale (in a Turkish locale 'I' lower-cases to a dotless 'ı', which
+ * would stop `NPM.CMD` from matching).
+ */
+export function basenameIsAllowed(name: string, basename: string, platform: NodeJS.Platform): boolean {
+  const allowed = allowedBasenames(name, platform)
+  if (platform !== 'win32') return allowed.includes(basename)
+  const folded = basename.toLowerCase()
+  return allowed.some((candidate) => candidate.toLowerCase() === folded)
 }
 
 function realPathOf(target: string): string | null {
@@ -103,7 +132,7 @@ export function validateChosenFile(name: string, chosenPath: string): string | n
   // Only the three names the run tool knows; the list is not duplicated here.
   if (!INTERPRETER_NAMES.some((known) => known === name)) return null
   if (!path.isAbsolute(chosenPath)) return null
-  if (!allowedBasenames(name, process.platform).includes(path.basename(chosenPath))) return null
+  if (!basenameIsAllowed(name, path.basename(chosenPath), process.platform)) return null
 
   const target = realPathOf(chosenPath)
   if (target === null) return null
