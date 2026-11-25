@@ -2,15 +2,69 @@ import { useState, useEffect, useCallback } from 'react'
 import type { AllowedDirectory } from '../../shared/file-access-types'
 import { ConfirmDialog } from './ConfirmDialog'
 import { getPermissionLabel } from '../lib/coding-display'
+import type { InterpreterState } from '../../shared/coding-interpreter-types'
 
 export function FileAccessTab() {
   const [directories, setDirectories] = useState<AllowedDirectory[]>([])
   const [loading, setLoading] = useState(true)
   const [pendingRevokeId, setPendingRevokeId] = useState<string | null>(null)
 
+  // Interpreters: null means the last list() call failed, so the error replaces the rows
+  const [interpreters, setInterpreters] = useState<InterpreterState[] | null>([])
+  const [interpreterError, setInterpreterError] = useState<string | null>(null)
+
+  const loadInterpreters = useCallback(async () => {
+    try {
+      const result = await window.electronAPI.codingInterpreters.list()
+      if (result.success) {
+        setInterpreters(result.interpreters)
+        setInterpreterError(null)
+      } else {
+        setInterpreters(null)
+        setInterpreterError(result.error)
+      }
+    } catch (error) {
+      console.error('Failed to load interpreters:', error)
+      setInterpreters(null)
+      setInterpreterError(error instanceof Error ? error.message : String(error))
+    }
+  }, [])
+
+  const handleChooseInterpreter = useCallback(async (name: string) => {
+    try {
+      const result = await window.electronAPI.codingInterpreters.choose(name)
+      if (!result.success) {
+        setInterpreterError(result.error)
+        return
+      }
+      // stored: false is a cancelled dialog or a refused pick, not an error
+      if (result.stored) setInterpreterError(null)
+      await loadInterpreters()
+    } catch (error) {
+      console.error('Failed to choose interpreter:', error)
+      setInterpreterError(error instanceof Error ? error.message : String(error))
+    }
+  }, [loadInterpreters])
+
+  const handleRemoveInterpreter = useCallback(async (name: string) => {
+    try {
+      const result = await window.electronAPI.codingInterpreters.remove(name)
+      if (!result.success) {
+        setInterpreterError(result.error)
+        return
+      }
+      setInterpreterError(null)
+      await loadInterpreters()
+    } catch (error) {
+      console.error('Failed to remove interpreter:', error)
+      setInterpreterError(error instanceof Error ? error.message : String(error))
+    }
+  }, [loadInterpreters])
+
   useEffect(() => {
     void loadDirectories()
-  }, [])
+    void loadInterpreters()
+  }, [loadInterpreters])
 
   const loadDirectories = async () => {
     try {
@@ -201,6 +255,60 @@ export function FileAccessTab() {
                     />
                   </svg>
                 </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Interpreters */}
+      <div>
+        <h4 className="mb-1 text-sm font-semibold text-gray-900 dark:text-white">Interpreters</h4>
+        <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+          Programs are never taken from PATH. Pick the exact file for each one.
+        </p>
+
+        {interpreterError && (
+          <p role="alert" className="mb-3 text-sm text-red-600 dark:text-red-400">
+            {interpreterError}
+          </p>
+        )}
+
+        {interpreters && (
+          <div className="space-y-3">
+            {interpreters.map((interp) => (
+              <div
+                key={interp.name}
+                className="flex items-center justify-between rounded-lg border border-gray-200 p-4 dark:border-gray-700"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-gray-900 dark:text-white">{interp.name}</p>
+                  <p className="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">
+                    {interp.path === null
+                      ? 'not set'
+                      : !interp.confirmed
+                        ? `not confirmed: ${interp.path}`
+                        : !interp.found
+                          ? `not found: ${interp.path}`
+                          : interp.path}
+                  </p>
+                </div>
+                <div className="ml-4 flex gap-2">
+                  <button
+                    onClick={() => void handleChooseInterpreter(interp.name)}
+                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                  >
+                    Choose...
+                  </button>
+                  {interp.path !== null && (
+                    <button
+                      onClick={() => void handleRemoveInterpreter(interp.name)}
+                      className="rounded-lg px-3 py-1.5 text-sm text-gray-500 hover:bg-gray-100 hover:text-red-600 dark:hover:bg-gray-800 dark:hover:text-red-400"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
