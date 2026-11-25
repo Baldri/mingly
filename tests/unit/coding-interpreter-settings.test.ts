@@ -58,9 +58,17 @@
  *       basenameIsAllowed — because on a POSIX host the win32 branch itself is
  *       unobservable through validateChosenFile.
  *
+ *   noResolveAliases dropped            -> 2 red: `asks the dialog not to
+ *       resolve aliases` and the closed-set `properties` assertion in `opens
+ *       the dialog with openFile`. This row is the one every other row could
+ *       not produce: `showOpenDialog` is a double here, so nothing in this file
+ *       sees what the OS panel does with a pick. That half was measured by hand
+ *       in the dev build and is recorded at the test itself.
+ *
  * The five containment and resolution rows were measured on 2026-11-24, the two
  * case-folding rows on 2026-11-25, when the name-on-resolved row was
- * re-measured against the moved comparison and still stood. The isAbsolute row
+ * re-measured against the moved comparison and still stood. The
+ * noResolveAliases row is from 2026-11-26. The isAbsolute row
  * is from 2026-11-25 as well, and it is the reason this table is kept: the
  * relative-path test as first written left isAbsolute at ZERO coverage (the
  * mutation turned nothing red), which is exactly what a missing row means. The
@@ -406,10 +414,36 @@ describe('interpreter settings: read, write, remove', () => {
     expect(showOpenDialog).toHaveBeenCalledTimes(1)
     const args = showOpenDialog.mock.calls[0]
     expect(args).toHaveLength(1) // no BrowserWindow first argument
-    expect(args[0].properties).toEqual(['openFile'])
+    // Exact, not toContain: what this line guards is the CLOSED set - no
+    // multiSelections, no openDirectory, no promptToCreate. It read
+    // ['openFile'] until 2026-11-26, and in that form it pinned the
+    // alias-resolution defect in place instead of a requirement. The
+    // requirement it checks is unchanged.
+    expect(args[0].properties).toEqual(['openFile', 'noResolveAliases'])
     expect(typeof args[0].title).toBe('string')
     expect(typeof args[0].message).toBe('string')
     expect('defaultPath' in args[0]).toBe(false)
+  })
+
+  /**
+   * The dialog must hand back the file the user clicked, not its target.
+   *
+   * macOS resolves aliases and symlinks in NSOpenPanel by default, so without
+   * `noResolveAliases` the "chosen" path this module receives is ALREADY
+   * resolved and the module header's whole argument is void: measured by hand
+   * on 2026-11-26 in the dev build, picking /opt/homebrew/bin/git (a symlink)
+   * stored /opt/homebrew/Cellar/git/2.53.0/bin/git, and picking this machine's
+   * own ~/.nvm/versions/node/v24.13.1/bin/npm was REFUSED, because the name
+   * comparison saw the target's basename npm-cli.js.
+   *
+   * This test can only pin the option, not the OS: `showOpenDialog` is a
+   * double here, and no API reports how the panel resolved a pick. The OS half
+   * is a manual measurement, recorded above and in the pull request.
+   */
+  it('asks the dialog not to resolve aliases, so a symlink comes back as itself', async () => {
+    dialogReturns([], true)
+    await chooseInterpreter('npm')
+    expect(showOpenDialog.mock.calls[0][0].properties).toContain('noResolveAliases')
   })
 
   it('starts the dialog in the directory of the stored entry', async () => {

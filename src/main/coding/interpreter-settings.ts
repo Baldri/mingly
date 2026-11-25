@@ -26,6 +26,14 @@
  * child's PATH, and `.../lib/node_modules/npm/bin` holds no `node`, so npm
  * could not start.
  *
+ * THE PARAGRAPH ABOVE ONLY DECIDES ANYTHING BECAUSE THE DIALOG IS ASKED FOR THE
+ * CHOSEN PATH. macOS resolves aliases in the open panel by default, which this
+ * module argued against without switching it off: measured 2026-11-26 in the dev
+ * build, picking /opt/homebrew/bin/git stored the Cellar path above, and picking
+ * the nvm npm above was REFUSED, on its target's basename. `chooseInterpreter`
+ * therefore passes `noResolveAliases`. A reader who removes that option has
+ * silently turned every line above into its opposite.
+ *
  * `realpathSync` keeps a narrower job here than in the file-access code: it
  * says WHAT sits at the end of the chain (a regular file, executable) and it
  * supplies one of the two sides of the userData containment check. It is not
@@ -245,8 +253,13 @@ export async function chooseInterpreter(name: string): Promise<InterpreterChoose
   // resurrecting a revoked interpreter along with its confirmation marker.
   const stored = recordOf(store.get('paths', {}))
   const current = Object.prototype.hasOwnProperty.call(stored, name) ? stored[name] : undefined
+  // `noResolveAliases` is what makes the word "chosen" mean anything. macOS
+  // resolves aliases and symlinks in the open panel BY DEFAULT, so without it
+  // the path this function calls chosen is already the target, and the module
+  // header's name rule decides nothing. Measured on this host 2026-11-26 in the
+  // dev build; a platform that does not resolve has nothing to switch off.
   const options: Electron.OpenDialogOptions = {
-    properties: ['openFile'],
+    properties: ['openFile', 'noResolveAliases'],
     title: `Select ${name}`,
     message: `Select the program Mingly should run as ${name}`
   }
