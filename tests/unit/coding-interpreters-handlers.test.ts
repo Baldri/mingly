@@ -12,6 +12,10 @@
  * `async` only to `await import(...)`), leaving a window in which a channel did
  * not exist. The registration test therefore asserts BEFORE any `await`.
  *
+ * Results are envelopes (`success` discriminator), not bare values: wrapHandler
+ * answers a rate limit or a thrown error with a truthy `{ success: false }`
+ * object, so a bare boolean would read as success exactly when the call failed.
+ *
  * Mutation table (measured by hand-inverting the rule in the handler file):
  *
  *   rule inverted                                              red tests
@@ -21,6 +25,9 @@
  *   registration made async, `await import()` before the three      4  (all: nothing is registered
  *     wrapHandler calls                                                 yet when the assertions run)
  *   a fourth `coding-interpreters:*` channel registered             1  (no fourth verb)
+ *   choose returns a bare boolean instead of { success, stored }    2  (failed-vs-cancelled, unknown-name)
+ *   remove returns a bare boolean instead of an envelope            1  (envelopes)
+ *   list stops calling listInterpreters (value replaced)            2  (name-only, envelopes)
  *
   * The name-only test asserts `toHaveBeenCalledTimes(1)` first: a spy asserted
  * with one argument passes just as well when the call never happened.
@@ -131,7 +138,7 @@ describe('registerInfrastructureHandlers: interpreter settings', () => {
     const result = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, 'rm')
 
     expect(chooseInterpreter).toHaveBeenLastCalledWith('rm')
-    expect(result).toBe(false)
+    expect(result).toEqual({ success: true, stored: false })
     expect(showOpenDialog).not.toHaveBeenCalled()
   })
 
@@ -150,5 +157,37 @@ describe('registerInfrastructureHandlers: interpreter settings', () => {
     expect(removeInterpreter).toHaveBeenCalledWith('npm')
     expect(listInterpreters).toHaveBeenCalledTimes(1)
     expect(listInterpreters).toHaveBeenCalledWith()
+  })
+
+  it('a failed call is distinguishable from a cancelled dialog', async () => {
+    registerInfrastructureHandlers()
+
+    // The call ran and the user cancelled: success, nothing stored.
+    showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+    const cancelled = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, 'npm')
+    expect(cancelled).toEqual({ success: true, stored: false })
+
+    // The call itself failed: wrapHandler's error envelope, never a bare
+    // boolean and never something truthy that reads as success.
+    showOpenDialog.mockRejectedValueOnce(new Error('dialog exploded'))
+    const failed = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, 'npm')
+    expect(failed).toMatchObject({ success: false, error: 'dialog exploded' })
+    expect(failed).not.toHaveProperty('stored')
+  })
+
+  it('list and remove return envelopes with a success discriminator', async () => {
+    registerInfrastructureHandlers()
+
+    const listed = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_LIST)
+    expect(listed).toMatchObject({ success: true })
+    expect(Array.isArray((listed as { interpreters: unknown }).interpreters)).toBe(true)
+
+    // An unknown name is a renderer bug, not a state: it is an error.
+    const unknown = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_REMOVE, 'rm')
+    expect(unknown).toMatchObject({ success: false })
+    expect((unknown as { error: string }).error).toEqual(expect.any(String))
+
+    const removed = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_REMOVE, 'npm')
+    expect(removed).toEqual({ success: true })
   })
 })

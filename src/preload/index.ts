@@ -7,6 +7,11 @@ import type {
   CodingConsentRequest,
   CodingRunRequest
 } from '../shared/coding-types'
+import type {
+  InterpreterListResult,
+  InterpreterChooseResult,
+  InterpreterRemoveResult
+} from '../shared/coding-interpreter-types'
 
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
@@ -170,12 +175,13 @@ const api = {
 
   // Coding interpreter settings: names only, the main process opens the dialog
   codingInterpreters: {
-    list: () => ipcRenderer.invoke(IPC_CHANNELS.CODING_INTERPRETERS_LIST),
+    list: (): Promise<InterpreterListResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.CODING_INTERPRETERS_LIST),
 
-    choose: (name: string) =>
+    choose: (name: string): Promise<InterpreterChooseResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, name),
 
-    remove: (name: string) =>
+    remove: (name: string): Promise<InterpreterRemoveResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.CODING_INTERPRETERS_REMOVE, name)
   },
 

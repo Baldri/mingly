@@ -14,3 +14,25 @@ export interface InterpreterState {
   confirmed: boolean
   found: boolean
 }
+
+/**
+ * What the three interpreter IPC channels resolve to. Same shape as the error
+ * envelope `wrapHandler` produces (`{ success: false, error }`), so a caller
+ * branches on `success` alone: a failed call (rate limit, thrown error) can
+ * never be mistaken for a regular outcome, and a cancelled dialog
+ * (`success: true, stored: false`) can never be mistaken for a failure.
+ */
+export interface InterpreterIpcError {
+  success: false
+  error: string
+  retryAfterMs?: number
+}
+
+export type InterpreterListResult =
+  | { success: true; interpreters: InterpreterState[] }
+  | InterpreterIpcError
+
+/** `stored` is false when the dialog was cancelled or the pick was refused. */
+export type InterpreterChooseResult = { success: true; stored: boolean } | InterpreterIpcError
+
+export type InterpreterRemoveResult = { success: true } | InterpreterIpcError

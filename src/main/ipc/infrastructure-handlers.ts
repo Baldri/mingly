@@ -155,14 +155,29 @@ export function registerInfrastructureHandlers(): void {
   // ========================================
   // Name only, never a path: the dialog is opened by the main process and the
   // trust boundary in interpreter-settings decides what is stored. Do not add
-  // a verb that stores or confirms a path without that dialog. Each handler
-  // forwards exactly one argument, so extra renderer arguments are dropped.
+  // a verb that stores or confirms a path without that dialog. CHOOSE and
+  // REMOVE forward exactly one argument (the name) and LIST forwards none, so
+  // extra renderer arguments are dropped.
+  //
+  // Results are envelopes, not bare values: wrapHandler answers a rate limit or
+  // a thrown error with `{ success: false, error }`, which is a truthy object.
+  // A bare `boolean` would read as success exactly when the call failed.
 
-  wrapHandler(IPC_CHANNELS.CODING_INTERPRETERS_LIST, () => listInterpreters())
+  wrapHandler(IPC_CHANNELS.CODING_INTERPRETERS_LIST, () => ({
+    success: true,
+    interpreters: listInterpreters()
+  }))
 
-  wrapHandler(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, (name: string) => chooseInterpreter(name))
+  wrapHandler(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, async (name: string) => ({
+    success: true,
+    stored: await chooseInterpreter(name)
+  }))
 
-  wrapHandler(IPC_CHANNELS.CODING_INTERPRETERS_REMOVE, (name: string) => removeInterpreter(name))
+  wrapHandler(IPC_CHANNELS.CODING_INTERPRETERS_REMOVE, (name: string) =>
+    removeInterpreter(name)
+      ? { success: true }
+      : { success: false, error: `Unknown interpreter: ${name}` }
+  )
 
   // ========================================
   // File Access Management
