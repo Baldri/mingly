@@ -14,7 +14,12 @@ import { wrapHandler, requirePermission } from './ipc-utils'
 import type { NetworkAIServerConfig } from '../../shared/network-ai-types'
 import type { FileAccessRequest, FileAccessPermission } from '../../shared/file-access-types'
 import { parseNetworkShareConfig } from '../../shared/file-access-types'
-import { listInterpreters, chooseInterpreter, removeInterpreter } from '../coding/interpreter-settings'
+import {
+  isKnownName as isKnownInterpreterName,
+  listInterpreters,
+  chooseInterpreter,
+  removeInterpreter
+} from '../coding/interpreter-settings'
 
 export function registerInfrastructureHandlers(): void {
   const networkAIManager = getNetworkAIManager()
@@ -168,15 +173,23 @@ export function registerInfrastructureHandlers(): void {
     interpreters: listInterpreters()
   }))
 
-  wrapHandler(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, async (name: string) => ({
-    success: true,
-    stored: await chooseInterpreter(name)
-  }))
+  // An unknown name is a renderer bug, not a state, so CHOOSE and REMOVE answer
+  // it identically. chooseInterpreter's boolean cannot carry it (stored,
+  // cancelled and refused pick all fold into false), hence the check here. It
+  // only refuses: what gets stored is still decided in interpreter-settings.
+  const unknownInterpreter = (name: string): { success: false; error: string } => ({
+    success: false,
+    error: `Unknown interpreter: ${name}`
+  })
+
+  wrapHandler(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, async (name: string) =>
+    isKnownInterpreterName(name)
+      ? { success: true, stored: await chooseInterpreter(name) }
+      : unknownInterpreter(name)
+  )
 
   wrapHandler(IPC_CHANNELS.CODING_INTERPRETERS_REMOVE, (name: string) =>
-    removeInterpreter(name)
-      ? { success: true }
-      : { success: false, error: `Unknown interpreter: ${name}` }
+    removeInterpreter(name) ? { success: true } : unknownInterpreter(name)
   )
 
   // ========================================

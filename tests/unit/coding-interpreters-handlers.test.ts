@@ -21,15 +21,16 @@
  *   rule inverted                                              red tests
  *   ---------------------------------------------------------  ---------
  *   choose handler forwards the second (path) argument              1  (name-only)
- *   choose handler never calls chooseInterpreter                    2  (unknown-name, name-only)
- *   registration made async, `await import()` before the three      4  (all: nothing is registered
+ *   choose handler never calls chooseInterpreter                    3  (unknown-name, name-only, failed-vs-cancelled)
+ *   registration made async, `await import()` before the three      7  (all: nothing is registered
  *     wrapHandler calls                                                 yet when the assertions run)
  *   a fourth `coding-interpreters:*` channel registered             1  (no fourth verb)
- *   choose returns a bare boolean instead of { success, stored }    2  (failed-vs-cancelled, unknown-name)
- *   remove returns a bare boolean instead of an envelope            1  (envelopes)
+ *   choose returns a bare boolean instead of { success, stored }    2  (failed-vs-cancelled, unknown-name vs cancel)
+ *   choose answers an unknown name { success: true, stored: false } 2  (unknown-name, unknown-name vs cancel)
+ *   remove returns a bare boolean instead of an envelope            2  (envelopes, unknown-name vs cancel)
  *   list stops calling listInterpreters (value replaced)            2  (name-only, envelopes)
  *
-  * The name-only test asserts `toHaveBeenCalledTimes(1)` first: a spy asserted
+ * The name-only test asserts `toHaveBeenCalledTimes(1)` first: a spy asserted
  * with one argument passes just as well when the call never happened.
  */
 
@@ -137,9 +138,27 @@ describe('registerInfrastructureHandlers: interpreter settings', () => {
 
     const result = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, 'rm')
 
-    expect(chooseInterpreter).toHaveBeenLastCalledWith('rm')
-    expect(result).toEqual({ success: true, stored: false })
+    // Requirement: an unknown name is an error, as `remove` already treats it.
+    // The earlier assertion ({ success: true, stored: false }) encoded the
+    // inconsistency: it was character-identical to a user cancel.
+    expect(result).toMatchObject({ success: false })
+    expect((result as { error: string }).error).toContain('rm')
+    expect(result).not.toHaveProperty('stored')
     expect(showOpenDialog).not.toHaveBeenCalled()
+  })
+
+  it('an unknown name is distinguishable from a cancel and treated like remove treats it', async () => {
+    registerInfrastructureHandlers()
+
+    showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+    const cancelled = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, 'npm')
+    expect(cancelled).toEqual({ success: true, stored: false })
+
+    const chooseUnknown = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, 'rm')
+    const removeUnknown = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_REMOVE, 'rm')
+
+    expect(chooseUnknown).not.toEqual(cancelled)
+    expect(chooseUnknown).toEqual(removeUnknown)
   })
 
   it('no channel accepts a path argument', async () => {

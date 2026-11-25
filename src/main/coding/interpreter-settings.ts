@@ -182,7 +182,7 @@ export function validateChosenFile(name: string, chosenPath: string): string | n
 
 const STORE_FILE = 'coding-interpreters.json'
 
-function isKnownName(name: string): boolean {
+export function isKnownName(name: string): boolean {
   return INTERPRETER_NAMES.some((known) => known === name)
 }
 
