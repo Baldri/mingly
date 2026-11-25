@@ -261,6 +261,10 @@ export function FileAccessTab() {
         )}
       </div>
 
+      {/*
+        DEBT: the user must know the path themselves, there is no detection and no suggestion
+        -> first packed build in which coding-interpreters.json stays empty after a refused command
+      */}
       {/* Interpreters */}
       <div>
         <h4 className="mb-1 text-sm font-semibold text-gray-900 dark:text-white">Interpreters</h4>
