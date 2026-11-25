@@ -36,7 +36,7 @@ import { app, dialog } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
 import { isPathSafe } from '../../shared/file-access-types'
-import type { InterpreterState } from '../../shared/coding-interpreter-types'
+import type { InterpreterChooseOutcome, InterpreterState } from '../../shared/coding-interpreter-types'
 import { SimpleStore } from '../utils/simple-store'
 import { INTERPRETER_NAMES, readInterpreterPaths } from './run-command'
 
@@ -123,8 +123,10 @@ function realUserDataPath(): string | null {
  * Validate a file the user picked in an OS dialog as the program for `name`.
  *
  * Returns the path to STORE — always `chosenPath`, unchanged — or null if any
- * check fails. No reason string: the caller has no use for one and the surface
- * only reports success or failure.
+ * check fails. No reason string, and the refusal is not broken down: the
+ * surface reports THAT a pick was refused, never WHICH check refused it. The
+ * settings page says so in one generic sentence, which is all a user needs and
+ * all the design's anti-goals permit.
  *
  * The order of the checks is part of the contract. The name comparison runs
  * before the resolution (see the module header), and everything that touches
@@ -218,14 +220,21 @@ export function listInterpreters(): InterpreterState[] {
 
 /**
  * Let the user pick the program for `name` and store it if the trust boundary
- * accepts it. Resolves true only when something was written.
+ * accepts it. Says WHICH of the three things happened.
  *
  * The dialog is opened without a parent window, the way FileAccessManager does
  * it. A cancelled dialog is not an error and writes nothing; neither does a
- * pick `validateChosenFile` refuses.
+ * pick `validateChosenFile` refuses — but those two are not the same event, and
+ * a single boolean could not tell them apart. A refused pick is the one the
+ * user has to be told about: they did choose a file and it was not taken.
+ *
+ * An unknown name reports `'refused'` for lack of a better word, but no caller
+ * sees it: the IPC handler answers an unknown name with an error envelope
+ * before it gets here, because that is a renderer bug and not a user outcome.
+ * Nothing here decides what may be stored; `validateChosenFile` does.
  */
-export async function chooseInterpreter(name: string): Promise<boolean> {
-  if (!isKnownName(name)) return false
+export async function chooseInterpreter(name: string): Promise<InterpreterChooseOutcome> {
+  if (!isKnownName(name)) return 'refused'
 
   const store = SimpleStore.create(STORE_FILE)
 
@@ -246,10 +255,10 @@ export async function chooseInterpreter(name: string): Promise<boolean> {
   }
 
   const result = await dialog.showOpenDialog(options)
-  if (result.canceled || result.filePaths.length === 0) return false
+  if (result.canceled || result.filePaths.length === 0) return 'cancelled'
 
   const accepted = validateChosenFile(name, result.filePaths[0])
-  if (accepted === null) return false
+  if (accepted === null) return 'refused'
 
   // No `await` between this read and the writes below.
   const paths = recordOf(store.get('paths', {}))
@@ -261,7 +270,7 @@ export async function chooseInterpreter(name: string): Promise<boolean> {
   store.set('paths', paths)
   confirmedAt[name] = Date.now()
   store.set('confirmedAt', confirmedAt)
-  return true
+  return 'stored'
 }
 
 /** Clear the entry for `name` from both maps. False for a name that is not an interpreter. */

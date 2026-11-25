@@ -174,17 +174,23 @@ export function registerInfrastructureHandlers(): void {
   }))
 
   // An unknown name is a renderer bug, not a state, so CHOOSE and REMOVE answer
-  // it identically. chooseInterpreter's boolean cannot carry it (stored,
-  // cancelled and refused pick all fold into false), hence the check here. It
-  // only refuses: what gets stored is still decided in interpreter-settings.
+  // it identically, with an error envelope. chooseInterpreter would report it
+  // as 'refused', which is the bucket for a real pick the trust boundary turned
+  // down — a user-visible outcome, and the wrong place for a call the renderer
+  // should never have made. Hence the check here. It only refuses: what gets
+  // stored is still decided in interpreter-settings.
   const unknownInterpreter = (name: string): { success: false; error: string } => ({
     success: false,
     error: `Unknown interpreter: ${name}`
   })
 
+  // CHOOSE carries the OUTCOME, not a boolean: stored, cancelled and refused
+  // are three different things to the user, and only the refused one needs a
+  // message. A boolean folded the last two together and left a refused pick
+  // with no visible effect at all.
   wrapHandler(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, async (name: string) =>
     isKnownInterpreterName(name)
-      ? { success: true, stored: await chooseInterpreter(name) }
+      ? { success: true, outcome: await chooseInterpreter(name) }
       : unknownInterpreter(name)
   )
 

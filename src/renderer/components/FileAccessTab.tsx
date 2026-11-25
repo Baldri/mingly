@@ -4,6 +4,18 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { getPermissionLabel } from '../lib/coding-display'
 import type { InterpreterState } from '../../shared/coding-interpreter-types'
 
+/**
+ * What the user sees when the trust boundary turned their pick down.
+ *
+ * ONE generic sentence, and deliberately so: it names the requirement, never
+ * which of the checks refused the file. The checks themselves are not listed
+ * either. It is composed here rather than in the main process, so no new
+ * user-facing text crosses IPC and the refusal reason stays where only the
+ * person in their own settings page can see it.
+ */
+const interpreterRefusedMessage = (name: string): string =>
+  `That file was not accepted as ${name}: pick the program itself, named ${name}.`
+
 export function FileAccessTab() {
   const [directories, setDirectories] = useState<AllowedDirectory[]>([])
   const [loading, setLoading] = useState(true)
@@ -37,8 +49,16 @@ export function FileAccessTab() {
         setInterpreterError(result.error)
         return
       }
-      // stored: false is a cancelled dialog or a refused pick, not an error
-      if (result.stored) setInterpreterError(null)
+      // A refused pick stored nothing, so there is nothing to reload — and a
+      // reload would clear this message again, since a successful list() does.
+      // Returning here is what makes the line survive long enough to be read.
+      if (result.outcome === 'refused') {
+        setInterpreterError(interpreterRefusedMessage(name))
+        return
+      }
+      // 'stored' and 'cancelled' both leave the message to loadInterpreters:
+      // it clears it on success and sets its own on failure. A cancelled
+      // dialog therefore produces no message of its own (R12).
       await loadInterpreters()
     } catch (error) {
       console.error('Failed to choose interpreter:', error)

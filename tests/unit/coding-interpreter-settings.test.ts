@@ -288,21 +288,35 @@ describe('validateChosenFile', () => {
 // ---------------------------------------------------------------------------
 // Reading, writing and removing — the layer around the trust boundary.
 //
-// Mutation table, measured 2026-11-25 (each rule inverted alone, file re-run,
-// source restored afterwards):
-//   `canceled` not checked                  -> 1 red: `writes nothing when the dialog is cancelled`
-//   validation result ignored               -> 2 red: refused-result test and its untouched-entry twin
+// Mutation table, RE-MEASURED 2026-11-25 (fix round 2) against this file as it
+// now stands: each rule inverted alone, the file re-run, the source restored
+// from a pristine copy and the restoration verified by sha256. 40 tests.
+//   `canceled` not checked                  -> 2 red: `writes nothing when the dialog is cancelled`
+//                                                     and the three-outcome test
+//   a cancelled dialog folded into 'refused' -> 3 red: the two cancel tests and the three-outcome test
+//   validation result ignored               -> 3 red: refused-result test, its untouched-entry twin
+//                                                     and the three-outcome test
+//   a refused pick folded into 'cancelled'  -> 3 red (same three) — this was the shipped defect
 //   unknown-name guard removed in choose    -> 1 red: `refuses an unknown name without opening a dialog`
-//   confirmedAt not written                 -> 1 red: `writes paths[name] and confirmedAt[name]`
+//   confirmedAt not written                 -> 3 red: `writes paths[name] and confirmedAt[name]`
+//                                                     and both dialog-window tests
 //   found no longer asks the filesystem     -> 1 red: `reports found:false when ... no longer exists`
 //   confirmed taken from the path alone     -> 2 red: no-marker and unusable-marker tests
-//   remove leaves confirmedAt behind        -> 1 red: `removeInterpreter clears both keys`
+//   remove leaves confirmedAt behind        -> 2 red: `removeInterpreter clears both keys` and
+//                                                     removal-during-dialog
 //   defaultPath always passed               -> 1 red: the no-defaultPath dialog test
 //   (2026-11-25, fix round 1) store maps read BEFORE the dialog await:
 //   both maps                               -> 2 red: removal-during-dialog and lost-choice tests
 //   only confirmedAt                        -> 2 red (same two)
 //   only paths                              -> 2 red (same two)
 //   Both tests were red against the unfixed source first (2 failed | 37 passed).
+//
+// Four counts rose against the table printed here before, and NONE of them
+// because a rule changed. Two tests were added to this file after the first
+// measurement (the dialog-window pair), which is what lifted `confirmedAt not
+// written` from 1 to 3 and `remove leaves confirmedAt behind` from 1 to 2; the
+// three-outcome test lifted the two rows about the dialog result. A count in a
+// table like this one ages with the file, not with the code it measures.
 // ---------------------------------------------------------------------------
 
 const STORE_FILE = path.join(dirs.userDataReal, 'coding-interpreters.json')
@@ -368,7 +382,7 @@ describe('interpreter settings: read, write, remove', () => {
   it('writes paths[name] and confirmedAt[name] on a valid choice', async () => {
     dialogReturns([at('bin', 'npm')])
     const before = Date.now()
-    await expect(chooseInterpreter('npm')).resolves.toBe(true)
+    await expect(chooseInterpreter('npm')).resolves.toBe('stored')
     const disk = storeOnDisk()
     expect(disk.paths).toEqual({ npm: at('bin', 'npm') })
     expect(disk.confirmedAt?.npm).toBeGreaterThanOrEqual(before)
@@ -416,14 +430,14 @@ describe('interpreter settings: read, write, remove', () => {
 
     // A cancelled dialog that still carries a valid-looking path.
     dialogReturns([at('bin', 'npm')], true)
-    await expect(chooseInterpreter('npm')).resolves.toBe(false)
+    await expect(chooseInterpreter('npm')).resolves.toBe('cancelled')
     expect(showOpenDialog).toHaveBeenCalledTimes(2)
     expect(existsSync(STORE_FILE)).toBe(false)
   })
 
   it('writes nothing when the dialog returns no file', async () => {
     dialogReturns([])
-    await expect(chooseInterpreter('npm')).resolves.toBe(false)
+    await expect(chooseInterpreter('npm')).resolves.toBe('cancelled')
     expect(existsSync(STORE_FILE)).toBe(false)
   })
 
@@ -431,15 +445,43 @@ describe('interpreter settings: read, write, remove', () => {
     // `ls` is executable and absolute, but not an npm.
     expect(validateChosenFile('npm', at('bin', 'ls'))).toBeNull()
     dialogReturns([at('bin', 'ls')])
-    await expect(chooseInterpreter('npm')).resolves.toBe(false)
+    await expect(chooseInterpreter('npm')).resolves.toBe('refused')
     expect(showOpenDialog).toHaveBeenCalledTimes(1)
     expect(existsSync(STORE_FILE)).toBe(false)
+  })
+
+  // Three outcomes, not two. A refused pick is neither a store nor a user
+  // cancel: nothing was written, but the user did pick a file and has to be
+  // told it was not taken. A boolean return folded refusal into cancel, and
+  // the settings page then showed a refused pick NOTHING at all.
+  //
+  // The set assertion is the one that pins the DISTINCTION; the three equality
+  // assertions only pin the spelling. Inverting any single outcome in the
+  // implementation turns the set assertion red on its own.
+  it('tells a stored pick, a cancelled dialog and a refused pick apart', async () => {
+    dialogReturns([at('bin', 'npm')])
+    const stored = await chooseInterpreter('npm')
+
+    // Cancelled while still carrying a path that would have been accepted.
+    dialogReturns([at('bin', 'npm')], true)
+    const cancelled = await chooseInterpreter('npm')
+
+    // Absolute and executable, but not an npm, so the trust boundary refuses
+    // it. The call itself succeeded; this is an outcome, not a failure.
+    expect(validateChosenFile('npm', at('bin', 'ls'))).toBeNull()
+    dialogReturns([at('bin', 'ls')])
+    const refused = await chooseInterpreter('npm')
+
+    expect(new Set([stored, cancelled, refused]).size).toBe(3)
+    expect(stored).toBe('stored')
+    expect(cancelled).toBe('cancelled')
+    expect(refused).toBe('refused')
   })
 
   it('leaves an existing entry untouched when the new choice is refused', async () => {
     seedStore({ paths: { npm: at('bin', 'npm') }, confirmedAt: { npm: NOW } })
     dialogReturns([at('bin', 'ls')])
-    await expect(chooseInterpreter('npm')).resolves.toBe(false)
+    await expect(chooseInterpreter('npm')).resolves.toBe('refused')
     expect(storeOnDisk()).toEqual({ paths: { npm: at('bin', 'npm') }, confirmedAt: { npm: NOW } })
   })
 
@@ -456,7 +498,7 @@ describe('interpreter settings: read, write, remove', () => {
       expect(removeInterpreter('git')).toBe(true) // the revocation, mid-dialog
       return { canceled: false, filePaths: [at('bin', 'npm')] }
     })
-    await expect(chooseInterpreter('npm')).resolves.toBe(true)
+    await expect(chooseInterpreter('npm')).resolves.toBe('stored')
     const disk = storeOnDisk()
     expect(disk.paths).toEqual({ npm: at('bin', 'npm') })
     expect(Object.keys(disk.confirmedAt ?? {})).toEqual(['npm'])
@@ -467,17 +509,17 @@ describe('interpreter settings: read, write, remove', () => {
     showOpenDialog.mockImplementationOnce(async () => {
       // A second choice runs to completion inside the first one's dialog.
       dialogReturns([at('bin', 'npm')])
-      await expect(chooseInterpreter('npm')).resolves.toBe(true)
+      await expect(chooseInterpreter('npm')).resolves.toBe('stored')
       return { canceled: false, filePaths: [at('bin', 'git')] }
     })
-    await expect(chooseInterpreter('git')).resolves.toBe(true)
+    await expect(chooseInterpreter('git')).resolves.toBe('stored')
     const disk = storeOnDisk()
     expect(disk.paths).toEqual({ npm: at('bin', 'npm'), git: at('bin', 'git') })
     expect(Object.keys(disk.confirmedAt ?? {}).sort()).toEqual(['git', 'npm'])
   })
 
   it('refuses an unknown name without opening a dialog', async () => {
-    await expect(chooseInterpreter('rm')).resolves.toBe(false)
+    await expect(chooseInterpreter('rm')).resolves.toBe('refused')
     expect(showOpenDialog).not.toHaveBeenCalled()
     expect(existsSync(STORE_FILE)).toBe(false)
   })

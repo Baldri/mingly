@@ -16,19 +16,44 @@
  * answers a rate limit or a thrown error with a truthy `{ success: false }`
  * object, so a bare boolean would read as success exactly when the call failed.
  *
- * Mutation table (measured by hand-inverting the rule in the handler file):
+ * CHOOSE carries an OUTCOME, and three of them: stored, cancelled, refused. A
+ * boolean folded refusal into cancel, which made a refused pick invisible in
+ * the settings page. A refusal is a successful call with a refusing outcome,
+ * never `{ success: false }` — that bucket belongs to a call that failed, and
+ * mixing them would undo the distinction R12 was written to create.
+ *
+ * Mutation table, RE-MEASURED 2026-11-25 against this file as it now stands:
+ * each rule inverted alone in the handler file, this file re-run, the source
+ * restored from a pristine copy and the restoration verified by sha256. Eight
+ * tests in this file, so a row reading 8 means every one of them. The shorthand
+ * «treated-like-remove» is the test that pins `chooseUnknown` equal to
+ * `removeUnknown`; «refused-pick» is the refused-outcome test.
  *
  *   rule inverted                                              red tests
  *   ---------------------------------------------------------  ---------
- *   choose handler forwards the second (path) argument              1  (name-only)
- *   choose handler never calls chooseInterpreter                    3  (unknown-name, name-only, failed-vs-cancelled)
- *   registration made async, `await import()` before the three      7  (all: nothing is registered
+ *   choose forwards the second (path) argument                      1  (name-only)
+ *   choose never calls chooseInterpreter                            4  (unknown-name, name-only,
+ *                                                                      failed-vs-cancelled, refused-pick)
+ *   registration made async, `await` before the three               8  (all: nothing is registered
  *     wrapHandler calls                                                 yet when the assertions run)
  *   a fourth `coding-interpreters:*` channel registered             1  (no fourth verb)
- *   choose returns a bare boolean instead of { success, stored }    2  (failed-vs-cancelled, unknown-name vs cancel)
- *   choose answers an unknown name { success: true, stored: false } 2  (unknown-name, unknown-name vs cancel)
- *   remove returns a bare boolean instead of an envelope            2  (envelopes, unknown-name vs cancel)
- *   list stops calling listInterpreters (value replaced)            2  (name-only, envelopes)
+ *   choose returns a bare value instead of { success, outcome }     3  (treated-like-remove,
+ *                                                                      failed-vs-cancelled, refused-pick)
+ *   choose folds 'refused' into 'cancelled'                         1  (refused-pick)
+ *   choose answers an unknown name like a cancel                    2  (unknown-name,
+ *                                                                      treated-like-remove)
+ *   remove returns a bare boolean instead of an envelope            2  (treated-like-remove, envelopes)
+ *   list returns a hard-coded `[]` instead of calling               1  (name-only)
+ *     listInterpreters
+ *   list returns a NON-array value instead                          2  (name-only, envelopes)
+ *
+ * Two rows moved against the table this file carried before, and both were
+ * wrong in a way a later citation would have inherited. The `remove` row read
+ * «unknown-name vs cancel»; measured, what goes red there is the assertion
+ * pinning «treated like remove», not the one separating an unknown name from a
+ * cancel. And the `list` row read 2 without naming the replacement VALUE: a
+ * hard-coded `[]` leaves the envelopes test green, because that test asserts an
+ * array and still gets one.
  *
  * The name-only test asserts `toHaveBeenCalledTimes(1)` first: a spy asserted
  * with one argument passes just as well when the call never happened.
@@ -139,11 +164,11 @@ describe('registerInfrastructureHandlers: interpreter settings', () => {
     const result = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, 'rm')
 
     // Requirement: an unknown name is an error, as `remove` already treats it.
-    // The earlier assertion ({ success: true, stored: false }) encoded the
-    // inconsistency: it was character-identical to a user cancel.
+    // The earlier assertion (a success envelope with nothing stored) encoded
+    // the inconsistency: it was character-identical to a user cancel.
     expect(result).toMatchObject({ success: false })
     expect((result as { error: string }).error).toContain('rm')
-    expect(result).not.toHaveProperty('stored')
+    expect(result).not.toHaveProperty('outcome')
     expect(showOpenDialog).not.toHaveBeenCalled()
   })
 
@@ -152,7 +177,7 @@ describe('registerInfrastructureHandlers: interpreter settings', () => {
 
     showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
     const cancelled = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, 'npm')
-    expect(cancelled).toEqual({ success: true, stored: false })
+    expect(cancelled).toEqual({ success: true, outcome: 'cancelled' })
 
     const chooseUnknown = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, 'rm')
     const removeUnknown = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_REMOVE, 'rm')
@@ -184,14 +209,45 @@ describe('registerInfrastructureHandlers: interpreter settings', () => {
     // The call ran and the user cancelled: success, nothing stored.
     showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
     const cancelled = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, 'npm')
-    expect(cancelled).toEqual({ success: true, stored: false })
+    expect(cancelled).toEqual({ success: true, outcome: 'cancelled' })
 
     // The call itself failed: wrapHandler's error envelope, never a bare
     // boolean and never something truthy that reads as success.
     showOpenDialog.mockRejectedValueOnce(new Error('dialog exploded'))
     const failed = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, 'npm')
     expect(failed).toMatchObject({ success: false, error: 'dialog exploded' })
-    expect(failed).not.toHaveProperty('stored')
+    expect(failed).not.toHaveProperty('outcome')
+  })
+
+  // R12 gave the renderer the means to tell a failed call from a cancel. A
+  // refused pick is a THIRD thing: the call ran, the user picked, and the trust
+  // boundary said no. It has to arrive in the success envelope — folding it
+  // into `{ success: false }` would destroy exactly the distinction R12 built —
+  // and it must not be character-identical to a cancel, or the settings page
+  // cannot say anything about it.
+  it('a refused pick is a successful call, distinct from a cancel and from a failure', async () => {
+    registerInfrastructureHandlers()
+
+    showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+    const cancelled = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, 'npm')
+
+    // Absolute and named npm, but nothing sits there, so validateChosenFile
+    // refuses it. No fixture and no system file: the outcome is the same on
+    // every host.
+    showOpenDialog.mockResolvedValueOnce({
+      canceled: false,
+      filePaths: ['/mingly-no-such-interpreter-dir/npm']
+    })
+    const refused = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, 'npm')
+
+    showOpenDialog.mockRejectedValueOnce(new Error('dialog exploded'))
+    const failed = await invoke(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, 'npm')
+
+    expect(refused).toMatchObject({ success: true })
+    expect(refused).not.toEqual(cancelled)
+    expect(refused).not.toEqual(failed)
+    expect(cancelled).toEqual({ success: true, outcome: 'cancelled' })
+    expect(refused).toEqual({ success: true, outcome: 'refused' })
   })
 
   it('list and remove return envelopes with a success discriminator', async () => {
