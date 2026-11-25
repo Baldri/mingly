@@ -255,11 +255,20 @@ Nebeneffekt.
   bleibt unverändert gültig.
 
 Begründung für die Änderung nach CLAUDE.md, Fall (a) **die Anforderung hat sich geändert:**
-ein Eintrag ohne Bestätigung darf ab diesem Design nicht mehr honoriert werden, weil er
-sonst von einem Eintrag, den ein kompromittierter Renderer geschrieben hat, nicht zu
-unterscheiden ist — dieselbe Begründung, die in #34/#37 für Verzeichnisse galt. Der erste
-Test wird umgeschrieben: gleiche Eingabe **plus** passendes `confirmedAt` ergibt dasselbe
-Ergebnis; ohne `confirmedAt` ergibt sie `{}`. Diese Begründung gehört in die PR-Beschreibung.
+ein Eintrag ohne Bestätigung darf ab diesem Design nicht mehr honoriert werden, weil nur
+ein Eintrag zählt, den Mingly nach einem Dialog geschrieben hat. Das Merkmal trennt
+**von Hand geschrieben** von **von Mingly geschrieben**. Es ist **keine** Abwehr gegen einen
+Renderer, der die Store-Datei schreiben kann: ein solcher Renderer schreibt `confirmedAt`
+mit. Gemessen am 25.11.2026: `ALLOWED_CREATE_EXTENSIONS` enthält `.json`, und
+`FileAccessManager.createFile` prüft Grant, `create`-Recht, Containment im Grant und Endung
+— ohne Ausnahme für `app.getPath('userData')`; die Überschreibsperre greift nur bei bereits
+existierender Datei. Mit einem `create`-Grant auf ein Verzeichnis oberhalb von userData und
+noch fehlender Datei kann der Renderer beide Schlüssel anlegen und `validateChosenFile` ganz
+umgehen. **Keine Regression:** vorher genügte derselbe Schreibvorgang mit `paths` allein,
+diese Änderung verengt also. Das Abdichten von `createFile` gegen `userData` ist eine eigene
+Änderung und gehört nicht in diesen Branch. Der erste Test wird umgeschrieben: gleiche
+Eingabe **plus** passendes `confirmedAt` ergibt dasselbe Ergebnis; ohne `confirmedAt` ergibt
+sie `{}`. Diese Begründung gehört in die PR-Beschreibung.
 
 ## Tests (TDD, jeder vorher rot, je mit Positivkontrolle)
 

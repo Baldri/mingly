@@ -116,7 +116,7 @@ git commit -m "refactor(shared): extract isConfirmationTimestamp as the single m
 
 - [ ] **Step 1: Rewrite the superseded test and add the new ones**
 
-Der bestehende Test `'keeps only known names with string values'` behauptet, dass Einträge ohne Marker zurückkommen. Er wird umgeschrieben, Begründung: **die Anforderung hat sich geändert** (CLAUDE.md, Fall a) — ein unbestätigter Eintrag ist von einem nicht zu unterscheiden, den ein kompromittierter Renderer geschrieben hat. Diese Begründung gehört in die PR-Beschreibung.
+Der bestehende Test `'keeps only known names with string values'` behauptet, dass Einträge ohne Marker zurückkommen. Er wird umgeschrieben, Begründung: **die Anforderung hat sich geändert** (CLAUDE.md, Fall a) — ein Eintrag zählt nur, wenn Mingly ihn nach einem Dialog geschrieben hat. Das Merkmal trennt **von Hand geschrieben** von **von Mingly geschrieben**; es ist **keine** Abwehr gegen einen Renderer, der die Store-Datei schreiben kann: ein solcher Renderer schreibt `confirmedAt` mit (gemessen am 25.11.2026: `ALLOWED_CREATE_EXTENSIONS` enthält `.json`, und `FileAccessManager.createFile` prüft Grant, `create`-Recht, Containment im Grant und Endung — ohne Ausnahme für `app.getPath('userData')`; die Überschreibsperre greift nur bei bereits existierender Datei, also kann der Renderer mit einem `create`-Grant oberhalb von userData beide Schlüssel selbst anlegen). **Keine Regression:** vorher genügte derselbe Schreibvorgang mit `paths` allein, diese Änderung verengt also; das Abdichten von `createFile` gegen `userData` ist eine eigene Änderung und gehört nicht in diesen Branch. Diese Begründung gehört in die PR-Beschreibung.
 
 ```ts
 const backing = (paths: unknown, confirmedAt: unknown = {}) => ({
