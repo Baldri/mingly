@@ -1,6 +1,8 @@
 // src/main/privacy/ner-worker.ts
-// Worker thread for piiranha-v1 NER inference.
-// piiranha uses I-* labels only (no B-* prefix) and may return null start/end offsets.
+// Worker thread for NER inference (active model: see model-manager.ts).
+// Deliberately model-agnostic: stripBioPrefix accepts both BIO-prefixed (B-/I-)
+// and prefix-less label sets, and alignTokens reconstructs offsets by re-finding
+// the token text, because some models return null start/end offsets.
 // This worker handles sub-word token merging and offset reconstruction.
 
 import { parentPort } from 'worker_threads'
@@ -197,7 +199,7 @@ export function mergeTokens(tokens: any[], text: string): any[] {
 }
 
 /**
- * Check if two piiranha labels should be merged into one entity.
+ * Check if two NER labels should be merged into one entity.
  * E.g., GIVENNAME + SURNAME → PERSON
  */
 function areMergeableLabels(labelA: string, labelB: string): boolean {

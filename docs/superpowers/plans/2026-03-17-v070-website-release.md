@@ -1,5 +1,13 @@
 # Mingly v0.7.0 Website + Release — Implementation Plan
 
+> **[KORREKTUR 2026-08-26] Die Modellangaben in diesem Plan sind ueberholt.**
+> Der hier festgehaltene Website-Text nennt `piiranha-v1` (400M Parameter, "17 PII-Kategorien",
+> "<50ms"). piiranha-v1 wurde am 2026-08-05 ausgetauscht (Messung: `src/main/privacy/model-manager.ts`);
+> aktives Modell ist `Xenova/bert-base-multilingual-cased-ner-hrl`. Der Plan selbst wird als
+> Aufzeichnung nicht umgeschrieben. **Offen: der Live-Text auf mingly.ch stammt aus diesem Plan
+> und traegt die alten Angaben vermutlich weiterhin — zu pruefen und zu korrigieren im Repo
+> `mingly-website`, nicht hier.**
+
 > **STATUS: UMGESETZT (2026-03-17).** Release v0.7.0 "Swiss AI Privacy" publiziert (GitHub Release 2026-03-17), Website-Content live auf mingly.ch (mingly-website Commit 02e6d22), Preprocessor-Fixes in v0.7.0 enthalten. Verifiziert gegen Live-Site, App und GitHub-Release am 2026-07-02; Checkboxen nachtraeglich abgehakt. Bekannte Restluecke (statische SEO-/og-Tags in index.html) wird separat im mingly-website-Repo gefixt.
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
