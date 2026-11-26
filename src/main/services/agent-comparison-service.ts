@@ -117,6 +117,8 @@ export class AgentComparisonService {
             task: prompt,
             steps: [],
             status: 'failed',
+            // A run that never started — the provider it was meant for.
+            provider: slot.provider,
             totalTokens: { input: 0, output: 0 },
             totalCost: 0,
             durationMs: 0,

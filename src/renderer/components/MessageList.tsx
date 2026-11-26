@@ -25,6 +25,7 @@ export const MessageList = memo(function MessageList() {
   const agentIsRunning = useAgentStore((state) => state.isRunning)
   const agentSteps = useAgentStore((state) => state.currentSteps)
   const agentRun = useAgentStore((state) => state.currentRun)
+  const agentGuardWarnings = useAgentStore((state) => state.guardWarnings)
 
   const displayMessages = useMemo(() => {
     const list = [...messages]
@@ -50,7 +51,13 @@ export const MessageList = memo(function MessageList() {
    * screen. Measured during the A9 acceptance run, twice, before anyone looked
    * at the database.
    */
-  if (displayMessages.length === 0 && !agentIsRunning && agentSteps.length === 0) {
+  const hasAgentNotice =
+    agentIsRunning ||
+    agentSteps.length > 0 ||
+    agentGuardWarnings.length > 0 ||
+    Boolean(agentRun?.error)
+
+  if (displayMessages.length === 0 && !hasAgentNotice) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-500 dark:text-gray-400 p-8">
         <div className="text-center">
@@ -85,12 +92,13 @@ export const MessageList = memo(function MessageList() {
         )}
         components={{
           Footer: () =>
-            (agentIsRunning || agentSteps.length > 0) ? (
+            hasAgentNotice ? (
               <div className="px-4 py-2">
                 <AgentStepIndicator
                   steps={agentSteps}
                   run={agentRun}
                   isRunning={agentIsRunning}
+                  guardWarnings={agentGuardWarnings}
                 />
               </div>
             ) : null

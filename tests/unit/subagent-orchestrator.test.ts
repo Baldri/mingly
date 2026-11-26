@@ -313,6 +313,7 @@ describe('SubagentOrchestrator', () => {
               }
             ],
             status: 'completed' as const,
+            provider: 'anthropic',
             totalTokens: { input: 100, output: 50 },
             totalCost: 0,
             durationMs: 500,
