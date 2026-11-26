@@ -3,6 +3,8 @@ import { Globe, Key, Server, Database, CheckCircle, Monitor, Wifi, ChevronRight,
 import { useTranslation } from '../utils/i18n'
 import { useSettingsStore } from '../stores/settings-store'
 import { useSubscriptionStore } from '../stores/subscription-store'
+import { resolveRagServerName } from '../../shared/rag-server-name'
+import { isWissenUsable } from '../../shared/rag-wissen-status'
 
 interface SetupWizardProps {
   onComplete: () => void
@@ -609,7 +611,7 @@ function StepRAG({
 }) {
   const tier = useSubscriptionStore((s) => s.tier)
   const isFree = tier === 'free'
-  const ragServerName = useSettingsStore((s) => s.settings?.ragServerName) || 'RAG-Wissen'
+  const ragServerName = resolveRagServerName(useSettingsStore((s) => s.settings?.ragServerName))
 
   const [status, setStatus] = useState<RAGStatus>({
     qdrantOnline: false,
@@ -641,7 +643,7 @@ function StepRAG({
       if (checks[0].status === 'fulfilled' && checks[0].value.success) {
         result.qdrantOnline = true
       }
-      if (checks[1].status === 'fulfilled' && checks[1].value.success) {
+      if (checks[1].status === 'fulfilled' && isWissenUsable(checks[1].value)) {
         result.wissenOnline = true
       }
       if (checks[2].status === 'fulfilled' && checks[2].value.success && checks[2].value.collections) {

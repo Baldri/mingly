@@ -100,8 +100,11 @@ describe('OllamaLoadBalancer', () => {
     })
 
     it('should prefer backends with fewer active requests', () => {
-      const server1 = makeServer({ id: 'busy', host: '192.168.1.10' })
-      const server2 = makeServer({ id: 'idle', host: '192.168.1.11' })
+      // Two distinct backends. Distinct by PORT, not by LAN address: the pool
+      // takes loopback only (addBackend), so a 192.168.x fixture would make
+      // this test about locality instead of about load.
+      const server1 = makeServer({ id: 'busy', host: '127.0.0.1', port: 11434 })
+      const server2 = makeServer({ id: 'idle', host: '127.0.0.1', port: 11435 })
       balancer.addBackend(server1)
       balancer.addBackend(server2)
 
@@ -151,10 +154,50 @@ describe('OllamaLoadBalancer', () => {
     })
 
     it('should return the formatted URL', () => {
-      const server = makeServer({ protocol: 'http', host: '192.168.1.42', port: 11434 })
+      // Non-default loopback host AND port, so the URL still has to be built
+      // from the config rather than matching a hardcoded default.
+      const server = makeServer({ protocol: 'http', host: '127.0.0.2', port: 11435 })
       balancer.addBackend(server)
 
-      expect(balancer.getNextUrl()).toBe('http://192.168.1.42:11434')
+      expect(balancer.getNextUrl()).toBe('http://127.0.0.2:11435')
+    })
+  })
+
+  describe('off-device backends', () => {
+    // The pool is consulted by the built-in OllamaClient, which the provider
+    // registry declares `residency: 'on-device'`. A backend on another machine
+    // would make that declaration false at the socket. Full reasoning and the
+    // end-to-end measurement: tests/unit/on-device-pool-stays-loopback.test.ts
+    it.each(['192.168.1.42', '10.0.0.5', '172.16.0.9', 'ai-server.company.local'])(
+      'refuses %s',
+      (host) => {
+        balancer.addBackend(makeServer({ host }))
+
+        expect(balancer.getBackends()).toHaveLength(0)
+        expect(balancer.getNextUrl()).toBeNull()
+      }
+    )
+
+    it('logs the refusal once, not once per refresh', () => {
+      // LocalAIBridge.refreshAll() re-offers every configured server on a 60s
+      // timer, so an unconditional warn here would be a log line a minute for
+      // as long as the LAN server is configured.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const server = makeServer({ id: 'there', host: '192.168.1.42' })
+
+      balancer.addBackend(server)
+      balancer.addBackend(server)
+      balancer.addBackend(server)
+
+      expect(warn).toHaveBeenCalledTimes(1)
+      warn.mockRestore()
+    })
+
+    it('keeps a loopback backend alongside the refusal', () => {
+      balancer.addBackend(makeServer({ id: 'here', host: '127.0.0.1', port: 11434 }))
+      balancer.addBackend(makeServer({ id: 'there', host: '192.168.1.42', port: 11434 }))
+
+      expect(balancer.getBackends().map((b) => b.server.id)).toEqual(['here'])
     })
   })
 

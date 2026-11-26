@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { isWissenUsable } from '../../shared/rag-wissen-status'
 
 interface RAGStatusState {
   /** User's external RAG server connection status */
@@ -33,8 +34,9 @@ export const useRAGStatusStore = create<RAGStatusState>((set) => ({
 
       const httpOnline =
         httpResult.status === 'fulfilled' && httpResult.value?.success === true
+      // /health is public, /search needs a key: reachable is not the same as usable.
       const wissenOnline =
-        wissenResult.status === 'fulfilled' && wissenResult.value?.success === true
+        wissenResult.status === 'fulfilled' && isWissenUsable(wissenResult.value)
 
       let collectionCount = 0
       if (httpOnline) {
