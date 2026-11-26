@@ -1,12 +1,16 @@
 /**
  * OllamaLoadBalancer — Round-Robin + Health-based routing across multiple Ollama instances.
  *
- * When Mingly runs in Server Mode or detects multiple Ollama instances on the local
- * network, this balancer distributes requests across them. This enables:
+ * When several Ollama instances run on THIS machine, this balancer distributes
+ * requests across them for throughput on parallel agent runs.
  *
- * 1. Shared compute across a local network (multiple GPUs/machines)
- * 2. No data leaves the network — everything runs locally
- * 3. Increased throughput for parallel agent runs
+ * It is loopback-only, and that is a residency constraint rather than a
+ * technical one: the pool is consulted by the built-in OllamaClient, which the
+ * provider registry declares `residency: 'on-device'`. Pooling a machine on
+ * the LAN here — which this balancer did until 26.11.2026 — makes that
+ * declaration false at the socket while the guards still act on it. Pooling
+ * across machines is a product capability that needs its own provider identity
+ * and its own residency value before it can come back; see `addBackend`.
  *
  * Strategy:
  * - Round-Robin among healthy backends (weighted by response latency)
@@ -15,6 +19,7 @@
  * - Compatible with NetworkAIManager discovery results
  */
 
+import { isLoopbackUrl } from '../../shared/network-ai-types'
 import type { NetworkAIServerConfig } from '../../shared/network-ai-types'
 
 /** Validate a backend URL to prevent URL injection */
@@ -61,6 +66,12 @@ export class OllamaLoadBalancer {
   private roundRobinIndex = 0
   private totalRequests = 0
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null
+  /**
+   * Backend ids already refused as off-device, so the refusal is logged once
+   * instead of once per refresh: LocalAIBridge.refreshAll() re-offers every
+   * configured server on a 60s timer.
+   */
+  private refusedOffDevice: Set<string> = new Set()
 
   private static readonly HEALTH_CHECK_INTERVAL_MS = 30_000
   private static readonly MAX_FAILURES_BEFORE_UNHEALTHY = 3
@@ -68,17 +79,48 @@ export class OllamaLoadBalancer {
 
   /**
    * Add an Ollama backend to the pool.
+   *
+   * Loopback only. This pool is consulted by the built-in OllamaClient, the
+   * one the provider registry declares `residency: 'on-device'` — so a pool
+   * entry IS an on-device claim, and a backend on another machine would make
+   * that claim false at the socket while two guards still read it as true
+   * (`sensitive-stays-ch` routes confidential content here, and
+   * `residencyIsCloud('on-device')` is false, which skips the upload-consent
+   * branch in preflightGuard).
+   *
+   * A LAN Ollama stays a supported deployment — LocalAIBridge registers it as
+   * its own `network:{id}` provider, pinned to that machine, and no guard
+   * reads that id as on-device. What is refused here is only pooling it behind
+   * an id that promises the opposite.
+   *
+   * Locality is read off the VALIDATED origin, not off `server.isLocal`: that
+   * flag is recomputed by `addServer` but restored verbatim by `loadServers`,
+   * so a value in `network-ai-servers.json` has never been re-checked.
    */
   addBackend(server: NetworkAIServerConfig): void {
     if (server.type !== 'ollama') return
 
     // Validate URL components to prevent injection
+    let origin: string
     try {
-      validateBackendUrl(server.protocol, server.host, server.port)
+      origin = validateBackendUrl(server.protocol, server.host, server.port)
     } catch (err) {
       console.warn(`[LoadBalancer] Rejected invalid backend: ${(err as Error).message}`)
       return
     }
+
+    if (!isLoopbackUrl(origin)) {
+      if (!this.refusedOffDevice.has(server.id)) {
+        this.refusedOffDevice.add(server.id)
+        console.warn(
+          `[LoadBalancer] Rejected off-device backend ${origin}: this pool is read by the ` +
+            'on-device provider. Use the network:{id} provider for that server.'
+        )
+      }
+      return
+    }
+
+    this.refusedOffDevice.delete(server.id)
 
     this.backends.set(server.id, {
       server,
@@ -95,6 +137,7 @@ export class OllamaLoadBalancer {
    */
   removeBackend(serverId: string): void {
     this.backends.delete(serverId)
+    this.refusedOffDevice.delete(serverId)
   }
 
   /**
@@ -263,6 +306,7 @@ export class OllamaLoadBalancer {
   shutdown(): void {
     this.stopHealthChecks()
     this.backends.clear()
+    this.refusedOffDevice.clear()
   }
 }
 
