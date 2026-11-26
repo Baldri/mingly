@@ -12,7 +12,7 @@ import { execFileSync } from 'child_process'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { ToolRegistry, type ToolContext } from '../../src/main/agent/tool-registry'
+import { ToolRegistry, getToolRegistry, type ToolContext } from '../../src/main/agent/tool-registry'
 import {
   registerRunCommand,
   readInterpreterPaths,
@@ -1254,12 +1254,76 @@ describe('parseGitConfigScopes', () => {
 })
 
 describe('readInterpreterPaths', () => {
-  const backing = (paths: unknown) => ({ get: () => paths })
+  const backing = (paths: unknown, confirmedAt: unknown = {}) => ({
+    get: (key: string) => (key === 'paths' ? paths : confirmedAt)
+  })
+  const ok = { npm: 1764000000000, git: 1764000000000, pytest: 1764000000000 }
 
-  it('keeps only known names with string values', () => {
+  it('keeps only known names with string values, and only when confirmed', () => {
     expect(
-      readInterpreterPaths(backing({ npm: '/a/npm', git: 5, pytest: '/a/pytest', node: '/a/node', rm: '/bin/rm' }))
+      readInterpreterPaths(
+        backing({ npm: '/a/npm', git: 5, pytest: '/a/pytest', node: '/a/node', rm: '/bin/rm' }, ok)
+      )
     ).toEqual({ npm: '/a/npm', pytest: '/a/pytest' })
+  })
+
+  it('drops an entry without a marker', () => {
+    expect(readInterpreterPaths(backing({ npm: '/a/npm' }, {}))).toEqual({})
+  })
+
+  it('fails closed on an unusable marker', () => {
+    for (const bad of [0, 'x', NaN, null]) {
+      expect(readInterpreterPaths(backing({ npm: '/a/npm' }, { npm: bad }))).toEqual({})
+    }
+  })
+
+  it('drops a relative path even when confirmed', () => {
+    expect(readInterpreterPaths(backing({ npm: 'npm' }, ok))).toEqual({})
+  })
+
+  it('ignores an unknown name even with a valid marker', () => {
+    expect(
+      readInterpreterPaths(
+        backing({ node: '/a/node', rm: '/bin/rm' }, { node: 1764000000000, rm: 1764000000000 })
+      )
+    ).toEqual({})
+  })
+
+  it('writes nothing, for an unconfirmed entry and for a confirmed one', () => {
+    // The first version ran against an EMPTY backing, so a write placed below the
+    // early exits could never have been reached: it proved nothing about the name
+    // it carried. Each case here fills the backing and takes the path that
+    // reaches the end of the function, and the returned value is the positive
+    // control that the entry really was seen (or really was dropped).
+    const stored = { npm: '/a/npm' }
+    for (const [label, markers, expected] of [
+      ['unconfirmed', {}, {}],
+      ['confirmed', { npm: 1764000000000 }, { npm: '/a/npm' }]
+    ] as const) {
+      const set = vi.fn()
+      const get = (key: string): unknown => (key === 'paths' ? stored : markers)
+      expect(readInterpreterPaths({ get, set } as never), label).toEqual(expected)
+      expect(set, label).not.toHaveBeenCalled()
+    }
+  })
+
+  it('drops every entry when confirmedAt is not an object, even though paths is valid', () => {
+    // An array can carry an own `npm` property. It is still not a marker map.
+    const arrayWithMarker = Object.assign([], { npm: 1764000000000 })
+    const cases: Array<[string, unknown]> = [
+      ['array', []],
+      ['array with an own marker', arrayWithMarker],
+      ['string', 'x'],
+      ['null', null],
+      ['number', 1764000000000]
+    ]
+    for (const [label, bad] of cases) {
+      expect(readInterpreterPaths(backing({ npm: '/a/npm' }, bad)), label).toEqual({})
+    }
+    // Positive control: the same paths with a real marker map are honoured.
+    expect(readInterpreterPaths(backing({ npm: '/a/npm' }, { npm: 1764000000000 }))).toEqual({
+      npm: '/a/npm'
+    })
   })
 
   it('returns nothing for a stored value that is not a map, and ignores the prototype', () => {
@@ -1267,5 +1331,104 @@ describe('readInterpreterPaths', () => {
     expect(readInterpreterPaths(backing(null))).toEqual({})
     expect(readInterpreterPaths(backing(['/a/npm']))).toEqual({})
     expect(readInterpreterPaths(backing(Object.create({ npm: '/a/npm' })))).toEqual({})
+  })
+})
+
+describe('the three boundaries of the interpreter settings', () => {
+  // These tests add no behaviour. Each pins a boundary a later change could move
+  // without any other test noticing.
+
+  it('a run without any configuration still returns exactly COMMAND_UNAVAILABLE', async () => {
+    fs.writeFileSync(path.join(project, 'package.json'), JSON.stringify({ scripts: { build: 'x' } }))
+    const registry = makeRegistry()
+    // Nothing is configured: `interpreters` is empty. toBe compares the whole
+    // string against the imported constant, so a hint such as "configure git in
+    // the settings" appended to it fails here. A substring match would not.
+    for (const command of ['git status', 'npm test', 'pytest']) {
+      expect(await run(registry, command), command).toBe(COMMAND_UNAVAILABLE)
+    }
+    // Positive control: the same commands run once an interpreter is configured,
+    // so the refusals above come from the missing configuration.
+    fake('git', 'echo ok')
+    expect(await run(registry, 'git status')).toContain('exit code 0')
+  })
+
+  it('the ToolRegistry tool list is unchanged', () => {
+    // The full list on purpose: this fails when ANY tool is added, so that adding
+    // one is a decision. None of these can read the interpreter configuration.
+    // Sorted copies on both sides, because the assertion is about the set.
+    const ctx: ToolContext = {
+      coding: { directoryId: 'dir-1', projectPath: project, mode: 'propose-run' }
+    }
+    const names = getToolRegistry()
+      .getAvailableTools(ctx)
+      .map((tool) => tool.name)
+      .sort()
+    expect(names).toEqual(
+      [
+        'mingly_decompose_task',
+        'mingly_echo',
+        'mingly_edit_file',
+        'mingly_list_files',
+        'mingly_read_file',
+        'mingly_run_command'
+      ].sort()
+    )
+  })
+
+  it('childEnv contains the directory of the CHOSEN path, not of the resolved target', async () => {
+    // <tmp>/bin/pytest is a link to <tmp>/lib/real-pytest. The user chose the link.
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mingly-chosen-')))
+    try {
+      const target = script(path.join(root, 'lib', 'real-pytest'), 'echo "PATH=$PATH"')
+      fs.mkdirSync(path.join(root, 'bin'))
+      const chosen = path.join(root, 'bin', 'pytest')
+      fs.symlinkSync(target, chosen)
+      interpreters.pytest = chosen
+      const out = await run(makeRegistry(), 'pytest')
+      expect(out).toContain(`PATH=${path.join(root, 'bin')}:/usr/bin:/bin`)
+      expect(out).not.toContain(path.join(root, 'lib'))
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('childEnv keeps /usr/bin and /bin and adds nothing else', async () => {
+    // Three interpreters in three directories, so every directory the PATH may
+    // contain is known and the whole value can be compared.
+    const dirs = {
+      pytest: path.join(bins, 'a'),
+      npm: path.join(bins, 'b'),
+      git: path.join(bins, 'c')
+    }
+    script(path.join(dirs.pytest, 'pytest'), 'echo "PATH=$PATH"')
+    script(path.join(dirs.npm, 'npm'), 'echo ok')
+    script(path.join(dirs.git, 'git'), 'echo ok')
+    interpreters.pytest = path.join(dirs.pytest, 'pytest')
+    interpreters.npm = path.join(dirs.npm, 'npm')
+    interpreters.git = path.join(dirs.git, 'git')
+    const out = await run(makeRegistry(), 'pytest')
+    // The file that runs first, then the others in INTERPRETER_NAMES order, then
+    // the two system directories. Nothing else, in particular not the Mingly
+    // process PATH.
+    expect(out).toContain(`PATH=${[dirs.pytest, dirs.npm, dirs.git, '/usr/bin', '/bin'].join(':')}\n`)
+  })
+
+  it('a configured path containing a space is startable', async () => {
+    const spaced = path.join(bins, 'my tools')
+    interpreters.pytest = script(path.join(spaced, 'pytest'), 'echo "n=$# started"')
+    const out = await run(makeRegistry(), 'pytest')
+    expect(out).toContain('exit code 0')
+    expect(out).toContain('n=0 started')
+  })
+
+  it('a configured path that no longer exists still refuses with COMMAND_UNAVAILABLE', async () => {
+    const file = script(path.join(bins, 'pytest'), 'echo ok')
+    interpreters.pytest = file
+    const registry = makeRegistry()
+    // Positive control: while the file is there, the command runs.
+    expect(await run(registry, 'pytest')).toContain('exit code 0')
+    fs.rmSync(file)
+    expect(await run(registry, 'pytest')).toBe(COMMAND_UNAVAILABLE)
   })
 })

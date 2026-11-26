@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isPathSafe, survivingPermissions, hasPermission } from '../../src/shared/file-access-types'
+import { isPathSafe, survivingPermissions, hasPermission, isConfirmationTimestamp } from '../../src/shared/file-access-types'
 import type { AllowedDirectory } from '../../src/shared/file-access-types'
 
 // Security regression: the granted-directory permission model used a bare
@@ -239,5 +239,20 @@ describe('hasPermission', () => {
     for (const needed of ['read', 'create', 'edit'] as const) {
       expect(hasPermission(base, needed)).toBe(false)
     }
+  })
+})
+
+describe('isConfirmationTimestamp', () => {
+  it('accepts a positive finite number', () => {
+    expect(isConfirmationTimestamp(1764000000000)).toBe(true)
+    expect(isConfirmationTimestamp(1)).toBe(true)
+  })
+  it('fails closed on everything else', () => {
+    for (const v of [0, -1, NaN, Infinity, -Infinity, '1764000000000', null, undefined, {}, []])
+      expect(isConfirmationTimestamp(v)).toBe(false)
+  })
+  // Review Focus 4: ein Zeitstempel in der Zukunft gilt, und das ist Absicht.
+  it('accepts a timestamp in the future, by design', () => {
+    expect(isConfirmationTimestamp(Date.now() + 10 ** 12)).toBe(true)
   })
 })
