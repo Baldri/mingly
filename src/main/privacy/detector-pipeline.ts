@@ -1,6 +1,8 @@
 /**
  * PII Detector Pipeline
- * Orchestrates detection across multiple sources: Regex -> Swiss -> NER (piiranha-v1).
+ * Orchestrates detection across multiple sources: Regex -> Swiss -> NER.
+ * The NER model is not named here — see model-manager.ts for the active model
+ * and the measurement that selected it.
  * Merges and deduplicates results, returns sorted entities.
  */
 
@@ -42,7 +44,7 @@ export async function detectPII(text: string): Promise<DetectionResult> {
   // Layer 2: Swiss-specific patterns (AHV, CH-IBAN, CH-phones, cities)
   const swissEntities = detectSwissPII(normalized)
 
-  // Layer 3: NER/ONNX model (piiranha-v1)
+  // Layer 3: NER/ONNX model (active model: see model-manager.ts)
   const ner = getNERDetector()
   const nerEntities = ner.isAvailable() ? await ner.detect(normalized) : []
 
