@@ -6,7 +6,8 @@
 > nicht mehr verwendet werden: piiranha-v1 wurde am 2026-08-05 ausgetauscht, nachdem
 > es in der 20-Span-Ground-Truth-Batterie dieses Repos 2 von 20 Personen erkannte
 > (Messung und Begruendung: `src/main/privacy/model-manager.ts`). Aktives Modell ist
-> `Xenova/bert-base-multilingual-cased-ner-hrl` (ONNX fp32, ~676 MB gemessen).
+> `Xenova/bert-base-multilingual-cased-ner-hrl` (ONNX fp32, ~712 MB gemessen —
+> dieselbe Zahl wie die Messtabelle in `model-manager.ts`).
 > Die Precision-/Recall-Zahlen wurden gegen das aktive Modell **nicht** neu erhoben
 > und sind damit unbelegt. Der Rest des Dokuments (Positionierung, Struktur,
 > Internal Linking) bleibt gueltig.
