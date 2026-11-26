@@ -85,7 +85,15 @@ export class LLMClientManager {
 
     // Create client based on type
     if (config.type === 'ollama') {
-      this.clients.set(config.id, new OllamaClient())
+      const client = new OllamaClient()
+      // Pin it to the endpoint the config names. Without this the client kept
+      // its default localhost URL and `config.apiBase` was stored but never
+      // used, so choosing a `network:*` Ollama server did not determine where
+      // the request went — the shared load balancer did (measured
+      // 26.11.2026). Pinning also keeps this client out of that pool, which
+      // is reserved for the on-device provider.
+      if (config.apiBase) client.setBaseURL(config.apiBase)
+      this.clients.set(config.id, client)
     } else if (config.apiBase) {
       // OpenAI-compatible custom provider
       this.clients.set(config.id, new GenericOpenAIClient(config.apiBase))

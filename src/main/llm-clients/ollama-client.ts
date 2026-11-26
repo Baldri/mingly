@@ -4,6 +4,25 @@ import type { StreamChunk } from './anthropic-client'
 import type { ProviderHealthCheck, HealthCheckItem } from './health-check-types'
 import { fetchWithTools } from './openai-tool-use-helper'
 import { getOllamaLoadBalancer } from '../network/ollama-load-balancer'
+import { isLoopbackUrl } from '../../shared/network-ai-types'
+
+/**
+ * Refuse a destination that is not this machine.
+ *
+ * Only reached for an UNPINNED client, i.e. the built-in `ollama` / `local`
+ * provider. Those two ids are registered with `residency: 'on-device'`, which
+ * makes `residencyIsCloud` false and so skips preflightGuard's sensitive-data
+ * and upload-consent branch altogether. If that provider could reach another
+ * host, content would leave the device with no consent check and an audit
+ * trail recording it as on-device — the error is the lesser outcome.
+ */
+function assertOnDevice(url: string): string {
+  if (isLoopbackUrl(url)) return url
+  throw new Error(
+    `Refusing to send an on-device request to "${url}": that host is not this machine. ` +
+      'Select the network provider for that server instead.'
+  )
+}
 
 // ── Response types for Ollama API ─────────────────────────────
 
@@ -18,29 +37,57 @@ interface OllamaTagsResponse {
 
 export class OllamaClient implements LLMClient {
   private baseURL = 'http://localhost:11434'
+  /**
+   * True once a caller named this client's endpoint explicitly. A pinned
+   * client is one particular server — the `network:{id}` provider the user
+   * picked — and must reach THAT machine, so it never consults the shared
+   * pool. Unpinned, the client is the built-in `ollama` / `local` provider.
+   */
+  private endpointPinned = false
 
   setApiKey(_apiKey: string): void {
     // Ollama doesn't need API key, but keep interface compatible
   }
 
   /**
-   * Set the base URL for this client (used by LocalAIBridge for network servers).
+   * Pin this client to one endpoint (used by LocalAIBridge for network
+   * servers, via LLMClientManager.registerCustomProvider).
+   *
+   * Pinning is what makes provider selection mean something: before
+   * 26.11.2026 a `network:*` client was constructed with the default
+   * localhost URL and this method was never called, so selecting a LAN server
+   * dialled localhost — or, once the pool held two backends, whichever one
+   * round-robin happened to pick.
    */
   setBaseURL(url: string): void {
     this.baseURL = url
+    this.endpointPinned = true
   }
 
   /**
-   * Get the effective base URL, consulting the load balancer when multi-backend is available.
-   * Falls back to the configured baseURL if no load-balanced backends are healthy.
+   * The URL this client dispatches to.
+   *
+   * Pinned: its own endpoint, always. Unpinned: this is the provider the
+   * registry declares `residency: 'on-device'`, so the destination has to be
+   * on this device. The pool is loopback-only by construction
+   * (OllamaLoadBalancer.addBackend), and this check is the second half of that
+   * guarantee — it holds for every way a URL can arrive here, including a
+   * future caller that sets one some other way. A guard that only watches one
+   * route is a guard against one spelling.
+   *
+   * Fail closed: a dispatch that would leave the device under an on-device
+   * label is refused, not redirected. Silently substituting a different
+   * destination is the behaviour this fix removes.
    */
   private getEffectiveBaseURL(): string {
+    if (this.endpointPinned) return this.baseURL
+
     const balancer = getOllamaLoadBalancer()
     if (balancer.isBalancingAvailable()) {
       const url = balancer.getNextUrl()
-      if (url) return url
+      if (url) return assertOnDevice(url)
     }
-    return this.baseURL
+    return assertOnDevice(this.baseURL)
   }
 
   async validateApiKey(): Promise<boolean> {
