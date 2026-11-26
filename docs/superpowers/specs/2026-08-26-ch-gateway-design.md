@@ -49,7 +49,7 @@ Gemessen am 26.08.2026 gegen den Worktree, nicht aus Projektdokumentation uebern
 | Sensitivitaet / Residenz / Jurisdiktion | **kommt in `src/` nicht vor** (Positivkontrolle im selben Suchlauf: `mistral` an vier Stellen gefunden) | — |
 | PII-Pipeline | **vorhanden, dreischichtig** | `src/main/privacy/detector-pipeline.ts` |
 | — Layer 1 Regex, Layer 2 Schweiz | reines RegExp, **browsertauglich, 0 MB** | `regex-detector.ts`, `swiss-detector.ts` |
-| — Layer 3 NER | ONNX, **676 MB gemessen** (`~/.mingly/models/Xenova/bert-base-multilingual-cased-ner-hrl/onnx/model.onnx`) | `model-manager.ts` |
+| — Layer 3 NER | ONNX, **709 MB (= 676 MiB) gemessen** fuer die Datei `~/.mingly/models/Xenova/bert-base-multilingual-cased-ner-hrl/onnx/model.onnx`; das ganze Modellverzeichnis 712 MB, so auch die Messtabelle | `model-manager.ts` |
 | Audit | Tabelle in Migration 8 vorhanden, `ActivityLogger` **von keinem Produktionspfad importiert** (nur vom eigenen Unit-Test; Positivkontrolle: `getRouter()` an drei Produktionsstellen) | `src/main/audit/activity-logger.ts`, `database/index.ts:518` |
 | Server-Modus | vorhanden: `/health /info /providers /chat /chat/stream /conversations` mit API-Auth | `src/main/server/mingly-api-server.ts` |
 | Tiers | `'free' ｜ 'pro' ｜ 'team' ｜ 'enterprise'` | `src/shared/types.ts:358` |
@@ -183,7 +183,7 @@ Praeziser Zuschnitt, gemessen an den Detektoren (26.08.2026):
 |---|---|---|
 | 1 — Regex (`regex-detector.ts`) | `EMAIL` `PHONE` `CREDIT_CARD` `IP_ADDRESS` `DATE_OF_BIRTH` `AGE` `URL` | ja |
 | 2 — Schweiz (`swiss-detector.ts`) | `AHV` `IBAN` `PHONE` `ADDRESS` `LOCATION` | ja |
-| 3 — NER (`ner-worker.ts`) | `PERSON` `ORGANIZATION` `LOCATION` | nein (676 MB) |
+| 3 — NER (`ner-worker.ts`) | `PERSON` `ORGANIZATION` `LOCATION` | nein (~710 MB) |
 
 Layer 2 erkennt Adressen nur in **Schweizer** Form: `CH_STREET_PATTERN` verlangt eine deutsche
 Strassenendung, `CH_PLZ_CITY_PATTERN` eine vierstellige Schweizer Postleitzahl. Eine

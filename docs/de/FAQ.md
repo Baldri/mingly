@@ -64,7 +64,7 @@ Ja, Ihre Nachrichten werden an den jeweiligen KI-Anbieter (z.B. Anthropic, OpenA
 
 Mingly bietet Funktionen fuer DSGVO- und nDSG-Konformitaet:
 
-- **PII-Anonymisierung**: Persoenliche Daten werden on-device erkannt und geschuetzt (piiranha-v1, 400M ONNX)
+- **PII-Anonymisierung**: Persoenliche Daten werden on-device erkannt und geschuetzt (dreischichtig: Regex, Schweizer Muster, NER-Modell `Xenova/bert-base-multilingual-cased-ner-hrl`, ONNX fp32)
 - **Datenexport**: Alle Ihre Daten als Datei exportieren
 - **Datenloeschung**: Alle Ihre Daten vollstaendig entfernen
 - **Keine Telemetrie**: Keine Nutzungsdaten werden gesammelt
