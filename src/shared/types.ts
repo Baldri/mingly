@@ -192,6 +192,37 @@ export interface AgentStep {
 /**
  * Represents a complete agent execution run.
  */
+/**
+ * A guard verdict a run has to show its user.
+ *
+ * Shaped after `GuardWarning` in src/main/security/request-guard.ts, but it
+ * lives here because the renderer renders it and must not import from the main
+ * process (see renderer-process-boundary.test.ts).
+ */
+export interface AgentGuardWarning {
+  /** `budget_fallback` | `routing_fallback`, as the dispatch guard names them. */
+  type: string
+  message?: string
+  /** The provider the user chose. */
+  requestedProvider?: string
+  /** The provider the guard chose instead. */
+  provider?: string
+  /** Why the classifier refused the original provider, if it was the classifier. */
+  reasons?: string[]
+}
+
+/**
+ * A warning the main process pushes at the renderer on `message:safety-warning`
+ * during a chat turn: a provider fallback, a circuit-breaker limit, an
+ * output-guardrail violation or a canary-token leak.
+ */
+export interface SafetyWarning {
+  type: string
+  level: 'info' | 'warning' | 'error'
+  message: string
+  details?: Record<string, unknown>
+}
+
 export interface AgentRun {
   id: string
   conversationId: string
@@ -200,6 +231,18 @@ export interface AgentRun {
   steps: AgentStep[]
   /** Whether the run completed successfully */
   status: 'running' | 'completed' | 'failed' | 'cancelled' | 'max_steps_reached'
+  /**
+   * The provider this run ACTUALLY ran on.
+   *
+   * Required, because the question "which provider did this run use" had no
+   * answer anywhere in the renderer before: the preflight guard may replace the
+   * conversation's provider, and a UI that reads the conversation would then
+   * name one the run never touched. On a run the guard ended this holds the
+   * provider that was asked for — nothing ran.
+   */
+  provider: string
+  /** The provider the user chose, set ONLY when the guard chose another one. */
+  requestedProvider?: string
   /** Total tokens used across all steps */
   totalTokens: { input: number; output: number }
   /** Total cost in USD across all steps */

@@ -238,6 +238,9 @@ export class SubagentOrchestrator {
         taskId: tasks[index].id,
         run: {
           id: nanoid(),
+          // A run that never started: the provider it was MEANT for is the
+          // only honest answer, and it is what the UI labels the column with.
+          provider: tasks[index].slot.provider,
           conversationId: '',
           task: tasks[index].description,
           steps: [],

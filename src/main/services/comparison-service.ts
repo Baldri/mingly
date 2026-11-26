@@ -105,6 +105,23 @@ export class ComparisonService {
     if (!preflight.ok) {
       throw new Error(preflight.reason ?? 'Blocked by security guard for this model')
     }
+    // The switch half of the comment above, which the code did not have: a
+    // routing refusal that comes WITH a suggested provider leaves `ok` true,
+    // and the call below sends to `modelConfig.provider` — the provider the
+    // policy had just refused. `preflight.provider` was computed and dropped,
+    // so the residency verdict had no effect on a comparison slot at all.
+    //
+    // Substituting the suggested provider is not the fix: a comparison asks
+    // what THIS model answers, and `modelConfig.model` means nothing to
+    // another provider. The slot is refused, and allSettled records it next to
+    // the slots that ran.
+    if (preflight.switched) {
+      throw new Error(
+        `The routing guard refused ${modelConfig.provider} for this content ` +
+          `(${preflight.switched.causes.join(' and ')} fallback). A comparison cannot ` +
+          `substitute another provider for it, so this model is skipped.`
+      )
+    }
 
     const startTime = Date.now()
 

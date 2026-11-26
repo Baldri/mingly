@@ -15,7 +15,7 @@
  * - Cancellation via AbortController
  * - Step-by-step event emission for UI tracking
  */
-import { postflightGuard, preflightGuard } from '../security/request-guard'
+import { postflightGuard, preflightGuard, type GuardWarning } from '../security/request-guard'
 import { getGuardDeps } from '../security/request-guard-deps'
 
 import { nanoid } from 'nanoid'
@@ -50,6 +50,7 @@ import { AGENT_RUN_TIMEOUT_MS } from '../../shared/types'
 import type {
   Message,
   AgentConfig,
+  AgentGuardWarning,
   AgentRun,
   AgentStep
 } from '../../shared/types'
@@ -69,16 +70,42 @@ const DEFAULT_AGENT_CONFIG: AgentConfig = {
 
 // ── Event types for step tracking ──────────────────────────────
 
-export type AgentEventType = 'step_start' | 'step_complete' | 'run_complete'
+export type AgentEventType = 'step_start' | 'step_complete' | 'run_complete' | 'guard_warning'
 
 export interface AgentEvent {
   type: AgentEventType
   runId: string
   step?: AgentStep
   run?: AgentRun
+  /**
+   * `guard_warning` only: what the preflight guard changed about this run.
+   *
+   * Emitted BEFORE the first model call, because that is the last moment at
+   * which the information is still worth anything — afterwards the content has
+   * already gone to the provider the user did not pick.
+   */
+  warnings?: AgentGuardWarning[]
 }
 
 export type AgentEventHandler = (event: AgentEvent) => void
+
+/**
+ * Narrow a dispatch warning to what the renderer may see.
+ *
+ * Field by field on purpose, rather than passing the object along: the guard's
+ * warning also carries `sensitivity`, a classifier verdict about the user's own
+ * content, and this event crosses into the renderer. A spread would hand over
+ * whatever the guard grows next without anyone deciding.
+ */
+function toGuardWarnings(warnings: GuardWarning[]): AgentGuardWarning[] {
+  return warnings.map((w) => ({
+    type: w.type,
+    message: w.message,
+    requestedProvider: w.requestedProvider,
+    provider: w.provider,
+    reasons: w.reasons
+  }))
+}
 
 // ── AgentExecutor ──────────────────────────────────────────────
 
@@ -148,6 +175,16 @@ export class AgentExecutor {
     return Array.from(this.activeRuns.keys())
   }
 
+  /**
+   * Undo the two registrations `execute` makes before its try block: the
+   * abort controller and the breaker's concurrency slot. Used by the early
+   * returns, which do not pass through the `finally` that does the same.
+   */
+  private releaseRun(runId: string, circuitBreaker: { endAgentRun(runId: string): void }): void {
+    this.activeRuns.delete(runId)
+    circuitBreaker.endAgentRun(runId)
+  }
+
   // ── Main execution loop ──────────────────────────────────────
 
   /**
@@ -186,6 +223,9 @@ export class AgentExecutor {
       task,
       steps: [],
       status: 'running',
+      // The requested provider until the preflight guard has had its say; a run
+      // that never gets past the guard keeps it, which is the truth: nothing ran.
+      provider,
       totalTokens: { input: 0, output: 0 },
       totalCost: 0,
       durationMs: 0,
@@ -199,6 +239,10 @@ export class AgentExecutor {
       run.status = 'failed'
       run.error = concurrencyCheck.reason
       run.durationMs = Date.now() - startTime
+      // No breaker slot to give back here — a refused check never took one —
+      // but the abort controller above was registered, and `cancelRun` and
+      // `getActiveRunIds` would otherwise report a run that never started.
+      this.activeRuns.delete(runId)
       this.emit({ type: 'run_complete', runId, run })
       return run
     }
@@ -213,10 +257,37 @@ export class AgentExecutor {
       run.status = 'failed'
       run.error = preflight.reason ?? 'Blocked by security guard'
       run.durationMs = Date.now() - startTime
+      // Give the slot back. `canStartAgentRun` already ADDED this run to the
+      // breaker's concurrency set (circuit-breaker.ts:320), and the `finally`
+      // that releases it sits inside the try below — which this return never
+      // reaches. Every blocked run used to keep its slot for the lifetime of
+      // the process, so `maxConcurrentAgentRuns` guard blocks left the agent
+      // unable to start at all. A guard that disables the feature it protects
+      // is worse than the switch it refused.
+      this.releaseRun(runId, circuitBreaker)
+      // The warnings carry WHICH fallback the guard refused; without them a
+      // blocked off-device switch would reach the UI as a bare error string.
+      if (preflight.warnings.length > 0) {
+        this.emit({ type: 'guard_warning', runId, warnings: toGuardWarnings(preflight.warnings) })
+      }
       this.emit({ type: 'run_complete', runId, run })
       return run
     }
     provider = preflight.provider
+    run.provider = provider
+    // A switch that got this far stays on the same side of the machine
+    // boundary — preflightGuard ends the run on the one that does not. It still
+    // has to be SAID, before any content goes out: the user picked a provider.
+    if (preflight.switched) {
+      // Only when the name actually changed: a fallback chain that came back to
+      // the starting provider would otherwise render as "ollama -> ollama". That
+      // refusal is not lost — it is in the warning emitted right below, which is
+      // set from the VERDICTS and so also covers that case.
+      if (preflight.switched.from !== preflight.switched.to) {
+        run.requestedProvider = preflight.switched.from
+      }
+      this.emit({ type: 'guard_warning', runId, warnings: toGuardWarnings(preflight.warnings) })
+    }
 
     // Run timeout.
     //

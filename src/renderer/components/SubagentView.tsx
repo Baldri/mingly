@@ -276,6 +276,8 @@ export const SubagentView = memo(function SubagentView({
                       task: subtask.description,
                       steps: result.run.steps,
                       status: result.run.status as 'completed' | 'failed' | 'cancelled' | 'max_steps_reached' | 'running',
+                      // Requested, not resolved — see AgentComparisonView.
+                      provider: subtask.slot.provider,
                       totalTokens: result.run.totalTokens,
                       totalCost: 0,
                       durationMs: result.run.durationMs,
@@ -409,6 +411,9 @@ export const SubagentView = memo(function SubagentView({
                             task: subtask?.description ?? '',
                             steps: result.run.steps,
                             status: result.run.status as 'completed' | 'failed' | 'cancelled' | 'max_steps_reached',
+                            // SubagentResult.run IS an AgentRun from the
+                            // executor, so this one is the resolved provider.
+                            provider: result.run.provider,
                             totalTokens: result.run.totalTokens,
                             totalCost: 0,
                             durationMs: result.run.durationMs,

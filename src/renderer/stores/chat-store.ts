@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Conversation, Message, MessageAttachment } from '../../shared/types'
+import type { Conversation, Message, MessageAttachment, SafetyWarning } from '../../shared/types'
 import { generateId } from '../utils/id-generator'
 import type { UploadPermissionRequest } from '../../shared/privacy-types'
 import type { RiskLevel } from '../../shared/privacy-types'
@@ -26,6 +26,15 @@ interface ChatState {
   streamingContent: string
   error: string | null
 
+  /**
+   * What the guards said about THIS turn — a provider fallback, a
+   * circuit-breaker limit, an output violation, a canary leak.
+   *
+   * Per turn, not cumulative: a warning about the turn before it would read as
+   * a warning about the answer on screen. Cleared when the next message is sent.
+   */
+  safetyWarnings: SafetyWarning[]
+
   // Sensitive Data Consent
   sensitiveDataConsent: SensitiveDataConsentState
 
@@ -47,6 +56,7 @@ interface ChatState {
   completeStreaming: () => Promise<void> | void
   setPendingMetadata: (metadata: any) => void
   setError: (error: string | null) => void
+  dismissSafetyWarning: (index: number) => void
 
   // Sensitive Data Consent Actions
   showSensitiveDataConsent: (request: UploadPermissionRequest, matches: any[]) => void
@@ -56,6 +66,12 @@ interface ChatState {
   handleUseLocalLLM: (rememberChoice: boolean) => Promise<void>
 }
 
+/**
+ * The live `message:safety-warning` subscription, so a new turn replaces it
+ * instead of adding to it. One per store, not per send.
+ */
+let unsubscribeSafetyWarning: (() => void) | null = null
+
 export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
   currentConversation: null,
@@ -64,6 +80,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   streamingContent: '',
   error: null,
   pendingMetadata: null,
+  safetyWarnings: [],
 
   // Sensitive Data Consent State
   sensitiveDataConsent: {
@@ -156,7 +173,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: [...messages, userMessage],
       isStreaming: true,
       streamingContent: '',
-      error: null
+      error: null,
+      // The previous turn's warnings do not describe this one.
+      safetyWarnings: []
     })
 
     try {
@@ -176,6 +195,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
         console.error('[ChatStore] Message error:', errorMsg)
         set({ error: errorMsg, isStreaming: false })
       })
+
+      // Guard warnings for this turn. The main process sends these before the
+      // LLM call (provider fallback, circuit breaker) and after it (output
+      // violations, canary leak); until the preload bridged the channel they
+      // went nowhere.
+      //
+      // Unlike the four listeners above, this one drops its predecessor. They
+      // are re-registered on every send and nothing ever removes them, so they
+      // accumulate: measured on the second send, ONE chunk event appended its
+      // text twice. Keeping that pattern here would show every warning once per
+      // message already sent in the conversation.
+      unsubscribeSafetyWarning?.()
+      unsubscribeSafetyWarning =
+        window.electronAPI.onMessageSafetyWarning?.((warning: SafetyWarning) => {
+          console.warn('[ChatStore] Safety warning:', warning.type)
+          set({ safetyWarnings: [...get().safetyWarnings, warning] })
+        }) ?? null
 
       // Listen for permission required
       window.electronAPI.onMessagePermissionRequired?.((data: any) => {
@@ -302,6 +338,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setError: (error: string | null) => {
     set({ error })
+  },
+
+  dismissSafetyWarning: (index: number) => {
+    set({ safetyWarnings: get().safetyWarnings.filter((_, i) => i !== index) })
   },
 
   // Sensitive Data Consent Actions

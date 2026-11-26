@@ -309,6 +309,11 @@ const SlotColumn = memo(function SlotColumn({
             task: '',
             steps: result.run.steps,
             status: result.run.status as 'completed' | 'failed' | 'cancelled' | 'max_steps_reached' | 'running',
+            // The slot's provider: this view rebuilds an AgentRun from its own
+            // store, whose event payload carries no provider, so this is the
+            // REQUESTED one. preflightGuard now ends an on-device -> cloud
+            // switch, so the two can only differ on a cloud -> cloud fallback.
+            provider: slot.provider,
             totalTokens: result.run.totalTokens,
             totalCost: 0,
             durationMs: result.run.durationMs,

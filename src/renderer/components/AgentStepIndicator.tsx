@@ -19,22 +19,31 @@
 
 import React, { useState } from 'react'
 import { AGENT_RESULT_SANITIZED_NOTICE, displayText } from '../lib/coding-display'
-import type { AgentStep, AgentRun } from '../../shared/types'
+import type { AgentGuardWarning, AgentStep, AgentRun } from '../../shared/types'
 
 interface AgentStepIndicatorProps {
   steps: AgentStep[]
   run?: AgentRun | null
   isRunning: boolean
+  /**
+   * What the preflight guard changed about this run. Shown while it runs, not
+   * only at the end: the guard emits it before the first model call.
+   */
+  guardWarnings?: AgentGuardWarning[]
 }
 
 export const AgentStepIndicator: React.FC<AgentStepIndicatorProps> = ({
   steps,
   run,
-  isRunning
+  isRunning,
+  guardWarnings
 }) => {
   const [expandedStep, setExpandedStep] = useState<number | null>(null)
 
-  if (steps.length === 0 && !isRunning) return null
+  const warnings = guardWarnings ?? []
+  // A run the guard ended before its first step has no steps and is not
+  // running. Its error is the only thing it has to say, so it still renders.
+  if (steps.length === 0 && !isRunning && warnings.length === 0 && !run?.error) return null
 
   const statusLabel = run
     ? run.status === 'completed'
@@ -118,7 +127,50 @@ export const AgentStepIndicator: React.FC<AgentStepIndicatorProps> = ({
             {statusLabel}
           </span>
         )}
+
+        {/* Which provider the run ACTUALLY used. Named only where the guard
+            replaced the chosen one — otherwise it repeats the conversation
+            header and adds noise to every single run. */}
+        {run?.requestedProvider && (
+          <span
+            className="text-xs ml-1 rounded bg-amber-100 px-1.5 py-0.5 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
+            title={`Der Guard hat den gewählten Provider ersetzt: ${displayText(run.requestedProvider)} → ${displayText(run.provider)}`}
+          >
+            {displayText(run.requestedProvider)} → {displayText(run.provider)}
+          </span>
+        )}
       </div>
+
+      {/* Why the run ended. "Fehlgeschlagen" alone does not tell a user that a
+          guard refused to move their on-device run to a cloud provider, and the
+          chat path had nowhere else to put it. */}
+      {run?.error && (
+        <div role="alert" className="ml-2 text-xs text-red-600 dark:text-red-400">
+          {displayText(run.error)}
+        </div>
+      )}
+
+      {/* Guard warnings. Rendered as their own line, because the badge above
+          only exists once the run has a result and this arrives before the
+          first model call. */}
+      {warnings.map((warning, index) => (
+        <div
+          key={`${warning.type}-${index}`}
+          role="status"
+          className="ml-2 flex items-start gap-1 text-xs text-amber-700 dark:text-amber-300"
+        >
+          <span aria-hidden="true">⚠️</span>
+          <span>
+            {displayText(warning.message ?? warning.type)}
+            {warning.reasons && warning.reasons.length > 0 && (
+              <span className="text-amber-600/80 dark:text-amber-400/80">
+                {' '}
+                ({displayText(warning.reasons.join(', '))})
+              </span>
+            )}
+          </span>
+        </div>
+      ))}
 
       {/* Expanded step detail */}
       {expandedStep !== null && (

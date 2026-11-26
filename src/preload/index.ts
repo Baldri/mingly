@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC_CHANNELS } from '../shared/types'
-import type { LLMProvider, AppSettings, TranscriptExportFormat } from '../shared/types'
+import type { LLMProvider, AppSettings, SafetyWarning, TranscriptExportFormat } from '../shared/types'
 import type { NetworkShareConfigInput } from '../shared/file-access-types'
 import type {
   CodingConsentChoice,
@@ -60,6 +60,20 @@ const api = {
     const listener = (_event: any, data: any) => callback(data)
     ipcRenderer.on('message:permission-required', listener)
     return () => ipcRenderer.removeListener('message:permission-required', listener)
+  },
+
+  // Safety warnings of a chat turn: a provider fallback, a circuit-breaker
+  // limit, an output-guardrail violation, a canary-token leak.
+  //
+  // The main process has been sending on this channel from four places
+  // (ipc-handlers.ts:190, :222, :337, :349) while no bridge entry existed, so
+  // every one of them was a dead letter — the renderer could not receive the
+  // channel at all. A provider the user did not choose was therefore swapped in
+  // without a word anywhere in the UI.
+  onMessageSafetyWarning: (callback: (warning: SafetyWarning) => void) => {
+    const listener = (_event: any, warning: SafetyWarning) => callback(warning)
+    ipcRenderer.on('message:safety-warning', listener)
+    return () => ipcRenderer.removeListener('message:safety-warning', listener)
   },
 
   // MCP Operations

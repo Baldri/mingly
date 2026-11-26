@@ -8,6 +8,7 @@ import { OrchestrationStatusBar } from './OrchestrationStatusBar'
 import { RAGStatusBar } from './RAGStatusBar'
 import { PrivacyIndicator } from './PrivacyIndicator'
 import { RoutingModeToggle } from './RoutingModeToggle'
+import { displayText } from '../lib/coding-display'
 import { useChatStore } from '../stores/chat-store'
 import { useOrchestratorStore } from '../stores/orchestrator-store'
 import { useCodingStore } from '../stores/coding-store'
@@ -34,6 +35,8 @@ export function ChatLayout() {
   const handleUseLocalLLM = useChatStore((state) => state.handleUseLocalLLM)
   const error = useChatStore((state) => state.error)
   const setError = useChatStore((state) => state.setError)
+  const safetyWarnings = useChatStore((state) => state.safetyWarnings)
+  const dismissSafetyWarning = useChatStore((state) => state.dismissSafetyWarning)
   const currentConversation = useChatStore((state) => state.currentConversation)
 
   const activeProposal = useOrchestratorStore((state) => state.activeProposal)
@@ -76,6 +79,43 @@ export function ChatLayout() {
               </button>
             </div>
           )}
+        </div>
+
+        {/* Guard warnings for this turn — polite, because unlike an error the
+            turn did go through; the user still has to be able to see that it
+            did not go through on the provider they chose. */}
+        <div role="status" aria-live="polite">
+          {safetyWarnings.map((warning, index) => {
+            const requested = warning.details?.requestedProvider
+            const used = warning.details?.provider
+            return (
+              <div
+                key={`${warning.type}-${index}`}
+                className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 dark:border-amber-900 dark:bg-amber-900/20"
+              >
+                <svg className="h-4 w-4 flex-shrink-0 text-amber-600 dark:text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                </svg>
+                <span className="flex-1 text-sm text-amber-800 dark:text-amber-200">
+                  {displayText(warning.message)}
+                  {typeof requested === 'string' && typeof used === 'string' && requested !== used && (
+                    <span className="ml-1 font-medium">
+                      ({displayText(requested)} → {displayText(used)})
+                    </span>
+                  )}
+                </span>
+                <button
+                  onClick={() => dismissSafetyWarning(index)}
+                  aria-label="Warnung ausblenden"
+                  className="flex-shrink-0 rounded p-0.5 text-amber-600 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+                >
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            )
+          })}
         </div>
 
         {/* Chat Header — model info + routing toggle + mode toggles */}

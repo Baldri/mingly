@@ -8,6 +8,7 @@
 import { create } from 'zustand'
 import type {
   AgentConfig,
+  AgentGuardWarning,
   AgentRun,
   AgentStep
 } from '../../shared/types'
@@ -15,10 +16,11 @@ import type { CodingRunRequest } from '../../shared/coding-types'
 
 // Agent event from IPC (mirrors AgentEvent from agent-executor.ts)
 interface AgentEvent {
-  type: 'step_start' | 'step_complete' | 'run_complete'
+  type: 'step_start' | 'step_complete' | 'run_complete' | 'guard_warning'
   runId: string
   step?: AgentStep
   run?: AgentRun
+  warnings?: AgentGuardWarning[]
 }
 
 interface AgentState {
@@ -29,6 +31,13 @@ interface AgentState {
   currentSteps: AgentStep[]
   config: AgentConfig | null
   error: string | null
+
+  /**
+   * What the preflight guard changed about the current run — it arrives before
+   * the first model call, so it is the one point at which the user can still
+   * see that the run is not using the provider they picked.
+   */
+  guardWarnings: AgentGuardWarning[]
 
   // History of completed runs (last 10)
   runHistory: AgentRun[]
@@ -95,6 +104,7 @@ export const useAgentStore = create<AgentState>((set, get) => {
     currentSteps: [],
     config: null,
     error: null,
+    guardWarnings: [],
     runHistory: [],
 
     // Toggle agentic mode
@@ -114,7 +124,9 @@ export const useAgentStore = create<AgentState>((set, get) => {
         isRunning: true,
         currentSteps: [],
         currentRun: null,
-        error: null
+        error: null,
+        // A warning about the previous run must not be read as one about this one.
+        guardWarnings: []
       })
 
       try {
@@ -220,6 +232,14 @@ export const useAgentStore = create<AgentState>((set, get) => {
           }
           break
 
+        // The guard replaced the provider this run was asked to use. Emitted
+        // before the first model call, so showing it still means something.
+        case 'guard_warning':
+          if (event.warnings && event.warnings.length > 0) {
+            set({ guardWarnings: [...get().guardWarnings, ...event.warnings] })
+          }
+          break
+
         case 'run_complete':
           if (event.run) {
             const { runHistory } = get()
@@ -236,7 +256,7 @@ export const useAgentStore = create<AgentState>((set, get) => {
 
     // Clear current run (after user dismisses)
     clearCurrentRun: () => {
-      set({ currentRun: null, currentSteps: [] })
+      set({ currentRun: null, currentSteps: [], guardWarnings: [] })
     },
 
     // Clear error

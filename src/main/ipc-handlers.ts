@@ -7,7 +7,7 @@ import { MessageModel } from './database/models/message'
 import { getSystemPromptManager } from './prompts/system-prompt-manager'
 import { getCommandHandler } from './commands/command-handler'
 import { generateId } from './utils/id-generator'
-import { guardInput, guardDispatch } from './security/request-guard'
+import { guardInput, guardDispatch, describeOffDeviceSwitch } from './security/request-guard'
 import { getGuardDeps } from './security/request-guard-deps'
 import { getContextInjector } from './rag/context-injector'
 import { getMCPToolSelector } from './mcp/mcp-tool-selector'
@@ -181,19 +181,34 @@ export async function registerIPCHandlers(): Promise<void> {
           // Budget/routing hard block — no safe fallback available.
           throw new Error(dispatch.reason)
         }
+        // A fallback that moves an on-device conversation to a cloud provider
+        // ends the turn, the same rule the agent path and the loop guard apply
+        // (see ProviderSwitch.leavesDevice): `guardInput` ran its sensitive-data
+        // scan against the provider the user chose, and for an on-device one it
+        // skips that branch entirely — so this content was never checked against
+        // the cloud provider that would receive it. The conversation is labelled
+        // "no data leaves your machine" in the UI.
+        if (dispatch.switched?.leavesDevice) {
+          throw new Error(describeOffDeviceSwitch(dispatch.switched))
+        }
         if (dispatch.provider !== provider) {
           console.log(`[Guard] Provider switched: ${provider} -> ${dispatch.provider}`)
           provider = dispatch.provider
         }
+        // Every fallback, not just the routing one: a budget fallback replaces
+        // the provider just as silently, and used to be dropped here.
         for (const warning of dispatch.warnings) {
-          if (warning.type === 'routing_fallback') {
-            event.sender.send('message:safety-warning', {
-              type: 'fallback_triggered',
-              level: 'warning',
-              message: warning.message,
-              details: { provider, reasons: warning.reasons ?? [] }
-            })
-          }
+          event.sender.send('message:safety-warning', {
+            type: 'fallback_triggered',
+            level: 'warning',
+            message: warning.message ?? `Provider switched to ${provider}.`,
+            details: {
+              cause: warning.type,
+              requestedProvider: warning.requestedProvider,
+              provider,
+              reasons: warning.reasons ?? []
+            }
+          })
         }
 
         // 3b. Circuit Breaker: Pre-estimate cost and enforce limits

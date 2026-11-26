@@ -99,10 +99,43 @@ export async function guardInput(input: PreflightInput, deps: GuardDeps): Promis
 export interface GuardWarning {
   type: string
   message?: string
+  /** The provider the CALLER asked for, on both fallback warnings. */
+  requestedProvider?: string
   /** routing-fallback extras (so the chat path can build its safety-warning). */
   provider?: string
   sensitivity?: string
   reasons?: string[]
+}
+
+/** Which guard branch refused the provider the caller asked for. */
+export type SwitchCause = 'budget' | 'routing'
+
+/**
+ * A dispatch that did not accept the provider it was given.
+ *
+ * Present whenever a fallback was TAKEN, not whenever the names differ: a
+ * budget fallback that a routing suggestion sends back to the starting provider
+ * has identical names in and out, yet its budget verdict was "not allowed".
+ * Same reasoning as the loop guard's (loop-guard.ts:204-209) — the names are a
+ * worse signal than the verdicts that produced them.
+ */
+export interface ProviderSwitch {
+  /** The provider the caller asked for. */
+  from: string
+  /** The provider dispatch settled on. */
+  to: string
+  /** The refusals that led here, in the order they happened. */
+  causes: SwitchCause[]
+  /**
+   * `from` runs on this machine and `to` does not.
+   *
+   * This is the shape that cannot be allowed to happen quietly: `guardInput`
+   * runs the sensitive-data scan and the upload-permission branch only when the
+   * provider it was GIVEN is a cloud provider, so an on-device run skips that
+   * branch entirely. Shipping that content to a cloud provider afterwards sends
+   * it to a recipient it was never checked against.
+   */
+  leavesDevice: boolean
 }
 
 export interface DispatchResult {
@@ -112,17 +145,27 @@ export interface DispatchResult {
   blockedKind?: 'budget' | 'routing'
   reason?: string
   warnings: GuardWarning[]
+  /** Set when a fallback was taken; absent when dispatch accepted the provider. */
+  switched?: ProviderSwitch
 }
 
 export function guardDispatch(input: PreflightInput, deps: GuardDeps): DispatchResult {
   const full = input.texts.filter((t) => typeof t === 'string').join('\n')
-  let provider = input.provider
+  const requestedProvider = input.provider
+  let provider = requestedProvider
   const warnings: GuardWarning[] = []
+  const causes: SwitchCause[] = []
 
   const budget = deps.checkBudget(provider)
   if (!budget.allowed) {
     if (budget.fallbackProvider) {
-      warnings.push({ type: 'budget_fallback', message: `${provider} -> ${budget.fallbackProvider}` })
+      warnings.push({
+        type: 'budget_fallback',
+        requestedProvider,
+        provider: budget.fallbackProvider,
+        message: `${provider} -> ${budget.fallbackProvider}`,
+      })
+      causes.push('budget')
       provider = budget.fallbackProvider
     } else {
       return { ok: false, provider, blockedKind: 'budget', reason: budget.reason ?? 'Budget exceeded for this provider.', warnings }
@@ -133,8 +176,10 @@ export function guardDispatch(input: PreflightInput, deps: GuardDeps): DispatchR
   if (!routing.allowed) {
     if (routing.suggestedProvider) {
       provider = routing.suggestedProvider
+      causes.push('routing')
       warnings.push({
         type: 'routing_fallback',
+        requestedProvider,
         provider,
         sensitivity: routing.classification?.sensitivity,
         reasons: routing.classification?.reasons,
@@ -145,7 +190,30 @@ export function guardDispatch(input: PreflightInput, deps: GuardDeps): DispatchR
     }
   }
 
-  return { ok: true, provider, warnings }
+  if (causes.length === 0) return { ok: true, provider, warnings }
+
+  return {
+    ok: true,
+    provider,
+    warnings,
+    switched: {
+      from: requestedProvider,
+      to: provider,
+      causes,
+      leavesDevice: !deps.isCloudProvider(requestedProvider) && deps.isCloudProvider(provider),
+    },
+  }
+}
+
+/** The words a user gets when an on-device run is stopped instead of uploaded. */
+export function describeOffDeviceSwitch(switched: ProviderSwitch): string {
+  const cause = switched.causes.map((c) => `${c} fallback`).join(' and ')
+  return (
+    `Dispatch refused ${switched.from} as-is for this content (${cause}), and the fallback ` +
+    `${switched.to} is not on-device: the content would leave this machine. It was only ever ` +
+    `checked against ${switched.from}, which skips the sensitive-data scan a cloud provider ` +
+    `gets, so the run ends instead of switching to ${switched.to}.`
+  )
 }
 
 // ── Composition for non-interactive callers ────────────────────────────
@@ -155,11 +223,20 @@ export type BlockedKind = 'injection' | 'sensitive' | 'budget' | 'routing'
 export interface PreflightResult {
   ok: boolean
   provider: string
+  /** The provider the caller asked for, whatever happened to it afterwards. */
+  requestedProvider: string
   blockedKind?: BlockedKind
   reason?: string
   requiresConsent?: boolean
   sanitizedText?: string
-  warnings: { type: string; message?: string }[]
+  /**
+   * Everything the dispatch guard had to say, with the routing extras intact.
+   * A caller that reports the switch to a human needs `provider` and `reasons`,
+   * and both used to be stripped here.
+   */
+  warnings: GuardWarning[]
+  /** Set when dispatch did not accept the provider — on a block too. */
+  switched?: ProviderSwitch
 }
 
 /**
@@ -167,27 +244,55 @@ export interface PreflightResult {
  * comparison, HTTP) treat `ok === false` as fail-closed. `requiresConsent`
  * needs a human decision and there is no consent channel here, so it is also
  * fail-closed.
+ *
+ * A dispatch fallback that moves an on-device run to a cloud provider is
+ * fail-closed as well, for the reason spelled out on `ProviderSwitch
+ * .leavesDevice`: it is the one switch whose content was never checked against
+ * the provider that would receive it. The loop guard already ends a run for
+ * exactly this mid-run (loop-guard.ts:209-227); this is the same rule applied
+ * before the first call, where it was missing.
  */
 export async function preflightGuard(input: PreflightInput, deps: GuardDeps): Promise<PreflightResult> {
+  const requestedProvider = input.provider
   const inGuard = await guardInput(input, deps)
   if (inGuard.kind === 'injection') {
-    return { ok: false, provider: input.provider, blockedKind: 'injection', reason: 'High-risk content detected. Please rephrase.', warnings: [] }
+    return { ok: false, provider: requestedProvider, requestedProvider, blockedKind: 'injection', reason: 'High-risk content detected. Please rephrase.', warnings: [] }
   }
   if (inGuard.kind === 'sensitive-denied') {
-    return { ok: false, provider: input.provider, blockedKind: 'sensitive', reason: inGuard.reason, warnings: [] }
+    return { ok: false, provider: requestedProvider, requestedProvider, blockedKind: 'sensitive', reason: inGuard.reason, warnings: [] }
   }
   if (inGuard.kind === 'consent') {
-    return { ok: false, provider: input.provider, blockedKind: 'sensitive', reason: 'User consent required for sensitive data upload.', requiresConsent: true, warnings: [] }
+    return { ok: false, provider: requestedProvider, requestedProvider, blockedKind: 'sensitive', reason: 'User consent required for sensitive data upload.', requiresConsent: true, warnings: [] }
   }
 
   const disp = guardDispatch(input, deps)
+
+  // Fail closed on the one switch nothing re-checked. `provider` stays the
+  // requested one so a caller that assigns it unconditionally cannot end up
+  // holding the cloud provider this very branch refused.
+  if (disp.ok && disp.switched?.leavesDevice) {
+    const causes = disp.switched.causes
+    return {
+      ok: false,
+      provider: requestedProvider,
+      requestedProvider,
+      blockedKind: causes[causes.length - 1],
+      reason: describeOffDeviceSwitch(disp.switched),
+      sanitizedText: inGuard.sanitizedText,
+      warnings: disp.warnings,
+      switched: disp.switched,
+    }
+  }
+
   return {
     ok: disp.ok,
     provider: disp.provider,
+    requestedProvider,
     blockedKind: disp.blockedKind,
     reason: disp.reason,
     sanitizedText: inGuard.sanitizedText,
-    warnings: disp.warnings.map((w) => ({ type: w.type, message: w.message })),
+    warnings: disp.warnings,
+    switched: disp.switched,
   }
 }
 
