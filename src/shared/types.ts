@@ -559,6 +559,12 @@ export const IPC_CHANNELS = {
   FILE_ACCESS_LIST_FILES: 'file-access:list-files',
   FILE_ACCESS_ADD_NETWORK_SHARE: 'file-access:add-network-share',
 
+  // Coding interpreter settings. Three verbs, none takes a path: the renderer
+  // names an interpreter, the main process opens the dialog and decides.
+  CODING_INTERPRETERS_LIST: 'coding-interpreters:list',
+  CODING_INTERPRETERS_CHOOSE: 'coding-interpreters:choose',
+  CODING_INTERPRETERS_REMOVE: 'coding-interpreters:remove',
+
   // Upload Permission & Data Security
   UPLOAD_PERMISSION_GRANT: 'upload-permission:grant',
   UPLOAD_PERMISSION_DENY: 'upload-permission:deny',

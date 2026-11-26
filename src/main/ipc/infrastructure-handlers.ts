@@ -14,6 +14,12 @@ import { wrapHandler, requirePermission } from './ipc-utils'
 import type { NetworkAIServerConfig } from '../../shared/network-ai-types'
 import type { FileAccessRequest, FileAccessPermission } from '../../shared/file-access-types'
 import { parseNetworkShareConfig } from '../../shared/file-access-types'
+import {
+  isKnownName as isKnownInterpreterName,
+  listInterpreters,
+  chooseInterpreter,
+  removeInterpreter
+} from '../coding/interpreter-settings'
 
 export function registerInfrastructureHandlers(): void {
   const networkAIManager = getNetworkAIManager()
@@ -148,6 +154,49 @@ export function registerInfrastructureHandlers(): void {
   wrapHandler(IPC_CHANNELS.NETWORK_AI_GET_MODELS, async (serverId: string) => {
     return { success: true, models: await networkAIManager.getModels(serverId) }
   })
+
+  // ========================================
+  // Coding Interpreter Settings
+  // ========================================
+  // Name only, never a path: the dialog is opened by the main process and the
+  // trust boundary in interpreter-settings decides what is stored. Do not add
+  // a verb that stores or confirms a path without that dialog. CHOOSE and
+  // REMOVE forward exactly one argument (the name) and LIST forwards none, so
+  // extra renderer arguments are dropped.
+  //
+  // Results are envelopes, not bare values: wrapHandler answers a rate limit or
+  // a thrown error with `{ success: false, error }`, which is a truthy object.
+  // A bare `boolean` would read as success exactly when the call failed.
+
+  wrapHandler(IPC_CHANNELS.CODING_INTERPRETERS_LIST, () => ({
+    success: true,
+    interpreters: listInterpreters()
+  }))
+
+  // An unknown name is a renderer bug, not a state, so CHOOSE and REMOVE answer
+  // it identically, with an error envelope. chooseInterpreter would report it
+  // as 'refused', which is the bucket for a real pick the trust boundary turned
+  // down — a user-visible outcome, and the wrong place for a call the renderer
+  // should never have made. Hence the check here. It only refuses: what gets
+  // stored is still decided in interpreter-settings.
+  const unknownInterpreter = (name: string): { success: false; error: string } => ({
+    success: false,
+    error: `Unknown interpreter: ${name}`
+  })
+
+  // CHOOSE carries the OUTCOME, not a boolean: stored, cancelled and refused
+  // are three different things to the user, and only the refused one needs a
+  // message. A boolean folded the last two together and left a refused pick
+  // with no visible effect at all.
+  wrapHandler(IPC_CHANNELS.CODING_INTERPRETERS_CHOOSE, async (name: string) =>
+    isKnownInterpreterName(name)
+      ? { success: true, outcome: await chooseInterpreter(name) }
+      : unknownInterpreter(name)
+  )
+
+  wrapHandler(IPC_CHANNELS.CODING_INTERPRETERS_REMOVE, (name: string) =>
+    removeInterpreter(name) ? { success: true } : unknownInterpreter(name)
+  )
 
   // ========================================
   // File Access Management

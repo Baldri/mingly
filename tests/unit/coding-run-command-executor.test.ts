@@ -68,8 +68,12 @@ vi.mock('../../src/main/file-access/file-access-manager', () => ({
 vi.mock('../../src/main/utils/simple-store', () => ({
   SimpleStore: {
     create: () => ({
-      get: (key: string, fallback?: unknown) =>
-        key === 'paths' ? { npm: path.join(binDir, 'npm') } : fallback,
+      get: (key: string, fallback?: unknown) => {
+        if (key === 'paths') return { npm: path.join(binDir, 'npm') }
+        // A confirmed entry carries a marker; without it the path is not honoured.
+        if (key === 'confirmedAt') return { npm: 1764000000000 }
+        return fallback
+      },
       set: vi.fn()
     })
   }

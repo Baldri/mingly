@@ -168,16 +168,37 @@ export function seedBuiltInProviders(registry: ProviderRegistry): void {
     { ...closedUs, operator: 'Google LLC' },
     { code: 0.8, creative: 0.75, analysis: 0.95, conversation: 0.8 }
   )
+  // Ollama, under BOTH ids it answers to. `local` is an alias for the same
+  // OllamaClient (client-manager.ts:76-77) and a member of LLMProvider, and it
+  // is the id the new-conversation picker stores when the user chooses a local
+  // model (NewConversationModal.tsx:172) — the choice the UI captions "no data
+  // leaves your machine".
+  //
+  // Registering only `ollama` left the guards reading `local` as an id nobody
+  // had declared an origin for, and the two "unknown provider" defaults then
+  // broke the promise from both directions (measured 26.11.2026):
+  //   - applyResidencyPolicy compared `local` against a candidate list that
+  //     could never contain it and rerouted the run to `anthropic`, i.e. from
+  //     on-device to US soil;
+  //   - residencyIsCloud(undefined) is true, so a local run carrying sensitive
+  //     data was treated as a cloud upload and fail-closed in the agent path.
+  //
+  // One origin object for both, so the alias cannot drift away from the
+  // provider it aliases.
+  const onDevice = {
+    residency: 'on-device' as const,
+    operator: 'on-device',
+    weightsLicense: 'open' as const,
+    hostingMode: 'local' as const,
+    dpaStatus: 'not-applicable' as const
+  }
+  const ollamaFitness = { code: 0.6, creative: 0.6, analysis: 0.6, conversation: 0.65 }
+
+  registry.registerVerified(BUILT_IN_PROVIDERS.ollama, onDevice, ollamaFitness)
   registry.registerVerified(
-    BUILT_IN_PROVIDERS.ollama,
-    {
-      residency: 'on-device',
-      operator: 'on-device',
-      weightsLicense: 'open',
-      hostingMode: 'local',
-      dpaStatus: 'not-applicable'
-    },
-    { code: 0.6, creative: 0.6, analysis: 0.6, conversation: 0.65 }
+    { ...BUILT_IN_PROVIDERS.ollama, id: 'local', name: 'Local Models' },
+    onDevice,
+    ollamaFitness
   )
 }
 
