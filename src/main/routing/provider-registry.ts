@@ -40,6 +40,40 @@ const TENANT_ORIGIN: ProviderOrigin = {
   dpaStatus: 'none'
 }
 
+/**
+ * Origin forced onto a server on the user's own network.
+ *
+ * Same residency as a tenant endpoint, for the same reason, but the other
+ * three fields are not the same statement and the audit log should not say
+ * they are: the user typed this machine's address, so they host it, and no
+ * third party rented it to them.
+ *
+ * `residency: 'unknown'` is the honest value, not a placeholder. The app sees
+ * an address on a private network; it cannot tell who operates that machine
+ * or which country it stands in. That buys ordinary content a route to it and
+ * keeps confidential content away — and it still counts as cloud
+ * (`residencyIsCloud`), so the sensitive-data scan and the upload consent run.
+ *
+ * `dpaStatus: 'none'` rather than `'not-applicable'`: an agreement is missing,
+ * which is a different statement from there being no processor at all. If a
+ * later reading of `trustFromOrigin` treats `not-applicable` as covered — the
+ * type's own comment invites it, since on-device execution needs no agreement
+ * — this entry must not quietly earn trust from it.
+ *
+ * `weightsLicense: 'closed'` is the no-claim direction: an
+ * `openai-compatible` server on the LAN can proxy anything, open weights or
+ * not. Neither this field nor `hostingMode` is read by a guard (measured
+ * 27.11.2026: only `residency` and `dpaStatus` are), so both carry the
+ * cautious reading rather than a guess.
+ */
+const LOCAL_NETWORK_ORIGIN: ProviderOrigin = {
+  residency: 'unknown',
+  operator: 'user-operated (local network)',
+  weightsLicense: 'closed',
+  hostingMode: 'self-hosted',
+  dpaStatus: 'none'
+}
+
 export class ProviderRegistry {
   private entries: Map<string, RegistryEntry> = new Map()
 
@@ -56,14 +90,36 @@ export class ProviderRegistry {
   }
 
   /**
+   * Register with an origin WE choose, discarding anything the config claims.
+   *
+   * The single place invariant I2 is enforced, so the two registrations that
+   * accept an endpoint from outside cannot drift apart in how strictly they
+   * apply it.
+   */
+  private registerWithForcedOrigin(config: ProviderConfig, origin: ProviderOrigin): void {
+    const entry: RegistryEntry = {
+      config,
+      origin: Object.freeze({ ...origin }),
+      capabilities: Object.freeze({ ...UNMEASURED_CAPABILITIES })
+    }
+    this.entries.set(config.id, Object.freeze(entry))
+  }
+
+  /**
    * Register a tenant-supplied endpoint. Origin is forced (I2) — any origin
    * on the incoming config is discarded, not merged.
    */
   registerTenant(config: ProviderConfig): void {
-    const frozenOrigin = Object.freeze({ ...TENANT_ORIGIN })
-    const frozenCapabilities = Object.freeze({ ...UNMEASURED_CAPABILITIES })
-    const entry: RegistryEntry = { config, origin: frozenOrigin, capabilities: frozenCapabilities }
-    this.entries.set(config.id, Object.freeze(entry))
+    this.registerWithForcedOrigin(config, TENANT_ORIGIN)
+  }
+
+  /**
+   * Register a server the user runs on their own network. Origin is forced
+   * exactly as for a tenant endpoint — the configuration names an endpoint,
+   * never its residency.
+   */
+  registerLocalNetwork(config: ProviderConfig): void {
+    this.registerWithForcedOrigin(config, LOCAL_NETWORK_ORIGIN)
   }
 
   get(id: string): RegistryEntry | undefined {

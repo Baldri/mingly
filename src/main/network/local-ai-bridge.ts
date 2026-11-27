@@ -13,8 +13,10 @@
 import { getNetworkAIManager, NetworkAIManager } from './network-ai-manager'
 import { getClientManager, LLMClientManager } from '../llm-clients/client-manager'
 import { getOllamaLoadBalancer } from './ollama-load-balancer'
+import { getProviderRegistry } from '../routing/provider-registry'
 import { buildAPIUrl } from '../../shared/network-ai-types'
 import type { NetworkAIServerConfig } from '../../shared/network-ai-types'
+import type { ProviderConfig } from '../../shared/provider-types'
 
 export interface LocalAIProvider {
   /** Provider ID (matches NetworkAIServerConfig.id) */
@@ -82,42 +84,70 @@ export class LocalAIBridge {
     // Build API URL
     const apiUrl = buildAPIUrl(server)
 
-    // Register the appropriate client type
+    // One config object, two consumers: the client that dials the endpoint
+    // and the registry that declares its origin. Built once on purpose — if
+    // the declared endpoint could differ from the dialled one, the label and
+    // the destination would drift apart again, which is the defect PR #54
+    // closed for the on-device pool.
+    const config: ProviderConfig =
+      server.type === 'ollama'
+        ? {
+            id: providerId,
+            name: server.name,
+            type: 'ollama',
+            apiBase: apiUrl,
+            apiKeyRequired: false,
+            supportsStreaming: true,
+            models: []
+          }
+        : {
+            id: providerId,
+            name: server.name,
+            type: 'custom',
+            // All other types use the OpenAI-compatible client.
+            apiBase:
+              server.type === 'vllm' || server.type === 'openai-compatible'
+                ? `${apiUrl}/v1`
+                : apiUrl,
+            apiKeyRequired: server.apiKeyRequired,
+            supportsStreaming: true,
+            models: []
+          }
+
+    this.clientManager.registerCustomProvider(config)
+
     if (server.type === 'ollama') {
-      // Ollama has its own client
-      this.clientManager.registerCustomProvider({
-        id: providerId,
-        name: server.name,
-        type: 'ollama',
-        apiBase: apiUrl,
-        apiKeyRequired: false,
-        supportsStreaming: true,
-        models: []
-      })
-
-      // Register with load balancer for multi-backend routing
+      // Offered to the load balancer, which keeps only loopback backends
+      // (PR #54): a LAN host is refused there and reached through this
+      // provider id instead.
       getOllamaLoadBalancer().addBackend(server)
-    } else {
-      // All other types use OpenAI-compatible client
-      const apiBase = server.type === 'vllm' || server.type === 'openai-compatible'
-        ? `${apiUrl}/v1`
-        : apiUrl
-
-      this.clientManager.registerCustomProvider({
-        id: providerId,
-        name: server.name,
-        type: 'custom',
-        apiBase,
-        apiKeyRequired: server.apiKeyRequired,
-        supportsStreaming: true,
-        models: []
-      })
-
-      // Set API key if provided
-      if (server.apiKey) {
-        this.clientManager.setApiKey(providerId, server.apiKey)
-      }
+    } else if (server.apiKey) {
+      this.clientManager.setApiKey(providerId, server.apiKey)
     }
+
+    // Every guard resolves a provider through the registry: the policy filters
+    // candidates by origin.residency (policy-engine.ts:69), isCloudProvider
+    // reads it (request-guard-deps.ts:82), trust is derived from it
+    // (provider-trust.ts:59). An id that is absent is in no candidate list at
+    // ANY protection level — the `!rule` branch of evaluate() lists registry
+    // ids too — so the routing guard replaced it with the first trusted
+    // alternative. Measured 27.11.2026 with `ollama` as a control in the same
+    // run: harmless content on a selected LAN server came back as `anthropic`,
+    // and ipc-handlers.ts:196 assigns that to the provider it then sends to.
+    // Same class as the `local` alias gap, one id space over.
+    //
+    // The origin is FORCED (invariant I2): the address says who hosts the
+    // machine, not who operates it or where it stands.
+    //
+    // DEBT: a loopback network server — a second Ollama on this very machine —
+    // is verifiably on-device by its URL, yet is registered `unknown` too and
+    // so cannot take confidential content; the built-in `ollama` provider is
+    // the way to do that -> upgrade when a user reports that a second local
+    // Ollama on a non-default port is refused confidential content. The
+    // upgrade needs more than isLoopbackUrl(apiUrl): a server's host can be
+    // edited after registration, so the re-registration path has to be closed
+    // first or the label outlives the URL it was read from.
+    getProviderRegistry().registerLocalNetwork(config)
 
     // Fetch available models
     let models: string[] = []
@@ -146,6 +176,11 @@ export class LocalAIBridge {
   unregisterServer(serverId: string): void {
     const providerId = `network:${serverId}`
     this.registeredProviders.delete(providerId)
+
+    // Withdraw the origin with the server. Leaving the entry would keep the
+    // policy offering an endpoint nobody stands behind any more — the case
+    // ProviderRegistry.remove() exists for.
+    getProviderRegistry().remove(providerId)
 
     // Remove from load balancer pool
     getOllamaLoadBalancer().removeBackend(serverId)
